@@ -1,0 +1,10 @@
+# Future experiment axes only; no sweep runner implemented.
+clusters: [10, 20, 30, 40, 50]
+windows: [1, 2, 3, 4, 5]
+cache_gb: [5, 10, 20, 40]
+theta_admit: [0.1, 0.2, 0.3, 0.4, 0.5]
+users: [10, 50, 100, 200]
+bandwidth_mbps: [200, 500, 1000]
+lora_rank: [4, 8, 16]
+pbr_interval: [100, 500, 1000]
+query_tokens: [50, 100, 200, 400]

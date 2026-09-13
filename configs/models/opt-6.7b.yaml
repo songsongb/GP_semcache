@@ -1,0 +1,1 @@
+model: {name: facebook/opt-6.7b, tokenizer: facebook/opt-6.7b, dtype: float16}

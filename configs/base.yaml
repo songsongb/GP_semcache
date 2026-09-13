@@ -1,0 +1,58 @@
+seed: 42
+num_users: 50
+lora_rank: 8
+model:
+  name: facebook/opt-6.7b
+  revision: main  # Reproduction choice; pin a commit for reported experiments.
+  tokenizer: facebook/opt-6.7b
+  tokenizer_revision: main
+  dtype: float16
+  device: cpu
+  local_files_only: true
+  attention_implementation: eager
+dataset: MultiWOZ
+intent_clusters: {MultiWOZ: 20, CoQA: 40, SNIPS: 30}
+cluster_update_interval_queries: 100
+clustering:
+  initialization: first_k
+  update_rule: batched_incremental_mean
+subsequence_window: 3
+match_rule: exact_token_ids_within_cluster
+logical_cache_capacity_gb: 20
+admission: {alpha: 0.5, beta: 0.3, delta: 0.2, threshold: 0.3}
+eviction: {alpha: 0.4, beta: 0.3, gamma: 0.2, delta: 0.1}
+cache:
+  normalization: current_pool_plus_candidate
+  zero_max: 0.0
+  age_unit: query
+  admission_frequency_window_queries: 100
+semantic_impact:
+  rho: 0.8
+  pbr_interval_queries: 100
+  mode: chu+pbr
+  provider: unavailable
+semantic_encoder:
+  backend: huggingface_text
+  checkpoint: huawei-noah/TinyBERT_General_4L_312D
+  revision: main
+  pooling: masked_mean
+  max_length: 512
+  device: cpu
+  local_files_only: true
+default_simulated_bandwidth_mbps: 200
+simulation:
+  es_tflops: null
+  ud_tflops: null
+  bytes_per_element: 2
+  cost_model: unimplemented
+inspection:
+  layer_idx: 0
+  text: "I need a hotel in Cambridge."
+demo:
+  tokenizer: controlled_whitespace_v1
+  encoder: controlled_vectors_v1
+  queries: ["find a hotel in cambridge", "find a hotel in london"]
+  embeddings: [[0.0, 0.0], [0.0, 0.0]]
+  # Explicit fixture centroids; separate from real TinyBERT warmup.
+  centroids: [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0], [5.0, 5.0], [6.0, 6.0], [7.0, 7.0], [8.0, 8.0], [9.0, 9.0], [10.0, 10.0], [11.0, 11.0], [12.0, 12.0], [13.0, 13.0], [14.0, 14.0], [15.0, 15.0], [16.0, 16.0], [17.0, 17.0], [18.0, 18.0], [19.0, 19.0]]
+  projection_metadata: {layers: 32, hidden_size: 4096, bytes_per_element: 2}

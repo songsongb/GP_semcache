@@ -1,0 +1,4 @@
+# Reference targets, not supported backends.
+gpt2-large: {dtype: float32, supported: false}
+llama-7b: {dtype: int4, supported: false}
+opt-6.7b: {dtype: float16, supported: true}

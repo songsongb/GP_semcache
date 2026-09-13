@@ -1,0 +1,255 @@
+# SemCache reproduction — Milestones 1–2
+
+This repository implements the foundation of **SemCache: Semantic-Aware Cache
+Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
+INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repository
+root is the primary specification. This root serves as the requested
+`semcache-repro/` directory; the supplied paper is preserved in place.
+
+**Status:** controlled cache indexing works; paper performance trends have not
+been reproduced. The first model/dataset target is OPT-6.7B FP16 + MultiWOZ.
+The default demo uses neither pretrained weights nor dataset samples.
+
+SemCache caches **per-layer Q, K and V projection blocks** across users within
+intent clusters. It does not cache final answers, and Hugging Face
+`past_key_values` alone is insufficient. The OPT adapter exposes raw projection
+outputs at the actual attention input. Context, position, layer history, and
+user-specific adapters can change those outputs even for identical token IDs.
+An index HIT therefore is not proof that using the cached projections is correct.
+
+## Implemented
+
+- YAML defaults from Table I and the simulation setup in §V-A.
+- Pluggable semantic encoder, nearest-centroid assignment (Eq. 8), incremental
+  means (Eq. 9), sliding windows and cluster-scoped exact token matching.
+- Global logical cache with source positions, optional detached per-layer tensors,
+  frequency, age, nullable impact, timestamps, admission (Eq. 11) and eviction
+  (Eq. 12). Separate appearance counts and reuse counts.
+- CHU arithmetic and provider-based PBR scheduling. An absent attention-impact
+  provider raises explicitly; the demo does not execute CHU/PBR.
+- Opt-in OPT loader and Q/K/V hooks, position extraction and ordered scatter
+  merge. Unsupported architectures fail explicitly.
+- Offline MISS → HIT demo, JSON/CSV schema, environment reporting and tests.
+
+## Run Milestone 1
+
+Python 3.10+ is required. From the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e '.[test]'
+python3 scripts/00_check_environment.py
+python3 -m pytest -q
+python3 -m compileall -q src scripts tests
+python3 scripts/05_check_semantic_clustering.py
+python3 scripts/06_check_subsequence_cache.py
+python3 scripts/07_run_single_request.py
+```
+
+Every configurable script accepts `--config path/to.yaml`; the demo and OPT
+inspection also accept `--output path/to.json`. The supplied model/dataset YAML
+files are reference fragments; scripts load a **complete config**, without
+implicit fragment merging. Copy `configs/base.yaml` when making a variant.
+
+The controlled queries are `find a hotel in cambridge` and
+`find a hotel in london`. A deterministic whitespace vocabulary and explicit
+fixture embeddings assign both to cluster 0. Expected lookup events:
+
+```text
+request 1: MISS MISS MISS
+request 2: HIT HIT MISS
+logical bytes=7077888; physical tensor bytes=0
+```
+
+Three windows are admitted from request 1. The new request-2 window is rejected:
+its appearance frequency is 1, while the maximum is 2; with unavailable impact
+mapped to zero for scoring and equal sizes, its score is 0.25. The threshold is
+strictly greater than 0.3. Two overlapping index hits cover four distinct token
+positions; **actual reused tokens remain zero**. The JSON records lookups,
+admission decisions, complete configuration and the unavailable impact status.
+Results go to `results/raw/milestone1_demo.json` and `.csv`.
+
+The default 50 users and rank 8 are configured targets, not an executed workload.
+No generated output, BLEU, GPU latency, or system-latency estimate is fabricated:
+unavailable fields are null. `metric_source` is a per-metric mapping with values
+`measured` or `simulated`. A measured HIT is an observed dictionary lookup, not
+an observed GPU speedup. Logical memory is simulated; optional tensor-storage
+bytes are measured separately and do not represent peak GPU allocation.
+
+## Optional OPT inspection
+
+```bash
+python3 -m pip install -e '.[models,test]'
+python3 -m pytest -q
+python3 scripts/04_check_qkv_projection.py --config configs/base.yaml
+```
+
+This command requires locally available `facebook/opt-6.7b` weights/tokenizer.
+`local_files_only: true` prevents implicit downloads. Set paths/revisions and the
+intended device in a copied config. Downloading weights is an explicit user
+operation; no test downloads or trains a model. Pin immutable model, tokenizer,
+and TinyBERT revisions for reportable experiments. Loader outputs include
+requested and resolved revisions (when available), dtype, device and package
+versions. The optional TinyBERT implementation is instantiated with
+`HuggingFaceTextEncoder(**config['semantic_encoder'])`.
+
+The inspection script hooks one configured layer during an ordinary OPT forward,
+then independently recomputes Q/K/V from the captured attention-input hidden
+states and asserts parity. It records shapes, tensor bytes and **total inspection
+time**, which includes a full forward, copies and validation; this is not a
+projection latency benchmark. Model evaluation and inference mode are enabled;
+CUDA timing synchronizes before and after. Raw Q is captured before attention
+scaling/head splitting. Tests use a random two-layer OPT, never OPT-6.7B weights.
+
+## Paper specification and reproduction choices
+
+Direct specification includes EdgeLoRA's UD/ES roles (§III), Q/K/V reuse (§IV-C),
+nearest-centroid/mean equations, fixed windows, max-normalized admission and
+largest-score eviction, CHU/PBR, and Table I defaults. These are kept separate in
+`models`, `semantic`, `cache`, `edgelora`, and `simulation` packages.
+
+[docs/reproduction_choices.md](docs/reproduction_choices.md) tracks the choices
+not fixed by the paper: TinyBERT checkpoint and text interface, cluster warmup
+and update timing, token identity and position indexing, cold-start normalization,
+frequency horizon, logical memory units, and controlled fixtures.
+
+A logical 20 GB pool means a 20,000,000,000-byte **budget**, not allocating that
+much RAM/VRAM. Demo blocks describe all-layer Q/K/V footprints using explicit
+OPT metadata; their tensors are absent. Physical accounting deduplicates shared
+storage pointers, including views. Tensor storage and logical entry size must
+not be mutated after insertion. Each pool belongs to one model/tokenizer
+namespace and is currently single-threaded.
+
+## Not implemented and execution blockers
+
+- Actual cross-query QKV reuse, non-overlapping reuse selection, attention
+  replacement, layer-by-layer MHA/FFN integration, and generation correctness.
+- Physical UD/ES placement, communication, trained per-user LoRA execution.
+- Attention-norm extraction, recent-query observation storage for Eq. 13,
+  low-load PBR scheduling, and the OPT-embedding → TinyBERT bridge in Eq. 7.
+- MultiWOZ preprocessing/personalization, user traces, adapter training and BLEU.
+  Scripts 01–03 deliberately exit with an explanatory error.
+- Eq. 18–20 cost simulation, physical profiling, baselines and experiment sweeps.
+  `CostModel`/`EdgeLoRASimulator` are extension interfaces, not implemented results.
+- GPT2 fused QKV, LLaMA and INT4 quantization. Figures 6–10 and Tables II–IV
+  remain future milestones; planned YAML axes are not sweep implementations.
+
+For actual OPT-6.7B execution, install PyTorch/Transformers, provision the model
+and tokenizer with pinned revisions, and provide sufficient CPU/GPU memory
+(the FP16 weights alone are roughly 13.4 GB, before runtime overhead). GPU
+measurement requires working CUDA hardware. Full reproduction additionally
+requires resolving the dataset, adapters and numerical-reuse items above.
+
+Validation in the supplied environment: Python 3.10.12; offline unit tests,
+compile/import checks and controlled scripts run. PyTorch/Transformers are
+absent, so tensor and tiny-OPT tests are skipped; neither OPT-6.7B nor GPU timing
+has been validated. See `results/raw/environment.json` for the environment report.
+
+## Milestone 2 status and execution
+
+- Milestone 1: logical SemCache pipeline — complete.
+- Actual Q/K/V capture: implemented; real OPT execution and numerical validation pending.
+- Physical Q/K/V cache: implemented; tensor tests and real physical hit pending.
+- Cross-query similarity: A–D probes and raw result output implemented; measurements pending.
+- Safe inference reuse — **NOT YET CLAIMED**. No cached tensor is fed into attention.
+- Fig. 6 experiments and distributed/user-specific LoRA remain deferred.
+
+Validation on 2026-09-13 used `/tmp/semcache-m2-venv`: **16 passed,
+2 skipped modules**, syntax compilation passed, and the offline logical demo
+passed. Torch and Transformers are absent, so scripts 04, 08 and 09 exit with
+explicit missing-dependency messages. The opt-in integration invocation skipped
+at module collection (pytest exit 5: no collected tests). No real OPT forward,
+projection parity measurement, physical tensor hit, or cross-query measurement
+occurred. PEFT and Matplotlib are also absent; PEFT is optional for this base-only
+milestone. CUDA availability and VRAM are unknown without Torch. No numerical
+CSV or figures were fabricated.
+
+`configs/base.yaml` retains the paper target **facebook/opt-6.7b, float16**.
+`configs/development.yaml` is a complete config for **facebook/opt-125m,
+float32, CPU**. OPT-125m output is development evidence, never paper reproduction
+results. Scripts also accept `--model-id`, `--dtype`, `--device`, `--revision`,
+`--window-size` and `--layers 0 1 ...`. Omitting `--layers` captures all layers.
+Weights load locally by default; `--allow-download` explicitly enables fetching.
+No research script installs dependencies and no test downloads weights.
+
+Run these commands on SERAPH from the repository root. Install Torch explicitly
+using the machine's approved CUDA-compatible build; the command below uses
+PyPI's default build. If SERAPH already has a managed Torch environment, activate
+it instead of creating another one.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install torch
+python3 -m pip install -e '.[models,test]' matplotlib
+python3 -m pytest -q
+python3 -m compileall -q src scripts tests plots
+python3 scripts/07_run_single_request.py
+python3 scripts/00_check_environment.py --config configs/development.yaml --device cuda
+
+# Level A: explicit initial download and projection validation.
+python3 scripts/04_check_qkv_projection.py --config configs/development.yaml --device cuda --allow-download --output results/raw/opt125m_projection.json
+SEMCACHE_OPT_INTEGRATION=1 python3 -m pytest -q
+python3 scripts/08_probe_cross_query_qkv.py --config configs/development.yaml --device cuda --output results/raw/opt125m_probe.csv
+python3 scripts/09_real_qkv_cache_demo.py --config configs/development.yaml --device cuda --output results/raw/opt125m_physical.csv
+python3 plots/plot_qkv_similarity_by_layer.py --input results/raw/opt125m_probe.csv --output-dir results/figures/opt125m
+
+# Level B: explicit large-model download; sufficient GPU VRAM is required.
+python3 scripts/00_check_environment.py --config configs/base.yaml --device cuda --output results/raw/opt67b_environment.json
+python3 scripts/04_check_qkv_projection.py --config configs/base.yaml --device cuda --allow-download --output results/raw/opt67b_projection.json
+python3 scripts/08_probe_cross_query_qkv.py --config configs/base.yaml --device cuda --output results/raw/opt67b_probe.csv
+python3 scripts/09_real_qkv_cache_demo.py --config configs/base.yaml --device cuda --output results/raw/opt67b_physical.csv
+python3 plots/plot_qkv_similarity_by_layer.py --input results/raw/opt67b_probe.csv --output-dir results/figures/opt67b
+```
+
+For reportable runs append `--revision IMMUTABLE_HF_COMMIT` consistently to the
+model scripts; the default `main` is exploratory. Requested and resolved model
+and tokenizer revisions and installed package versions are recorded in JSON.
+The environment checker does not load weights, so its resolved revision is null.
+
+Capture uses `with qkv_capture(model, layers=[0]) as capture:` around one forward.
+Records are indexed by layer and contain detached Q/K/V and projection-input
+hidden states. Forward hooks attach to the loaded OPT `q_proj/k_proj/v_proj`
+modules and are removed even on failure. Each hook independently executes its
+exact module's `forward` on its actual input, asserts Torch numerical closeness,
+and records max/mean absolute error and cosine similarity. Failure aborts before
+results are saved. Validation is instrumentation parity on the same input, not
+cross-query equality. Default capture copies to CPU; `storage_device=None` keeps
+the execution device. Validation/copies make this unsuitable for latency claims.
+
+Raw tensors have shape `[batch, token, hidden]`, before Q scaling and head
+splitting. Metadata separately reports the equivalent head layout
+`[batch, heads, token, head_dim]`; head tensors are not stored. The adapter checks
+loaded projection widths, head count and head dimension; unsupported layouts
+fail explicitly. This depends on Transformers' OPT module structure, so pin and
+record the version validated on SERAPH. The current dependency range is not a
+claim that every version has been tested.
+
+Every probe tokenizes complete prompts and selects windows by exact token IDs.
+A has identical prefix and position, B differing prefix at the same position,
+C differing prefix and position, and D differing content with identical prefix
+and position. A bounded deterministic candidate search must satisfy those
+constraints or raises. Larger windows may require changing the full-prompt
+fixtures. Special-token windows are excluded. CSV preserves each layer and Q/K/V
+separately, including full input IDs, selected IDs, and end-exclusive positions;
+the JSON sidecar also records decoded windows, shapes and projection validation.
+D has no shared IDs and records both differing windows. C combines context and
+position changes; comparison with B is diagnostic, not a pure isolated causal
+estimate of position alone.
+
+`CacheEntry.from_tensors` owns compact detached copies (CPU by default; CUDA is
+optional), preserving the existing logical-only constructor and policies.
+Physical bytes count referenced storage; logical bytes govern admission/capacity
+and do not measure peak VRAM. Keep entry storage immutable after insertion.
+The physical demo uses explicit controlled semantic vectors and the existing
+clusterer/matcher, then compares a retrieved A block with freshly computed B
+projections per layer. It does not validate learned semantic clustering.
+
+A **cache hit** establishes index retrieval; **Q/K/V similarity** measures numerical
+representation differences; **safe inference reuse** additionally needs attention
+substitution and output-quality validation, which are not implemented. Similarity
+reductions use float64 on CPU: relative L2 is `||A-B|| / ||A||`, with A the reference.
+For a zero reference and nonzero candidate it is null; both zero vectors have
+cosine 1 and relative L2 0, while one zero vector has cosine 0. Plots show the full
+cosine range, including low or negative similarities.
