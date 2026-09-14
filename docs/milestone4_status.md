@@ -1,10 +1,13 @@
 # Milestone 4 status — 2026-09-14
 
-**IMPLEMENTED / CPU-TESTED. PRETRAINED-MODEL TESTED: NOT YET VERIFIED.
-REAL-GPU VERIFIED: NOT YET VERIFIED.**
+**IMPLEMENTED / CPU-TESTED. PRETRAINED-MODEL TESTED / REAL-GPU VERIFIED:
+user-reported SERAPH validation, as supplied at the start of Milestone 5.**
 
-This status applies to Milestone 4. The user reports real SERAPH verification
-of Milestones 2 and 3; those results are preserved and are not M4 evidence.
+The user reports M2–M4 verification with pretrained OPT-125m, pinned revision
+27dcfa74d334bc871f3234de431e71c6eeba5dd6, float32, Torch 2.6.0+cu118,
+Transformers 4.57.6, PEFT 0.20.0 and RTX A2000 12GB. M4 total projection
+decomposition and reconstructed full-forward logits matched exactly. The local
+CPU evidence and historical pending-SERAPH notes below are retained separately.
 
 ## Measured local evidence
 

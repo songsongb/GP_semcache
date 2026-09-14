@@ -1,4 +1,4 @@
-# SemCache reproduction — Milestones 1–4
+# SemCache reproduction — Milestones 1–5
 
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
@@ -6,11 +6,22 @@ INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repos
 root is the primary specification. This root serves as the requested
 `semcache-repro/` directory; the supplied paper is preserved in place.
 
-**Status:** Milestones 2–3 are user-reported real-GPU verified on SERAPH.
-Milestone 4 LoRA decomposition is implemented and CPU-tested; its pretrained
-and CUDA verification is pending. Paper performance trends have not been
-reproduced. The paper model/dataset target is OPT-6.7B FP16 + MultiWOZ.
-The default demo uses neither pretrained weights nor dataset samples.
+**Current status:** M1–M5 are implemented. M5 is CPU-tested with random tiny
+OPT and controlled, non-trained PEFT adapters; pretrained M5 and CUDA M5 are
+**NOT YET VERIFIED**. M2–M4 are **user-reported REAL-GPU VERIFIED on SERAPH**
+with pretrained OPT-125m. Paper performance results are not reproduced.
+See [Milestone 5 status](docs/milestone5_status.md) for current evidence; older
+sections below preserve milestone-specific historical execution notes.
+
+| Milestone | Scope |
+|---|---|
+| M1 | Logical primitives |
+| M2 | Real QKV capture and physical cache |
+| M3 | Reuse injection and output effects |
+| M4 | LoRA / EdgeLoRA decomposition |
+| M5 | Integrated controlled SemCache prefill system |
+| M6 | Paper-scale experiments and remaining generation integration — future work |
+
 
 SemCache caches **per-layer Q, K and V projection blocks** across users within
 intent clusters. It does not cache final answers, and Hugging Face
@@ -123,7 +134,11 @@ storage pointers, including views. Tensor storage and logical entry size must
 not be mutated after insertion. Each pool belongs to one model/tokenizer
 namespace and is currently single-threaded.
 
-## Full-pipeline scope and historical execution blockers
+## Historical pre-M5 scope and execution blockers
+
+The following list records earlier milestone boundaries. The M5 section below
+supersedes overlap selection, integrated policy, attention impact and history
+limitations; distributed execution and paper workloads remain deferred.
 
 - Full reuse policy, non-overlapping multi-span selection, distributed
   layer-by-layer integration, and generation correctness. Controlled single-span
@@ -346,10 +361,9 @@ frozen OPT model. It does not validate personalized-task quality or safe
 cross-user reuse. Fig. 6, TinyBERT clustering, training, the full multi-user
 pipeline and workload remain out of scope.
 
-**IMPLEMENTED and CPU-TESTED**, using random tiny OPT. **PRETRAINED-MODEL TESTED
-and REAL-GPU VERIFIED: NOT YET VERIFIED for Milestone 4.** The user reports
-Milestones 2 and 3 already real-GPU verified on SERAPH; historical local notes
-above do not supersede those results. Current M4 evidence and limitations are
+**IMPLEMENTED, CPU-TESTED, and user-reported PRETRAINED-MODEL TESTED /
+REAL-GPU VERIFIED on SERAPH for Milestone 4.** Historical local measurements
+remain separate from the user-reported SERAPH verification. Current M4 evidence and limitations are
 in [docs/milestone4_status.md](docs/milestone4_status.md).
 
 Use `python -m pip install -e '.[lora,test]'` when PEFT is absent. This optional
@@ -399,3 +413,67 @@ python scripts/14_validate_edgelora_projection_path.py --config configs/developm
 The integration test is CPU/local-only and cleanly skips missing OPT files.
 Only actual successful CUDA script runs can establish M4 REAL-GPU VERIFIED.
 Synthetic-adapter similarity cannot establish personalized quality or safe reuse.
+
+
+## Milestone 5: integrated controlled SemCache
+
+`SemCacheEngine` connects tokenizer → fixture/HF encoder → nearest intent cluster
+→ w=3 exact token windows → global cache lookup → deterministic non-overlapping
+selection → native PEFT projection on **unmatched rows only** → actual attention,
+FFN and logits → attention impact → CHU/history → admission/eviction. Manual PBR
+recalculates impact from recent per-cluster query observations.
+
+The cache owns TOTAL Q/K/V per layer, including the source user's LoRA. Source
+positions are metadata; matching works at different target positions. Cross-user
+reuse is approximate and output effects are recorded against the target user's
+normal PEFT baseline. It does not replace the source delta with the target delta.
+All results retain `safe_reuse_claimed=false`.
+
+Scripts 15/16 validate fixed semantic and numerical fixtures without downloads.
+Script 18 checks two disjoint cache windows, native row indices and final logits
+against an exact control. Script 17 repeats that gate, then executes controlled
+health/weather queries from user_a/user_b. The wrapper records each layer/Q/K/V's
+actual native-row subset; it never computes a full projection then overwrites it.
+Any gate failure aborts before approximate reuse. The fixed 1e-6 tolerance is an
+implementation check, not a safe-reuse threshold.
+
+Logical capacity stays 20 GB; physical tensors are stored on CPU. Optional
+`--logical-capacity-bytes N` on script 17 forces development eviction; script 16
+uses a separate tiny 20-byte logical fixture. No physical 20 GB allocation occurs.
+Block lookup ratio and unique token reuse ratio are separate development metrics.
+Analytical saved FLOPs/communication elements and dtype-aware bytes are separate
+from measured output errors; there is no wall-clock speedup claim.
+
+The optional HF encoder requires an explicit `semantic_encoder.checkpoint`,
+`semcache.encoder_kind: huggingface_text` and dimension-compatible
+`semcache.initial_centroids`. No TinyBERT checkpoint is silently selected.
+Default M5 uses deterministic fixture vectors with two development clusters.
+All initialization, matching, head aggregation and scheduling choices are listed
+in [the reproduction ledger](docs/reproduction_choices.md#milestone-5-integrated-prefill-system).
+
+Run on SERAPH with existing local pretrained weights, in this order:
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+conda activate semcache
+cd /data/khuss/repos/GP_semcache
+python -m pytest -q
+SEMCACHE_OPT_INTEGRATION=1 python -m pytest -q
+python scripts/15_validate_semantic_frontend.py --config configs/development.yaml
+python scripts/16_validate_cache_policy.py --config configs/development.yaml
+python scripts/18_validate_mixed_projection.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+python scripts/17_run_semcache_controlled_trace.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6 --compare-baseline
+```
+
+Outputs under `results/raw/`: `semantic_frontend_validation.csv`,
+`cache_policy_validation.csv`, `mixed_projection_validation.csv` plus JSON,
+`semcache_controlled_trace.csv` plus JSON, and `semcache_events.jsonl`.
+Summary CSV holds per-query metrics; event JSONL holds keys, source/target spans,
+policy scores, metric mutations, allocation/eviction and projection row indices.
+Tensors are never serialized into JSON. Optional pretrained pytest remains
+CPU/local-only; scripts 18/17 with `--device cuda` provide the GPU evidence.
+
+M5 covers prefill. `lookup_latest_token` explicitly prepares the decode lookup
+interface, but does not integrate past-key-values or a generation loop. M6 must
+address those and paper-scale experiments. No MultiWOZ/CoQA/SNIPS workload,
+trained adapters, BLEU, Fig. 6 or other paper performance reproduction is included.

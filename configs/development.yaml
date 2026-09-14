@@ -42,10 +42,11 @@ semantic_impact:
   rho: 0.8
   pbr_interval_queries: 100
   mode: chu+pbr
-  provider: unavailable
+  provider: actual_attention_rows  # M5: mean heads; row L2; sum tokens/layers.
+  history_lambda: 100
 semantic_encoder:
   backend: huggingface_text
-  checkpoint: huawei-noah/TinyBERT_General_4L_312D
+  checkpoint: null  # Must be explicitly supplied; paper checkpoint unspecified.
   revision: main
   pooling: masked_mean
   max_length: 512
@@ -129,3 +130,11 @@ lora:
     user_a_seed: 101
     user_b_seed: 202
     initialization_scale: 0.01
+
+# M5 uses existing top-level paper settings; no duplicate competing defaults.
+semcache:
+  physical_storage_device: cpu
+  encoder_kind: fixture
+  fixture_centroids: [[0.0, 0.0], [10.0, 10.0]]  # Development choice; C=2.
+  overlap_policy: earliest_start_then_impact_then_key
+  pbr_trigger: manual  # Paper low-load scheduler unspecified.

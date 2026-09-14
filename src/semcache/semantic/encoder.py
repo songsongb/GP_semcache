@@ -32,6 +32,8 @@ class HuggingFaceTextEncoder(SemanticEncoder):
     """
     def __init__(self, checkpoint, revision, pooling="masked_mean", max_length=512,
                  device="cpu", local_files_only=True, backend="huggingface_text"):
+        if not checkpoint:
+            raise ValueError('Supply an explicit encoder checkpoint; the paper does not specify one')
         if pooling != "masked_mean" or backend != "huggingface_text":
             raise ValueError("Unsupported semantic encoder policy")
         from transformers import AutoModel, AutoTokenizer

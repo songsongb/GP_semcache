@@ -202,3 +202,43 @@ Milestone 4, whose local evidence is random tiny OPT on CPU only.
   Transformers 4.57.6. The existing loader, deterministic algorithms and original
   PyTorch checkpoint loading choice are preserved. No CUDA M4 evidence exists
   locally. See [milestone4_status.md](milestone4_status.md) for measured status.
+
+## Milestone 5: integrated prefill system
+
+This section supersedes historical statements above that overlap resolution,
+attention impact, observation history and the integrated pipeline are absent.
+M2–M4 are **user-reported REAL-GPU VERIFIED** on SERAPH, including pretrained
+OPT-125m, Torch 2.6.0+cu118 / Transformers 4.57.6 / PEFT 0.20.0. M5 has separate
+local CPU evidence; it is not yet pretrained-model or CUDA verified.
+
+| Concern | Paper definition / setting | Executable reproduction choice |
+|---|---|---|
+| Semantic encoding | TinyBERT, checkpoint unspecified | Existing `ControlledEncoder` for deterministic tests; existing optional HF masked-mean text encoder requires explicit nonempty checkpoint. The old arbitrary configured checkpoint is removed. The Eq. 7 embedding bridge remains unresolved. |
+| Centroids | Eq. 8 nearest Euclidean; Eq. 9 incremental mean; interval 100 queries | Explicit fixture centroids, initial counts zero; retain existing frozen-global-batch assignment then buffered Eq. 9 updates. Interval 1 supports immediate updates. Two fixture clusters are development-only, not a universal paper C. Optional HF mode requires explicit dimension-compatible initial centroids. |
+| Subsequences | Overlapping w=3 windows | LLM token IDs, zero-based end-exclusive spans; all valid windows, including any tokenizer special IDs, participate in M5. |
+| Matching / index | Cluster-local subsequences, notation (c,p); equality unspecified | Exact token tuple within cluster; collision-safe `(cluster_id, token_tuple)` key. Source positions do not constrain target positions. One model/tokenizer namespace per engine. |
+| Overlap | Fetch non-overlapping blocks | Sort target start ascending, semantic impact descending as utility, then lexicographic semantic key; greedy unique-position mask. Utility tie-breaking is a choice, not Eq. 11/12. |
+| Block representation | Attention consumes combined Q/K/V, varying by layer | One semantic entry bundles distinct per-layer compact tensor tuples; `component_scope=total_qkv`, source user retained. No base/delta substitution. Entries admitted after mixed forwards contain the projections actually consumed, which may themselves include previous reuse. |
+| Frequency / age | Admission appearance F; eviction reuse F; time since access A | Retain trailing 100 global queries of occurrence counters. Lookup counts hits without changing reuse F; only accepted/reused windows increment F and reset last access. One logical tick per query. Multiple reused occurrences of a key each count as reuse/CHU. |
+| Normalization | Max-normalized metrics | Reuse existing helper: admission pool plus candidate, appearance F throughout that population; eviction current pool including newly inserted candidate, reuse F. Zero maximum maps to zero. No all-time maxima. |
+| Admission / eviction | Eq. 11 strict score > .3; Eq. 12 largest score | Preserve tested policies and weights. Candidate evaluated with logical metadata; physical factory called only after admission. Candidate can itself be the maximum-score eviction victim. Oversized candidates denied without allocation. Same-score eviction uses lexicographic semantic key. Each miss key considered once per query, at leftmost occurrence. |
+| Impact | Attention-weight norms over subsequence tokens/layers | Actual eager attention `[1,heads,query,key]`: L2 over each key row, **mean over heads**, sum over tokens and all layers. Float64 reduction. Not QKV cosine. |
+| CHU | rho=.8 | Existing updater arithmetic; applied only to actual reused windows, using their current target span attention. |
+| PBR | Lambda=100 recent cluster queries; conditional mean; low load | Bounded per-cluster history with ID/order, keys and actual impacts. Repeated occurrences of a key within one query contribute their mean, so each query has one indicator/observation. Explicit manual operation, no low-load scheduler; denominator zero retains old I. Historical `pbr_interval_queries` remains for M1 API compatibility; M5 uses `history_lambda` and manual trigger separately. |
+| Mixed projection | Reuse cached tokens; compute unmatched base+LoRA | Inference-only batch-one local instance-forward context; native PEFT receives only unmatched hidden rows for each Q/K/V/all layers; gather/scatter fills full output. No installed source edits. Full projection hooks are rejected because capture validation would recompute cached rows. Context records passive CPU projections for candidate evaluation and restores forwards on success/failure. |
+| Exact gate | No numerical implementation tolerance specified | Fixed 1e-6 absolute/relative projection and logit checks, KL checks and argmax agreement; two disjoint cached windows plus unmatched rows. This is an identity-control tolerance, not a safe reuse threshold. Script 17 repeats the gate before approximate reuse, even if script 18 ran earlier. |
+| Storage | Logical default 20 GB | Decimal 20 billion-byte budget, CPU physical storage by default. Logical size uses actual configured development QKV dimensions/dtype, excluding metadata overhead; no 20GB preallocation. Captured forward outputs are transient instrumentation, not admitted cache allocation or peak memory measurement. |
+| Savings | 6n'd² base FLOPs; 6n'dr LoRA FLOPs; 4n'd communication elements per layer | Report all-layer sums, separately marked analytical. Communication bytes use one hidden dtype size plus three delta dtype sizes. No network or wall-clock speedup measurement. |
+| Trace | Paper workload not used | Controlled health/weather strings, rank-8 untrained M4 fixtures. No safety/personalization claim; `safe_reuse_claimed=false` throughout. Local tiny-model CLI tests use a character tokenizer; pretrained scripts use the actual LLM tokenizer. |
+| Decode | Latest-token-only matching after first token | Explicit singleton-key lookup API with separate target position. w=3 prefill entries cannot satisfy a singleton match. Decode cache population, past-key-values execution and the generation loop are deferred to M6; no pretend full algorithm coverage. |
+
+M5 settings extend the existing top-level YAML keys instead of adding duplicate
+nested versions of the same paper defaults. `semcache` contains storage, encoder,
+fixture centroids, overlap and manual-PBR choices. Unsupported policies fail.
+Scripts 15/16 are fixed numerical validators (load the selected config but use
+explicit fixture values); script 16 overrides capacity locally to 20 bytes.
+Scripts 17/18 use all transformer layers, no `--layers` subset. Main execution is
+single-process logical EdgeLoRA, not a physical distributed UD/ES deployment.
+Full dataset workloads, trained adapters, BLEU, network emulation and Fig. 6–11 /
+Table II reproduction remain out of scope. Optional standalone HF probe 19 was
+not needed; the pluggable HF interface is available, with no checkpoint tested.
