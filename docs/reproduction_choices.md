@@ -242,3 +242,16 @@ single-process logical EdgeLoRA, not a physical distributed UD/ES deployment.
 Full dataset workloads, trained adapters, BLEU, network emulation and Fig. 6–11 /
 Table II reproduction remain out of scope. Optional standalone HF probe 19 was
 not needed; the pluggable HF interface is available, with no checkpoint tested.
+
+
+## Milestone 6A: experimental foundation
+
+M2–M5 pretrained OPT-125m SERAPH GPU verification is user-reported at the
+start of M6A; earlier local-only M5 notes are historical. M6A adds explicit
+source transformations and cost equations, superseding the earlier deferred
+dataset/cost interfaces. See [paper specification](paper_experiment_spec.md)
+and [workload reconstruction](workload_reconstruction.md) for the complete
+PAPER_DEFINED / REPRODUCTION_CHOICE ledger. No hidden TinyBERT checkpoint,
+adapter training recipe or generation protocol is chosen. Logical simulations
+have unavailable attention impact; they do not fabricate CHU/PBR. Paper
+references remain read-only comparison data and never tune the simulator.

@@ -20,3 +20,9 @@ results/figures/*
 !results/raw/.gitkeep
 !results/aggregate/.gitkeep
 !results/figures/.gitkeep
+
+# M6 prepared real workloads and their manifests
+results/workloads/*
+results/manifests/*
+!results/workloads/.gitkeep
+!results/manifests/.gitkeep

@@ -9,6 +9,7 @@ from .cache.metric_manager import CacheMetricManager, attention_impact
 from .cache.cache_metrics import normalize
 from .edgelora.mixed_projection import mixed_projection_path
 from .evaluation.logit_metrics import compare_logits
+from .simulation.cost_model import projection_savings
 
 
 class SemCacheEngine:
@@ -142,9 +143,10 @@ class SemCacheEngine:
         module = self.adapter.projection_module(0, 'q')
         d, r, layers = module.in_features, module.r[user_id], len(self.adapter.layers)
         # Analytical equations per layer, then sum over the all-layer scope.
-        savings = dict(paper_estimated_base_flops_saved=6*reused*d*d*layers,
-            paper_estimated_lora_flops_saved=6*reused*d*r*layers,
-            paper_estimated_comm_elements_saved=4*reused*d*layers)
+        analytical = projection_savings(reused, d, r, layers)
+        savings = dict(paper_estimated_base_flops_saved=analytical['base_flops_saved'],
+            paper_estimated_lora_flops_saved=analytical['lora_flops_saved'],
+            paper_estimated_comm_elements_saved=analytical['comm_elements_saved'])
         # PEFT casts hidden rows to adapter dtype for the delta calculation.
         comm_bytes = reused*d*layers*(module.get_base_layer().weight.element_size()
                                       + 3*module.lora_B[user_id].weight.element_size())
@@ -168,6 +170,63 @@ class SemCacheEngine:
             baseline_comparison_available=baseline is not None, **quality,
             metric_source='measured except logical capacity and paper_estimated analytical savings', safe_reuse_claimed=False)
         return dict(summary=row, events=self.events[event_start:], logits=logits, projection_audit=audit.records)
+
+    def logical_query(self, query_text, user_id, query_id, *, logical_block_bytes):
+        """Workload/cache-event simulation using the M5 policies, without tensors.
+
+        No attention provider: impact stays None, CHU/PBR unavailable. Selected
+        positions represent predicted reuse, not executed projection reuse.
+        """
+        self.query_id = query_id
+        start = len(self.events)
+        ids = list(self.tokenizer(query_text)['input_ids'])
+        if not ids:
+            raise ValueError('Empty tokenized query')
+        vector = self.encoder.encode([query_text])[0]
+        cluster = self.clusterer.assign(vector)
+        self.clusterer.observe(vector)
+        windows = self.extractor.extract(ids)
+        self.metrics.arrive([self.matcher.key(cluster, w) for w in windows])
+        self.emit('CLUSTER_ASSIGN', cluster_id=cluster, execution_mode='ANALYTICAL_SIMULATION')
+        self.emit('SUBSEQUENCE_EXTRACT', candidate_windows=len(windows))
+        hits, misses = [], []
+        for w in windows:
+            entry = self.cache.lookup(self.matcher.key(cluster, w), record_reuse=False)
+            self.emit('HIT' if entry else 'MISS', cluster_id=cluster, target_start=w.start, token_ids=w.token_ids)
+            if entry:
+                hits.append(CacheHit(w, entry, entry.impact or 0.0))
+            else:
+                misses.append(w)
+        selected, mask = select_nonoverlapping(hits, len(ids))
+        for hit in selected:
+            self.cache.record_reuse(hit.entry)
+        considered = set()
+        admissions = candidates = evictions = 0
+        def cache_event(kind, entry, score):
+            nonlocal admissions, evictions
+            admissions += int(kind == 'INSERT')
+            evictions += int(kind == 'EVICT')
+            self.emit(kind, **self.entry_fields(entry), eviction_score=score)
+        for w in misses:
+            key = self.matcher.key(cluster, w)
+            if key in considered or key in self.cache.entries:
+                continue
+            considered.add(key)
+            candidates += 1
+            entry = CacheEntry(cluster, w.token_ids, (w.start,w.end), logical_block_bytes,
+                qkv_metadata=dict(component_scope='logical_total_qkv', source_user=user_id))
+            normalized = self.cache.admission_metrics(entry, self.metrics.frequencies[key], self.metrics.frequencies)
+            allowed = self.cache.admission.admit(normalized) and logical_block_bytes <= self.cache.capacity_bytes
+            self.emit('ADMIT' if allowed else 'DENY', admission_score=self.cache.admission.score(normalized), **self.entry_fields(entry))
+            self.cache.insert(entry, self.metrics.frequencies[key], self.metrics.frequencies, on_event=cache_event)
+        return dict(summary=dict(query_id=query_id, user_id=user_id, cluster_id=cluster,
+            candidate_windows=len(windows), block_lookup_count=len(windows), block_hit_count=len(hits),
+            reused_token_count=sum(mask), query_token_count=len(ids),
+            admission_count=admissions, admission_candidate_count=candidates, eviction_count=evictions,
+            logical_global_cache_bytes=self.cache.logical_cache_bytes, physical_cache_tensor_bytes=0,
+            impact_available=False, chu_pbr_status='unavailable_without_attention_provider',
+            execution_scope='prefill_only', metric_source='SIMULATED', safe_reuse_claimed=False),
+            events=self.events[start:])
 
     def pbr(self, cluster):
         updates = self.metrics.pbr(cluster)

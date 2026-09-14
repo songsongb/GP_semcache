@@ -11,6 +11,8 @@ dependencies = ["PyYAML>=6,<7"]
 [project.optional-dependencies]
 models = ["torch>=2.2,<3", "transformers>=4.40,<5"]
 lora = ["torch>=2.2,<3", "transformers>=4.40,<5", "peft==0.20.0"]
+datasets = ["datasets>=2.18,<5"]
+evaluation = ["sacrebleu>=2.4,<3"]
 test = ["pytest>=8,<10"]
 
 [tool.setuptools.packages.find]

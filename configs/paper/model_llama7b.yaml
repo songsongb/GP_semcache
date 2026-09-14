@@ -1,0 +1,15 @@
+name: LLaMA-7B
+family: llama
+hidden_size: 4096
+kv_dimension: 4096
+layers: 32
+weight_precision_bits: 4
+lora_rank: 8
+model_id: null
+revision: null
+local_measured_execution_available: false
+architecture_provenance: REPRODUCTION_CHOICE
+precision_provenance: PAPER_DEFINED
+architecture_source: Explicit LLaMA v1 7B architecture; exact paper checkpoint unspecified
+qkv_precision_bits: null
+communication_element_bytes: null

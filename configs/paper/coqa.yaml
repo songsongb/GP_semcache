@@ -1,0 +1,3 @@
+extends: common.yaml
+dataset: coqa
+cluster_count: 40

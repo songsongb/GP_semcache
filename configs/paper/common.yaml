@@ -1,0 +1,100 @@
+seed: 42
+num_users: 50
+lora_rank: 8
+cluster_update_interval_queries: 100
+clustering:
+  initialization: first_k
+  update_rule: batched_incremental_mean
+subsequence_window: 3
+match_rule: exact_token_ids_within_cluster
+logical_cache_capacity_gb: 20
+admission:
+  alpha: 0.5
+  beta: 0.3
+  delta: 0.2
+  threshold: 0.3
+eviction:
+  alpha: 0.4
+  beta: 0.3
+  gamma: 0.2
+  delta: 0.1
+cache:
+  normalization: current_pool_plus_candidate
+  zero_max: 0.0
+  age_unit: query
+  admission_frequency_window_queries: 100
+semantic_impact:
+  rho: 0.8
+  pbr_interval_queries: 100
+  mode: chu+pbr
+  provider: actual_attention_rows
+  history_lambda: 100
+execution_mode: ANALYTICAL_SIMULATION
+execution_scope: prefill_only
+baseline: SEMCACHE
+cache_storage_mode: logical_only
+model_spec: opt67b
+model:
+  model_id: null
+  revision: null
+semantic_encoder:
+  family: TinyBERT
+  model_id: null
+  revision: null
+  pooling: masked_mean
+  max_length: 512
+workload:
+  max_queries: null
+  order: source_order
+  transformation: raw_query
+user_assignment:
+  mode: seeded_round_robin
+dataset_source:
+  input_path: null
+  hf_id: null
+  hf_config: null
+  revision: null
+  split: train
+system:
+  es_gpu: NVIDIA A100 80GB
+  es_cpu: Intel Xeon Gold 6338
+  ud_cpu_cores: 4
+  ud_ghz: 2.3
+  ud_ram_gb: 8
+  bandwidth_mbps: 200
+  es_tflops: null
+  ud_tflops: null
+  communication_element_bytes: null
+  qkv_precision_bits: null
+generation:
+  max_new_tokens: null
+  do_sample: null
+  temperature: null
+  top_p: null
+  num_beams: null
+  eos_handling: null
+  seed: null
+bleu:
+  implementation: null
+  tokenizer: null
+  smoothing: null
+  scope: null
+  effective_order: null
+  lowercase: null
+reported_hit_rate_definition: null
+provenance:
+  paper_defaults: PAPER_DEFINED
+  seed: REPRODUCTION_CHOICE
+  workload: REPRODUCTION_CHOICE
+  user_assignment: REPRODUCTION_CHOICE
+  execution_mode: REPRODUCTION_CHOICE
+  execution_scope: REPRODUCTION_CHOICE
+  cache_storage_mode: REPRODUCTION_CHOICE
+  semantic_encoder_checkpoint: REPRODUCTION_CHOICE
+  model_checkpoint: REPRODUCTION_CHOICE
+  generation: REPRODUCTION_CHOICE
+  system_effective_compute_and_activation_precision: REPRODUCTION_CHOICE
+lora:
+  implementation: Hugging Face PEFT
+  target_matrices: [Q, K, V]
+  training_recipe: null

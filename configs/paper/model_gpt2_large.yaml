@@ -1,0 +1,15 @@
+name: GPT2-Large
+family: gpt2
+hidden_size: 1280
+kv_dimension: 1280
+layers: 36
+weight_precision_bits: 32
+lora_rank: 8
+model_id: openai-community/gpt2-large
+revision: null
+local_measured_execution_available: false
+architecture_provenance: REPRODUCTION_CHOICE
+precision_provenance: PAPER_DEFINED
+architecture_source: https://huggingface.co/openai-community/gpt2-large/raw/main/config.json
+qkv_precision_bits: null
+communication_element_bytes: null

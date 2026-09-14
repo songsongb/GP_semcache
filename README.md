@@ -1,4 +1,4 @@
-# SemCache reproduction — Milestones 1–5
+# SemCache reproduction — Milestones 1–6A
 
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
@@ -6,12 +6,13 @@ INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repos
 root is the primary specification. This root serves as the requested
 `semcache-repro/` directory; the supplied paper is preserved in place.
 
-**Current status:** M1–M5 are implemented. M5 is CPU-tested with random tiny
-OPT and controlled, non-trained PEFT adapters; pretrained M5 and CUDA M5 are
-**NOT YET VERIFIED**. M2–M4 are **user-reported REAL-GPU VERIFIED on SERAPH**
-with pretrained OPT-125m. Paper performance results are not reproduced.
-See [Milestone 5 status](docs/milestone5_status.md) for current evidence; older
-sections below preserve milestone-specific historical execution notes.
+**Current status:** M1–M5 and the M6A experimental foundation are implemented.
+M2–M5 are **user-reported REAL-GPU VERIFIED on SERAPH** with pretrained
+OPT-125m. M6A is **CPU-TESTED** using synthetic datasets and random tiny OPT;
+real datasets, pretrained M6A and CUDA M6A are **NOT YET VERIFIED**.
+**No paper result is reproduced.** See [M6A status and commands](docs/milestone6a_status.md),
+[paper experiment specification](docs/paper_experiment_spec.md), and
+[workload reconstruction](docs/workload_reconstruction.md).
 
 | Milestone | Scope |
 |---|---|
@@ -20,7 +21,8 @@ sections below preserve milestone-specific historical execution notes.
 | M3 | Reuse injection and output effects |
 | M4 | LoRA / EdgeLoRA decomposition |
 | M5 | Integrated controlled SemCache prefill system |
-| M6 | Paper-scale experiments and remaining generation integration — future work |
+| M6A | Dataset/workload, provenance, logical smoke and analytical experiment foundation |
+| M6B onward | Paper evaluation and full-generation validation — future work |
 
 
 SemCache caches **per-layer Q, K and V projection blocks** across users within
@@ -477,3 +479,46 @@ M5 covers prefill. `lookup_latest_token` explicitly prepares the decode lookup
 interface, but does not integrate past-key-values or a generation loop. M6 must
 address those and paper-scale experiments. No MultiWOZ/CoQA/SNIPS workload,
 trained adapters, BLEU, Fig. 6 or other paper performance reproduction is included.
+
+
+## Milestone 6A experiment foundation
+
+Paper configs live in `configs/paper/`; dataset files explicitly inherit
+`common.yaml` through the M6 loader. All specified defaults are preserved;
+unknown encoder/generation/BLEU settings remain null. Each config leaf and
+result metric has provenance. Execution modes are explicit and full-generation
+execution currently raises a blocker. Paper reference tables never feed the
+simulation, and no parameters are fitted to them.
+
+Scripts 20–23 prepare sources, validate hashes and static reuse opportunities,
+check unit-safe equations, and consume prepared workloads through the M5 engine
+in logical smoke mode. No source is downloaded without `--allow-download` and
+an explicit HF ID. Local JSON/JSONL ingestion works without `datasets`.
+Optional dependency groups: `datasets` for HF ingestion; `evaluation` for
+SacreBLEU. Scripts never install packages. Normal pytest needs no external data,
+network or CUDA; numerical BLEU checks skip when SacreBLEU is absent.
+
+```bash
+python scripts/22_validate_simulation_model.py --config configs/paper/common.yaml
+python scripts/20_prepare_paper_workloads.py --dataset multiwoz --config configs/paper/multiwoz.yaml --input-path /path/to/multiwoz_train.json --output results/workloads/multiwoz.jsonl --seed 42
+python scripts/21_validate_paper_workloads.py results/workloads/multiwoz.jsonl --config configs/paper/multiwoz.yaml
+python scripts/23_run_workload_smoke.py --workload results/workloads/multiwoz.jsonl --config configs/paper/multiwoz.yaml --max-queries 100
+```
+
+The default raw-query transformation, source order and SHA-seeded round-robin
+logical assignment are documented reproduction choices. Source and workload
+hashes, reconstruction settings and run environments are written to manifests.
+Audit windows use an explicit whitespace proxy unless a pinned tokenizer is
+supplied. Logical smoke has no tensors or attention-derived impact: it does not
+establish CHU/PBR behavior, learned semantic quality or real projection reuse.
+It uses dataset-specific C and records an explicit development FP16 logical
+activation-payload choice, independent of model weight precision.
+
+20GB is a logical budget. Physical cache tensors, GPU allocated/reserved memory,
+parameters, adapters and analytical memory remain separately scoped. Compute
+rates and communication element precision must be explicit before latency is
+produced. Eq.19 retains all attention/FFN costs; 512/300 is only the simplified
+Eq.20 ratio. Measured OPT-125m/A2000 and paper OPT-6.7B/A100 latency are
+NOT_COMPARABLE. Full Table II, Fig.6–10, BLEU and paper-model GPU runs remain
+future milestones. Earlier README sections describe historical milestone scope;
+this section supersedes their deferred dataset/cost-interface statements.

@@ -1,0 +1,15 @@
+name: OPT-6.7B
+family: opt
+hidden_size: 4096
+kv_dimension: 4096
+layers: 32
+weight_precision_bits: 16
+lora_rank: 8
+model_id: facebook/opt-6.7b
+revision: null
+local_measured_execution_available: false
+architecture_provenance: REPRODUCTION_CHOICE
+precision_provenance: PAPER_DEFINED
+architecture_source: https://huggingface.co/facebook/opt-6.7b/raw/main/config.json
+qkv_precision_bits: null
+communication_element_bytes: null

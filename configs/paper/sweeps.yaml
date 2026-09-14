@@ -1,0 +1,60 @@
+status: SPECIFICATION_ONLY_NOT_EXECUTED
+clusters:
+- 10
+- 20
+- 30
+- 40
+- 50
+windows:
+- 1
+- 2
+- 3
+- 4
+- 5
+cache_gb:
+- 5
+- 10
+- 20
+- 40
+admission_threshold:
+- 0.1
+- 0.2
+- 0.3
+- 0.4
+- 0.5
+users:
+- 10
+- 50
+- 100
+- 200
+lora_rank:
+- 4
+- 8
+- 16
+pbr_lambda:
+- 100
+- 500
+- 1000
+query_tokens_approximate:
+- 50
+- 100
+- 200
+- 400
+bandwidth:
+  setup_mbps: 200
+  figure_labels:
+  - 200M
+  - 500M
+  - 1G
+  figure_axis: Bandwidth (Bps)
+  resolved_mbps_points: null
+  status: 'PAPER_UNCLEAR: Fig.8 axis conflicts with setup Mbps; do not execute until
+    resolved'
+sources:
+  windows: Table IV
+  cache_gb: Fig.7
+  admission_threshold: Fig.7
+  users: Fig.8
+  bandwidth: Fig.8
+  clusters: Table III
+provenance: PAPER_DEFINED
