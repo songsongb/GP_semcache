@@ -14,7 +14,7 @@ def load_model(config):
     if model_config.model_type != "opt":
         raise ValueError("Only OPT is supported")
     tokenizer = AutoTokenizer.from_pretrained(c["tokenizer"], revision=c["tokenizer_revision"], local_files_only=c["local_files_only"], trust_remote_code=False)
-    model = AutoModelForCausalLM.from_pretrained(c["name"], config=model_config, torch_dtype=dtype,
+    model = AutoModelForCausalLM.from_pretrained(c["name"], config=model_config, dtype=dtype, use_safetensors=False,
                 attn_implementation=c["attention_implementation"], **common).to(c["device"]).eval()
     metadata = {"model": c["name"], "model_revision": c["revision"],
                 "resolved_model_revision": getattr(model.config, "_commit_hash", None),
