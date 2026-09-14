@@ -1,4 +1,4 @@
-# SemCache reproduction — Milestones 1–2
+# SemCache reproduction — Milestones 1–3
 
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
@@ -121,10 +121,11 @@ storage pointers, including views. Tensor storage and logical entry size must
 not be mutated after insertion. Each pool belongs to one model/tokenizer
 namespace and is currently single-threaded.
 
-## Not implemented and execution blockers
+## Full-pipeline scope and historical execution blockers
 
-- Actual cross-query QKV reuse, non-overlapping reuse selection, attention
-  replacement, layer-by-layer MHA/FFN integration, and generation correctness.
+- Full reuse policy, non-overlapping multi-span selection, distributed
+  layer-by-layer integration, and generation correctness. Controlled single-span
+  projection substitution is implemented in Milestone 3.
 - Physical UD/ES placement, communication, trained per-user LoRA execution.
 - Attention-norm extraction, recent-query observation storage for Eq. 13,
   low-load PBR scheduling, and the OPT-embedding → TinyBERT bridge in Eq. 7.
@@ -146,7 +147,7 @@ compile/import checks and controlled scripts run. PyTorch/Transformers are
 absent, so tensor and tiny-OPT tests are skipped; neither OPT-6.7B nor GPU timing
 has been validated. See `results/raw/environment.json` for the environment report.
 
-## Milestone 2 status and execution
+## Historical Milestone 2 local status and execution
 
 - Milestone 1: logical SemCache pipeline — complete.
 - Actual Q/K/V capture: implemented; real OPT execution and numerical validation pending.
@@ -253,3 +254,84 @@ reductions use float64 on CPU: relative L2 is `||A-B|| / ||A||`, with A the refe
 For a zero reference and nonzero candidate it is null; both zero vectors have
 cosine 1 and relative L2 0, while one zero vector has cosine 0. Plots show the full
 cosine range, including low or negative similarities.
+
+
+## Milestone 3: controlled cached-QKV output impact
+
+Implemented: one-layer, one-window `q`, `k`, `v`, or `qkv` substitution in a real
+OPT forward. Source A projections pass through the existing physical cache:
+**MISS → INSERT → HIT → FETCH → INJECT**. Forward hooks replace raw unscaled
+`q_proj/k_proj/v_proj` outputs before head reshaping/scaling; weights and
+Transformers source are unchanged. Hooks are always removed in `finally`.
+This instrumented experiment still computes the fresh projections and therefore
+makes no compute-saving or latency claim.
+
+QKV similarity measures representation differences. A physical cache HIT proves
+retrieval. Injection feeds retrieved values into attention. Output impact measures
+changes to B's numerical logits. **None establishes safe inference reuse**, BLEU
+preservation, task quality, cross-user reuse, or reproduction of paper results.
+The paper's OPT-6.7B FP16 workload, LoRA, Fig. 6 and full pipeline remain deferred.
+OPT-125m FP32 is the development model; an RTX A2000 12GB cannot straightforwardly
+hold OPT-6.7B FP16 plus capture/runtime memory.
+
+Scripts 08, 10 and 11 share `semantic/probes.py`. A is the identical-prefix control;
+B changes preceding context at fixed positions; C changes context and position.
+D is explicitly invalid for reuse: it forcibly retrieves A's source key for a
+negative/stress injection, never an exact-token cache match for B.
+
+Script 10 defaults to A/B, layers 0/1/5/11 and all four modes. It enforces A identity
+at every selected layer, B identity at layer 0, and causal-prefix integrity for
+all rows. Higher-layer B rows are diagnostic measurements. Script 11 defaults to
+A/B/C/D with the same layers/modes. Both stop on control violations and print
+measured values before checking them. `--tolerance 1e-6` is an absolute float32
+implementation-control tolerance, **not a safe-reuse threshold**. Overrides:
+`--layers 0 1`, `--all-layers`, `--modes qkv`, `--cases A`, `--output PATH`.
+
+CSV metrics include max/mean absolute logit difference, relative L2, cosine,
+last-position and affected-suffix mean **KL(baseline || injected)**, last argmax
+IDs/agreement, and prefix maximum error. The affected suffix includes positions
+`target_start` through the final position; the prefix is strictly before it
+(empty prefix reports zero). Reductions use CPU float64 and stable log-softmax.
+Relative L2 reuses the existing zero-reference convention (null for a nonzero
+candidate against zero). CSV/JSON record measured provenance, source/target IDs,
+positions, cache lookup kind, model revision, dtype, seed and injected bytes.
+
+Local CPU validation (2026-09-14): Python 3.10, Torch 2.6.0+cpu, Transformers
+4.57.6; 33 tests passed, 2 optional pretrained tests skipped. Random tiny OPT
+forwards verified exact control parity, prefix integrity, physical injection and
+nonzero stress effects. These are unit fixtures, not pretrained OPT-125m results.
+The integration-enabled suite also skips unavailable local weights. No model
+weights were downloaded; no real-GPU Milestone 3 results are available locally.
+Historical Milestone 2 notes above describe the previous local environment.
+The user separately reports successful SERAPH Milestone 2 validation (22 tests,
+OPT-125m CUDA capture parity and physical HIT); this is not Milestone 3 validation.
+
+Exact local commands for the temporary environment used here:
+
+```bash
+OMP_NUM_THREADS=1 /tmp/semcache-m3-venv/bin/python -m pytest -q
+OMP_NUM_THREADS=1 SEMCACHE_OPT_INTEGRATION=1 /tmp/semcache-m3-venv/bin/python -m pytest -q
+/tmp/semcache-m3-venv/bin/python -m compileall -q src scripts tests plots
+```
+
+Exact SERAPH commands (existing managed environment and locally provisioned weights):
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+conda activate semcache
+cd /data/khuss/repos/GP_semcache
+python -m pytest -q
+SEMCACHE_OPT_INTEGRATION=1 python -m pytest -q
+python scripts/10_validate_qkv_injection.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+python scripts/11_probe_qkv_reuse_output_impact.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+python plots/plot_qkv_reuse_output_impact.py
+```
+
+The loader preflight explains the required cuBLAS environment for deterministic
+CUDA; determinism is never disabled. Loading retains `use_safetensors=False`
+(the working original PyTorch checkpoint compatibility choice). Tests use local
+files only and skip unavailable pretrained weights. The optional pretrained test
+runs on CPU; the two scripts above perform CUDA validation. Default result files
+are `results/raw/qkv_injection_control.csv` and
+`results/raw/qkv_reuse_output_impact.csv`, each with a JSON sidecar. The plot uses
+measured B/C qkv rows; no results or plots are fabricated when weights are absent.

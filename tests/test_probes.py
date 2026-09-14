@@ -28,3 +28,10 @@ def test_deterministic_probe_construction():
     first = construct_probes(tokenizer, 3)
     assert first == construct_probes(tokenizer, 3)
     assert [p['probe_case'] for p in first] == list('ABCD')
+
+
+def test_negative_control_metadata():
+    case = construct_probes(FixtureTokenizer(), 3)[3]
+    assert case['probe_case'] == 'D'
+    assert case['valid_reuse_candidate'] is False
+    assert 'Negative/stress' in case['description']

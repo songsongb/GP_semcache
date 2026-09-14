@@ -5,6 +5,8 @@ def load_model(config):
     import torch
     import transformers
     from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
+    from .runtime import deterministic_cuda_preflight
+    deterministic_cuda_preflight(config["device"])
     c = config
     dtype = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}.get(c["dtype"])
     if dtype is None:

@@ -86,3 +86,48 @@ smoke passed. Torch/Transformers unavailable; model checks exited explicitly.
 No actual OPT forward, numerical projection parity, physical tensor MISS → HIT,
 or cross-query measurements have been observed here. Safe inference reuse:
 **NOT YET CLAIMED**. README contains the exact SERAPH validation commands.
+
+
+## Milestone 3 reproduction choices (2026-09-14)
+
+The supplied paper §IV-C, Eq. 14 describes fetching and combining QKV before MHA.
+This milestone validates a controlled substitution mechanism, not the paper's
+complete multi-user LoRA system or its computation-skipping optimization.
+
+1. Injection point: base_raw_unscaled_linear_projection, the actual OPT
+   q_proj/k_proj/v_proj outputs before head reshape/Q scaling. Fresh outputs are
+   cloned and only the selected window is overwritten. One layer/forward, batch 1;
+   detached device/dtype conversion, inference mode and finally-based hook cleanup.
+2. Shared A/B/C/D full-prompt fixtures are development probes, not paper workloads.
+   Exact token matching within a fixed controlled cluster remains a reproduction
+   choice; the paper does not specify this exact identity test.
+3. D is invalid for reuse. Its source key is fetched explicitly for stress injection;
+   the CSV labels this separately from a B-window exact-token HIT.
+4. The existing physical cache owns CPU copies during development. Window indices
+   are zero-based/end-exclusive; source indices in the injection API address the
+   supplied cache payload, whereas CSV source indices address the original prompt.
+5. No cosine or output threshold defines safety. The default 1e-6 absolute error
+   check enforces A identity, B layer-0 identity and causal prefix integrity only.
+   A failed invariant aborts; B/C effects otherwise remain measurements.
+6. OPT-125m FP32 is development-only. The paper setting remains OPT-6.7B FP16;
+   no quantization or large-model execution is added.
+7. Preserve original PyTorch checkpoint loading (`use_safetensors=False`): the
+   user-validated Transformers 4.57.6/OPT setup had tied-weight/meta-tensor problems
+   with the converted safetensors checkpoint. This is compatibility, not a paper rule.
+8. Deterministic CUDA requires `export CUBLAS_WORKSPACE_CONFIG=:4096:8` before
+   Python. Preflight also accepts PyTorch's supported `:16:8`; it never disables
+   deterministic algorithms or edits shell configuration.
+9. Logit metrics reduce in CPU float64. KL is baseline || injected using stable
+   log-softmax, averaged over target_start through the final position for suffix KL.
+   Prefix error uses positions strictly before target_start; empty prefix is zero.
+   No generation/BLEU/task-level quality validation is performed; all are deferred.
+10. Each case uses a fresh existing GlobalCache with one physical entry and its
+    existing admission defaults. No admission/eviction sweep or learned semantic
+    candidate selection is introduced. Hooks compute fresh projections before
+    replacement, so this measures output effects and cannot establish speedup.
+
+Current local verification supersedes historical local dependency blockers above:
+33 tests pass on CPU, including random tiny OPT forwards; 2 pretrained tests skip
+without weights even with SEMCACHE_OPT_INTEGRATION=1. No pretrained OPT-125m or
+CUDA Milestone 3 measurements were made here. User-reported Milestone 2 SERAPH
+validation remains separate. Task quality and safe reuse remain unverified.

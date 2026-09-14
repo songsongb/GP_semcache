@@ -6,7 +6,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from semcache.utils.io import load_config
 
 
-def arguments(description):
+def arguments(description, configure_parser=None):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--config", type=Path, default=ROOT / "configs/base.yaml")
     parser.add_argument("--output", type=Path)
@@ -17,6 +17,8 @@ def arguments(description):
     parser.add_argument('--window-size', type=int)
     parser.add_argument('--layers', type=int, nargs='+')
     parser.add_argument('--allow-download', action='store_true')
+    if configure_parser is not None:
+        configure_parser(parser)
     args = parser.parse_args()
     config = load_config(args.config)
     for arg, key in [('model_id', 'name'), ('dtype', 'dtype'), ('device', 'device'), ('revision', 'revision')]:

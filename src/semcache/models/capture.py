@@ -37,7 +37,7 @@ def qkv_capture(model, layers=None, storage_device='cpu', validate=True):
     try:
         for i in selected:
             for name in ('q', 'k', 'v'):
-                handles.append(getattr(adapter.layers[i].self_attn, name+'_proj').register_forward_hook(hook(i, name)))
+                handles.append(adapter.projection_modules(i)[name].register_forward_hook(hook(i, name)))
         yield capture
         if set(capture.records) != set(selected) or any(not all(n in r for n in ('q','k','v')) for r in capture.records.values()):
             raise RuntimeError('Forward did not execute all selected projections')

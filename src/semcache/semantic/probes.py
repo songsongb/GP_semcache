@@ -40,7 +40,14 @@ def construct_probes(tokenizer, window_size):
             except ValueError:
                 continue
             result.append(dict(probe_case=case, query_a=qa, query_b=qb,
-                               input_ids_a=ia, input_ids_b=ib, window_a=a, window_b=b))
+                               input_ids_a=ia, input_ids_b=ib, window_a=a, window_b=b,
+                               source_token_ids=a.token_ids, source_start=a.start, source_end=a.end,
+                               target_start=b.start, target_end=b.end,
+                               valid_reuse_candidate=case != 'D',
+                               description={'A': 'Same tokens, position and prefix; different suffix',
+                                            'B': 'Same tokens and position; different prefix',
+                                            'C': 'Same tokens; different position and prefix',
+                                            'D': 'Negative/stress control: different token spans'}[case]))
             break
         else:
             raise ValueError(f'Cannot construct case {case} for this tokenizer/window size')

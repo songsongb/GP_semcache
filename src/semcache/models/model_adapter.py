@@ -36,6 +36,12 @@ class OPTModelAdapter(ModelAdapter):
         except AttributeError as exc:
             raise ValueError("Unsupported OPT module layout") from exc
 
+    def projection_modules(self, layer_idx):
+        if not isinstance(layer_idx, int) or not 0 <= layer_idx < len(self.layers):
+            raise ValueError("Invalid projection layer")
+        attention = self.layers[layer_idx].self_attn
+        return {n: getattr(attention, n + "_proj") for n in ("q", "k", "v")}
+
     def compute_base_qkv(self, hidden_states, layer_idx):
         import torch
         if not 0 <= layer_idx < len(self.layers):
