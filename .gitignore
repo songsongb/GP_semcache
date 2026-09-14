@@ -7,3 +7,16 @@ data/processed/*
 adapters/*
 results/**/*.json
 results/**/*.csv
+
+
+# ============================================================
+# Generated experiment outputs
+# ============================================================
+results/raw/*
+results/aggregate/*
+results/figures/*
+
+# Keep result directory structure in Git
+!results/raw/.gitkeep
+!results/aggregate/.gitkeep
+!results/figures/.gitkeep
