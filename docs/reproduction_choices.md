@@ -131,3 +131,74 @@ Current local verification supersedes historical local dependency blockers above
 without weights even with SEMCACHE_OPT_INTEGRATION=1. No pretrained OPT-125m or
 CUDA Milestone 3 measurements were made here. User-reported Milestone 2 SERAPH
 validation remains separate. Task quality and safe reuse remain unverified.
+
+## Milestone 4: LoRA projection structure
+
+This section supersedes earlier statements that all LoRA execution is deferred.
+User-reported SERAPH verification covers **both Milestones 2 and 3**, including
+pretrained OPT-125m CUDA capture/cache/injection controls. That is separate from
+Milestone 4, whose local evidence is random tiny OPT on CPU only.
+
+- **Paper-derived:** Eq. (2), §III-B defines base + user-specific LoRA Q/K/V;
+  §V-A applies Hugging Face PEFT to Q/K/V; Table I sets rank 8. Eq. (17)
+  counts `nd + 3nd` communication elements per sequence per layer. The supplied
+  local PDF is the primary source. Its full deployment includes input/output
+  layers on the UD; this milestone emulates projection exchange only.
+- **Unspecified training:** learning rate, optimizer, epochs, exact user splits,
+  alpha, dropout, initialization and personalized dataset construction are not
+  sufficiently specified. No adapters are trained, no datasets are downloaded,
+  and no BLEU or personalized-task quality is claimed.
+- **Controlled fixture:** alpha=8, dropout=0, seeds user_a=101/user_b=202,
+  initialization_scale=0.01 are reproduction choices. After PEFT creation, a
+  separate CPU `torch.Generator` seeded per user generates float32 independent
+  normal samples with mean 0 and standard deviation 0.01 for **both A and B**.
+  Iteration order is increasing layer, q/k/v, then A/B, row-major tensor layout.
+  Samples are copied to the actual adapter weight dtype/device. No LoRA bias is
+  added. Default scaling is alpha/r=1; both values are configurable. PEFT
+  constructor randomness is enclosed in `torch.random.fork_rng`; fixture values
+  use only the local generators. Bitwise reproducibility is checked within the
+  installed software/hardware environment, not promised across versions.
+- **Execution:** eval + inference mode; configured nonzero dropout is disabled
+  by eval exactly as in native PEFT. Training-mode decomposition fails. Use
+  actual PEFT A/B/dropout/scaling and its input cast helper; add before casting
+  the total to the base output dtype. Base-layer bias is included once. Merged,
+  disabled, multi-active, DoRA/variant, transposed and quantized paths fail.
+  Only the active user's LoRA parameters may be trainable; PEFT freezes inactive
+  adapters on switching. All non-adapter parameters remain frozen.
+- **Shared base:** one PEFT model, two adapters, no per-user base clone. SHA-256
+  over contiguous CPU tensor bytes, shape, dtype and float64 norm for all Q/K/V
+  weights **and biases** verifies creation/switching invariance. Tiny-model tests
+  also check base parameter object identity and A/B parameter inequality.
+- **External interface:** `load_external_adapter(base_model, local_directory,
+  adapter_name='external')` loads local QKV-only vanilla PEFT adapters with base
+  changes rejected. It neither asserts training provenance nor synthesizes it;
+  callers must supply that provenance. Current scripts deliberately use
+  `controlled_fixture`, `trained_adapter=false`. The external roundtrip unit
+  test saves a synthetic fixture, not a trained adapter.
+- **Logical ES/UD:** a single process on the same device computes the base and
+  LoRA paths independently. CPU UD offload and actual networking are deferred.
+  No host/PCIe timing is interpreted as ES–UD network latency. Full-forward hooks
+  still compute native projections before replacement, so no speedup is claimed.
+- **Communication:** one hidden tensor sent per layer, three delta tensors
+  returned. `paper_comm_elements=4*n*d` is explicitly per sequence (batch one).
+  `total_comm_elements=4*batch*n*d`; `measured_tensor_bytes` sums each actual
+  tensor's `numel()*element_size()`, including potentially mixed dtypes. There
+  is no bandwidth, protocol overhead or latency model. Decomposition CSV repeats
+  the complete layer exchange on its Q/K/V rows; do not sum those three copies.
+- **Probes:** fixed_hidden_input holds user_a's captured input constant for both
+  users. full_user_forward runs the same complete query independently per user;
+  later-layer base outputs may differ because hidden states differ. Cross-context
+  A/B uses existing exact matched-token windows from full user-specific forwards.
+  These observations do not establish safe reuse. No cache is used in M4.
+- **Component scope:** base, lora_delta, total are explicit. Capturing a PEFT
+  projection records `total_raw_unscaled_linear_projection`, before OPT head
+  reshape/Q scaling. Future SemCache integration must identify attention-ready
+  combined Q/K/V. Milestone 2/3 base-only cache semantics remain intact.
+- **Tolerance:** default absolute and relative decomposition checks are 1e-6;
+  full-forward additionally checks KL and last-token argmax agreement. These are
+  implementation controls, never learned reuse thresholds. Mismatch aborts before
+  writing results; tolerance is not automatically relaxed.
+- **Version scope:** local validation uses PEFT 0.20.0, Torch 2.6.0+cpu and
+  Transformers 4.57.6. The existing loader, deterministic algorithms and original
+  PyTorch checkpoint loading choice are preserved. No CUDA M4 evidence exists
+  locally. See [milestone4_status.md](milestone4_status.md) for measured status.

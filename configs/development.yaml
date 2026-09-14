@@ -116,3 +116,16 @@ demo:
     layers: 32
     hidden_size: 4096
     bytes_per_element: 2
+# Milestone 4 only. Rank and Q/K/V targets are paper-derived.
+# Alpha, eval-mode dropout, seeds, and synthetic initialization are choices.
+lora:
+  enabled: true
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules: [q_proj, k_proj, v_proj]
+  adapter_source: controlled_fixture
+  fixture:
+    user_a_seed: 101
+    user_b_seed: 202
+    initialization_scale: 0.01

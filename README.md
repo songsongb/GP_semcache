@@ -1,4 +1,4 @@
-# SemCache reproduction — Milestones 1–3
+# SemCache reproduction — Milestones 1–4
 
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
@@ -6,8 +6,10 @@ INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repos
 root is the primary specification. This root serves as the requested
 `semcache-repro/` directory; the supplied paper is preserved in place.
 
-**Status:** controlled cache indexing works; paper performance trends have not
-been reproduced. The first model/dataset target is OPT-6.7B FP16 + MultiWOZ.
+**Status:** Milestones 2–3 are user-reported real-GPU verified on SERAPH.
+Milestone 4 LoRA decomposition is implemented and CPU-tested; its pretrained
+and CUDA verification is pending. Paper performance trends have not been
+reproduced. The paper model/dataset target is OPT-6.7B FP16 + MultiWOZ.
 The default demo uses neither pretrained weights nor dataset samples.
 
 SemCache caches **per-layer Q, K and V projection blocks** across users within
@@ -335,3 +337,65 @@ runs on CPU; the two scripts above perform CUDA validation. Default result files
 are `results/raw/qkv_injection_control.csv` and
 `results/raw/qkv_reuse_output_impact.csv`, each with a JSON sidecar. The plot uses
 measured B/C qkv rows; no results or plots are fabricated when weights are absent.
+
+## Milestone 4: PEFT decomposition and logical EdgeLoRA exchange
+
+Milestone 4 validates **base QKV + user-specific LoRA QKV = native PEFT QKV**.
+It adds two deterministic, nonzero **synthetic, untrained** adapters on one
+frozen OPT model. It does not validate personalized-task quality or safe
+cross-user reuse. Fig. 6, TinyBERT clustering, training, the full multi-user
+pipeline and workload remain out of scope.
+
+**IMPLEMENTED and CPU-TESTED**, using random tiny OPT. **PRETRAINED-MODEL TESTED
+and REAL-GPU VERIFIED: NOT YET VERIFIED for Milestone 4.** The user reports
+Milestones 2 and 3 already real-GPU verified on SERAPH; historical local notes
+above do not supersede those results. Current M4 evidence and limitations are
+in [docs/milestone4_status.md](docs/milestone4_status.md).
+
+Use `python -m pip install -e '.[lora,test]'` when PEFT is absent. This optional
+extra pins PEFT 0.20.0. The loader still uses local files by default and retains
+`use_safetensors=False`. No pytest test downloads model weights.
+
+`configs/development.yaml` adds rank=8 and q_proj/k_proj/v_proj targets
+(paper-derived). Alpha=8, dropout=0, user seeds 101/202 and normal initialization
+scale 0.01 are reproduction choices. Both A and B are explicitly initialized;
+these adapters are never called trained. See the
+[exact fixture recipe](docs/reproduction_choices.md#milestone-4-lora-projection-structure).
+The Python `load_external_adapter` interface accepts a local PEFT adapter later;
+its training provenance must be supplied independently.
+
+- Script 12: selected layers 0/1/5/11, nonzero deltas, base + delta parity, base
+  fingerprints and user_a → user_b → user_a identity. Outputs
+  `results/raw/lora_decomposition_probe.csv` plus JSON metadata.
+- Script 13: fixed_hidden_input and full_user_forward experiments, plus existing
+  A/B cross-context windows under different users. Outputs
+  `results/raw/multiuser_lora_probe.csv` plus JSON. Base equality is required
+  only for the same hidden input; later full-forward hidden states can differ.
+- Script 14: reconstructs Q/K/V at **all layers by default** with local hooks and
+  compares logits to native PEFT. Outputs
+  `results/raw/edgelora_projection_parity.csv` plus JSON. This is single-process
+  same-device ES/UD projection emulation; native computations still execute.
+
+Scripts accept the existing CLI overrides, `--layers 0 1`, `--output PATH` and
+`--tolerance 1e-6`. They stop on nonzero/parity/invariance failures. Communication
+uses one hidden send and three LoRA returns per layer: `4*n*d` **elements**, with
+actual dtype-dependent bytes recorded separately. Layer communication is repeated
+on the three decomposition rows, not three separate exchanges. No timing or
+network performance is measured. CPU UD offload is deferred.
+
+Exact SERAPH commands with locally provisioned pretrained weights:
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+conda activate semcache
+cd /data/khuss/repos/GP_semcache
+python -m pytest -q
+SEMCACHE_OPT_INTEGRATION=1 python -m pytest -q
+python scripts/12_validate_lora_decomposition.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+python scripts/13_probe_multiuser_lora.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+python scripts/14_validate_edgelora_projection_path.py --config configs/development.yaml --device cuda --revision 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+```
+
+The integration test is CPU/local-only and cleanly skips missing OPT files.
+Only actual successful CUDA script runs can establish M4 REAL-GPU VERIFIED.
+Synthetic-adapter similarity cannot establish personalized quality or safe reuse.

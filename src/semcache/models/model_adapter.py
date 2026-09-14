@@ -2,6 +2,21 @@ from abc import ABC, abstractmethod
 
 
 class ModelAdapter(ABC):
+    @staticmethod
+    def is_lora_projection(module):
+        return hasattr(module, 'lora_A') and hasattr(module, 'get_base_layer')
+
+    @staticmethod
+    def base_projection(module):
+        return module.get_base_layer() if ModelAdapter.is_lora_projection(module) else module
+
+    @staticmethod
+    def active_adapter_names(module):
+        return list(getattr(module, 'active_adapters', []))
+
+    def projection_module(self, layer_idx, tensor_type):
+        return self.projection_modules(layer_idx)[tensor_type.lower()]
+
     @abstractmethod
     def compute_base_qkv(self, hidden_states, layer_idx):
         """Project actual attention-input hidden states, including model biases."""
@@ -28,7 +43,9 @@ class OPTModelAdapter(ModelAdapter):
             raise ValueError("Milestone 1 supports OPT only; GPT2/LLaMA are unsupported")
         self.model = model.eval()
         try:
-            self.layers = model.model.decoder.layers
+            # PEFT delegates config but adds a wrapper; unwrap once here only.
+            base = model.get_base_model() if hasattr(model, 'peft_config') else model
+            self.layers = base.model.decoder.layers
             for layer in self.layers:
                 for name in ("q_proj", "k_proj", "v_proj"):
                     if not callable(getattr(layer.self_attn, name, None)):
@@ -46,9 +63,16 @@ class OPTModelAdapter(ModelAdapter):
         import torch
         if not 0 <= layer_idx < len(self.layers):
             raise IndexError(layer_idx)
-        a = self.layers[layer_idx].self_attn
         with torch.inference_mode():
-            return a.q_proj(hidden_states), a.k_proj(hidden_states), a.v_proj(hidden_states)
+            return tuple(self.base_projection(m)(hidden_states)
+                         for m in self.projection_modules(layer_idx).values())
+
+    def compute_lora_qkv(self, hidden_states, layer_idx, user_id):
+        from .lora_decomposition import projection_parts
+        modules = self.projection_modules(layer_idx)
+        if not all(self.is_lora_projection(m) for m in modules.values()):
+            raise NotImplementedError('Model has no PEFT LoRA adapters')
+        return tuple(projection_parts(m, hidden_states, user_id)[1] for m in modules.values())
 
     def inspect(self, inputs, layer_idx):
         """Hook real forward inputs/outputs, then compare independent projections.
@@ -76,7 +100,8 @@ class OPTModelAdapter(ModelAdapter):
         finally:
             for handle in handles:
                 handle.remove()
-        actual = self.compute_base_qkv(captured["hidden"], layer_idx)
+        with torch.inference_mode():
+            actual = tuple(m(captured['hidden']) for m in self.projection_modules(layer_idx).values())
         for name, value in zip(("q", "k", "v"), actual):
             torch.testing.assert_close(value, captured[name])
         return actual
@@ -96,4 +121,5 @@ class OPTModelAdapter(ModelAdapter):
                 'head_dim': a.head_dim, 'raw_shapes': {n: raw for n in ('q','k','v')},
                 'head_shapes': {n: [raw[0], heads, raw[1], a.head_dim] for n in ('q','k','v')},
                 'dtype': str(projection.dtype), 'device': str(projection.device),
-                'scope': 'base_raw_unscaled_linear_projection'}
+                'scope': ('total_raw_unscaled_linear_projection' if self.is_lora_projection(a.q_proj)
+                          else 'base_raw_unscaled_linear_projection')}
