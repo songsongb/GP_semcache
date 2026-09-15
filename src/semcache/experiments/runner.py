@@ -21,7 +21,9 @@ from .aggregation import aggregate
 class Baseline(str, Enum):
     UD_ONLY = 'UD_ONLY'  # full inference on user device
     ES_ONLY = 'ES_ONLY'  # base + user LoRA on edge server
-    FBC = 'FBC'  # frequency-based cache, LRU; unspecified details deferred
+    FBC = 'FBC'  # legacy identifier for the admit-first reproduction variant
+    FBC_V1 = 'FBC_V1'
+    FBC_V2 = 'FBC_V2'
     SEMCACHE = 'SEMCACHE'  # EdgeLoRA + semantic-aware global QKV cache
 
 

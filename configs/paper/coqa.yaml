@@ -1,3 +1,5 @@
 extends: common.yaml
 dataset: coqa
 cluster_count: 40
+user_assignment:
+  mode: seeded_group_balanced

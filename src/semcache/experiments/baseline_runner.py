@@ -1,6 +1,6 @@
 """Common CPU logical/analytical baseline runner. No paper reference inputs."""
 from copy import deepcopy
-from .baselines import BaselineKind, FrequencyLRUCache, FBC_METADATA
+from .baselines import BaselineKind, FrequencyLRUCache, FBC_METADATA, FBC_V2_METADATA, FBC_KINDS, ALL_BASELINES
 from .runner import make_logical_engine, WhitespaceTokenizer
 from .config import validate_config
 from .manifest import canonical, sha256
@@ -26,6 +26,8 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
         raise ValueError('Workload hash mismatch')
     if workload_manifest['user_count'] != c['num_users'] or any(r['dataset'] != c['dataset'] or r['global_query_index'] != i for i,r in enumerate(rows)):
         raise ValueError('Workload/config identity, ordering or user count mismatch')
+    if workload_manifest.get('user_assignment_rule') != c['user_assignment']['mode']:
+        raise ValueError('Workload/config user assignment rule mismatch; correct config without changing the fixed workload')
     if model_spec['lora_rank'] != c['lora_rank']:
         raise ValueError('Model/config rank mismatch')
     chosen = rows[:max_queries]
@@ -34,10 +36,11 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
     tok = tokenizer or WhitespaceTokenizer()
     capacity = int(c['logical_cache_capacity_gb']*1e9)
     system = c['system']
-    cached = kind in (BaselineKind.FBC, BaselineKind.SEMCACHE)
+    cached = kind in (*FBC_KINDS, BaselineKind.SEMCACHE)
     block_bytes = qkv_block_bytes(c['subsequence_window'], model_spec['layers'], model_spec['hidden_size'], model_spec['kv_dimension'], system['qkv_precision_bits']) if cached else None
     engine = make_logical_engine(chosen,c,encoder_kind,tokenizer=tok) if kind == BaselineKind.SEMCACHE else None
-    fbc = FrequencyLRUCache(capacity,c['subsequence_window'],block_bytes,tok) if kind == BaselineKind.FBC else None
+    fbc = FrequencyLRUCache(capacity,c['subsequence_window'],block_bytes,tok,
+        frequency_threshold=2 if kind == BaselineKind.FBC_V2 else 1) if kind in FBC_KINDS else None
     summaries = []
     for row in chosen:
         if engine:
@@ -88,7 +91,7 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
         metric_source='SIMULATED',comparability='APPROXIMATE',metrics=metrics,fairness=fairness,
         config=c,config_sha256=sha256(canonical(c).encode()),configuration_provenance=configuration_provenance(c),
         workload_provenance=deepcopy(workload_manifest),baseline_semantics_provenance='PAPER_DEFINED',
-        fbc_metadata=deepcopy(FBC_METADATA) if fbc else None,
+        fbc_metadata=deepcopy(FBC_V2_METADATA if kind == BaselineKind.FBC_V2 else FBC_METADATA) if fbc else None,
         reproduction_choices=dict(provenance='REPRODUCTION_CHOICE',tokenization=fairness['tokenizer'],
             overlap_selection='existing earliest-start nonoverlapping selection; lookups precede admissions',
             semantic_encoder=encoder_kind if engine else None,
@@ -97,8 +100,23 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
         query_results=[dict(source_id=row['source_id'],user_id=row['user_id'],summary=s) for row,s in zip(chosen,summaries)])
 
 
-def run_comparison(rows, config, model_spec, *, baselines=tuple(BaselineKind), **kwargs):
+def run_comparison(rows, config, model_spec, *, baselines=ALL_BASELINES, **kwargs):
     results = [run_baseline(rows,config,model_spec,baseline=b,**kwargs) for b in baselines]
     if results and any(r['fairness'] != results[0]['fairness'] for r in results):
         raise AssertionError('Baseline fairness mismatch')
     return results
+
+
+SUMMARY_FIELDS = (
+    'baseline', 'query_count', 'block_lookup_count', 'block_hit_count', 'block_hit_ratio',
+    'reused_token_count', 'token_reuse_ratio', 'admission_candidate_count',
+    'admission_count', 'admission_rate', 'eviction_count', 'logical_cache_bytes',
+    'base_flops_saved', 'lora_flops_saved', 'communication_elements_saved',
+)
+
+
+def comparison_summary(results):
+    """Compact simulated result table; full per-metric provenance stays in results."""
+    return dict(metric_source='SIMULATED',
+        metric_metadata={r['baseline']: {k:r['metrics'][k] for k in SUMMARY_FIELDS if k in r['metrics']} for r in results},
+        rows=[{k:r[k] for k in SUMMARY_FIELDS} for r in results])

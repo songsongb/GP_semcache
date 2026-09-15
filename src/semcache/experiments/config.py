@@ -30,7 +30,7 @@ def validate_config(c):
     for key, values in [('execution_mode', ('MEASURED_MODEL','ANALYTICAL_SIMULATION','HYBRID')),
                         ('execution_scope', ('prefill_only','full_generation')),
                         ('cache_storage_mode', ('logical_only','physical_cpu','physical_model')),
-                        ('baseline', ('UD_ONLY','ES_ONLY','FBC','SEMCACHE'))]:
+                        ('baseline', ('UD_ONLY','ES_ONLY','FBC','FBC_V1','FBC_V2','SEMCACHE'))]:
         if c.get(key) not in values:
             raise ValueError(f'Explicit valid {key} required')
     for key in ('num_users','lora_rank','subsequence_window','cluster_update_interval_queries'):
