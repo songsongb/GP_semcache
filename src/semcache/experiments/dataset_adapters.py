@@ -10,6 +10,73 @@ from pathlib import Path
 
 DATASETS = ('multiwoz', 'coqa', 'snips')
 TRANSFORMATIONS = ('raw_query', 'paper_reproduction_v1')
+SNIPS_INTENTS = ('AddToPlaylist', 'BookRestaurant', 'GetWeather', 'PlayMusic',
+                 'RateBook', 'SearchCreativeWork', 'SearchScreeningEvent')
+SNIPS_TRAIN_FULL_COUNT = 13_784
+
+
+def _decode_snips(raw, path):
+    try:
+        return raw.decode('utf-8'), False
+    except UnicodeDecodeError:
+        try:
+            # Accept CESU-8 surrogate code units, then combine valid UTF-16 pairs.
+            # Strict UTF-16 decoding rejects lone surrogates; other bad UTF-8
+            # still fails. No replacement characters or Latin-1 fallback.
+            text = raw.decode('utf-8', errors='surrogatepass')
+            return text.encode('utf-16-le', errors='surrogatepass').decode('utf-16-le'), True
+        except UnicodeError as exc:
+            raise ValueError(f'Invalid UTF-8/CESU-8 in SNIPS source {path}: {exc}') from exc
+
+
+def _load_snips_raw_directory(path, split, revision):
+    if split not in ('train', 'train_full'):
+        raise ValueError('SNIPS raw-directory ingestion supports only source_split=train_full')
+    expected = {f'{intent}/train_{intent}_full.json' for intent in SNIPS_INTENTS}
+    found = {p.relative_to(path).as_posix() for p in path.glob('*/train_*_full.json') if p.is_file()}
+    if found != expected:
+        raise ValueError(f'SNIPS raw directory {path} requires exactly 7 intent train_full files; '
+                         f'missing={sorted(expected-found)}, unexpected={sorted(found-expected)}')
+    records, files, repaired_files = [], [], []
+    for intent in SNIPS_INTENTS:
+        relative = f'{intent}/train_{intent}_full.json'
+        file = path / relative
+        raw = file.read_bytes()
+        text, repaired = _decode_snips(raw, file)
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'Invalid SNIPS JSON in {file}: {exc}') from exc
+        if not isinstance(body, dict) or set(body) != {intent} or not isinstance(body[intent], list):
+            raise ValueError(f'Invalid SNIPS source {file}: expected object containing only {intent!r} utterances')
+        utterances = body[intent]
+        if not utterances:
+            raise ValueError(f'Empty SNIPS intent in {file}')
+        for i, utterance in enumerate(utterances):
+            chunks = utterance.get('data') if isinstance(utterance, dict) else None
+            if (not isinstance(chunks, list) or not chunks
+                    or any(not isinstance(c, dict) or not isinstance(c.get('text'), str) for c in chunks)):
+                raise ValueError(f'Invalid SNIPS data/text chunks in {file}, record {i}')
+            records.append(dict(id=f'{intent}:{i}', intent=intent,
+                utterance=''.join(c['text'] for c in chunks), original_metadata=utterance,
+                source_file=relative, source_record_index=i))
+        files.append(dict(path=relative, sha256=hashlib.sha256(raw).hexdigest(),
+                          record_count=len(utterances), encoding_repaired=repaired))
+        if repaired:
+            repaired_files.append(relative)
+    if len(records) != SNIPS_TRAIN_FULL_COUNT:
+        raise ValueError(f'SNIPS train_full count mismatch in {path}: expected '
+                         f'{SNIPS_TRAIN_FULL_COUNT}, found {len(records)}')
+    return records, dict(source_split='train_full', source_format='snips_raw_directory',
+        source_count=len(records), expected_source_count=SNIPS_TRAIN_FULL_COUNT,
+        intents=list(SNIPS_INTENTS), source_files=files, repository_revision=revision,
+        repository_revision_provenance='user_provided' if revision else None,
+        encoding_repair_occurred=bool(repaired_files), encoding_repaired_files=repaired_files,
+        encoding_policy='strict UTF-8; on failure repair valid CESU-8 surrogate pairs',
+        selection_rule='<Intent>/train_<Intent>_full.json; no validation subtraction or deduplication',
+        provenance=dict(source_split='REPRODUCTION_CHOICE', selection_rule='REPRODUCTION_CHOICE',
+                        expected_source_count='REPRODUCTION_CHOICE', source_count='MEASURED',
+                        encoding_policy='REPRODUCTION_CHOICE', encoding_repair_occurred='MEASURED'))
 
 
 def _parse_local_json(path, text):
@@ -46,6 +113,11 @@ def load_source(dataset, input_path=None, split='train', *, hf_id=None, hf_confi
             raw = path.read_bytes()
             source['source_sha256'] = hashlib.sha256(raw).hexdigest()
             data, source['source_format'] = _parse_local_json(path, raw.decode('utf-8'))
+        elif dataset == 'snips' and (path.name == '2017-06-custom-intent-engines'
+                or any((path / intent).is_dir() for intent in SNIPS_INTENTS)
+                or any(path.glob('*/train_*_full.json'))):
+            data, raw_source = _load_snips_raw_directory(path, split, revision)
+            source.update(raw_source)
         else:
             try:
                 from datasets import load_from_disk

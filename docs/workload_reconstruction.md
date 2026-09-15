@@ -11,8 +11,8 @@ or an explicit HF ID/config/revision with `--allow-download`. Without a source
 it fails with actionable instructions. There is no default arbitrary dataset
 release, dataset substitution or automatic network access. JSON split wrappers
 select the requested split. An unsplit file is understood to be the supplied
-split; users must select the correct source file. Directory input means HF
-saved format, not a guess among assorted raw files.
+split; users must select the correct source file. Directory input supports HF
+saved format and the explicit SNIPS raw layout described below.
 
 Local files are fingerprinted by exact SHA256; HF sources record version and
 fingerprint. Requested HF revision and resolved revision are separate; resolved
@@ -30,6 +30,53 @@ An empty query is dropped and its source index/ID/reason recorded. Missing
 reference is retained as null. Malformed structure fails rather than being
 silently dropped. Source example counts, transformed query counts, affected
 source-example drops, dropped-query counts and max-query truncation are distinct.
+
+## SNIPS raw-directory source
+
+Pass `2017-06-custom-intent-engines/` directly to script 20's `--input-path`.
+The loader selects exactly `<Intent>/train_<Intent>_full.json` for AddToPlaylist,
+BookRestaurant, GetWeather, PlayMusic, RateBook, SearchCreativeWork and
+SearchScreeningEvent. Each file must contain its intent-keyed list of utterances;
+`data` text chunks are concatenated in their original order. Intent labels and
+original chunk metadata are preserved. File order is the intent order listed
+above, and utterance order within each file is preserved.
+
+The M6A source is **all 13,784 train_full utterances**. This selection and its
+expected count are **REPRODUCTION_CHOICE** because the SemCache paper does not
+specify the exact SNIPS split or preprocessing. The supplied raw audit measured
+13,784 train_full records and 700 validate records, with only 2 overlaps under
+direct canonical-record comparison. Validation records are **not subtracted**:
+the loader neither reads `validate_<Intent>.json` nor deduplicates training
+records. Missing/extra full-training intent files or a total other than 13,784
+raise an error.
+
+Source metadata records `source_split=train_full`,
+`source_format=snips_raw_directory`, source count, intent names, per-file counts
+and SHA256 hashes of the **original bytes**. A supplied `--revision` (or
+`dataset_source.revision`) is recorded as a user-provided repository revision,
+not an independently resolved commit. `train` is accepted as the default input
+split alias and recorded as `train_full`; other splits are rejected for this
+raw layout. Existing JSON/JSONL and HF source behavior is unchanged.
+
+Decoding first uses strict UTF-8. If that fails, CESU-8 surrogate code units are
+decoded and valid surrogate pairs are combined into proper Unicode characters
+(e.g. 🍕 in PlayMusic), with no Latin-1 fallback or replacement characters.
+Invalid bytes and unpaired surrogates still fail. Raw files are never modified.
+The manifest's source includes `encoding_repair_occurred`,
+`encoding_repaired_files`, the encoding policy and a per-file repair flag.
+
+SNIPS remains single-turn: default `seeded_round_robin` assigns query records
+to 50 logical users, with REPRODUCTION_CHOICE provenance and no tuning against
+reuse/hit rate. It uses no conversation grouping. C=30 remains PAPER_DEFINED.
+
+Example (writes only when explicitly invoked):
+
+```bash
+python scripts/20_prepare_paper_workloads.py --dataset snips \
+  --config configs/paper/snips.yaml \
+  --input-path /path/to/2017-06-custom-intent-engines \
+  --revision <repository-commit> --output /path/to/snips_train_full.jsonl
+```
 
 ## Transformation version 1
 
