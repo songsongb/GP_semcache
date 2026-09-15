@@ -11,7 +11,7 @@ from semcache.simulation.cost_model import projection_savings, PaperCostModel
 
 
 def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_queries,
-                 seed=None, run_id='m6b1', encoder_kind='fixture', tokenizer=None):
+                 seed=None, run_id='m6b1', encoder_kind='fixture', tokenizer=None, compact=False):
     kind = BaselineKind(baseline)
     c = deepcopy(config)
     c['baseline'] = kind.value
@@ -54,6 +54,8 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
             summary = dict(query_token_count=n, reused_token_count=0, logical_global_cache_bytes=0,
                 **{k:None for k in ('block_lookup_count','block_hit_count','admission_candidate_count','admission_count','eviction_count')})
         summaries.append(summary)
+        if compact and engine:
+            engine.events.clear()
     values = {k:sum(s[k] for s in summaries) if summaries[0][k] is not None else None for k in
         ('query_token_count','reused_token_count','block_lookup_count','block_hit_count','admission_candidate_count','admission_count','eviction_count')}
     for key,num,den in [('block_hit_ratio','block_hit_count','block_lookup_count'),('token_reuse_ratio','reused_token_count','query_token_count'),('admission_rate','admission_count','admission_candidate_count')]:
@@ -67,7 +69,7 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
         lora_flops_saved=savings['lora_flops_saved'], communication_elements_total=totals['comm_elements_saved'] if cached else 0,
         communication_elements_saved=savings['comm_elements_saved'] if cached else 0,
         logical_cache_bytes=summaries[-1]['logical_global_cache_bytes'],
-        peak_logical_cache_bytes=fbc.peak_bytes if fbc else (None if cached else 0))
+        peak_logical_cache_bytes=fbc.peak_bytes if fbc else (engine.cache.peak_logical_cache_bytes if engine else 0))
     missing = [k for k in ('es_tflops','ud_tflops','communication_element_bytes') if system[k] is None] if cached else ['single-device full-inference latency model unavailable']
     latency = None if missing else sum(PaperCostModel().estimate(tokens=s['query_token_count'],reused_tokens=s['reused_token_count'],model_config=model_spec,system_config=system)['latency_s'] for s in summaries)
     values.update(analytical_latency_s=latency, system_memory_bytes=None, base_model_bytes=None,
@@ -79,7 +81,7 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
         scope = latency_scope if k == 'analytical_latency_s' else 'all-layer Eq.19 accounting; QKV-only savings' if 'flops' in k else 'EdgeLoRA projection exchange' if 'communication' in k else 'logical fixed-workload cache simulation'
         metrics[k] = dict(metric(v,'SIMULATED',scope,unit), comparability='NOT_COMPARABLE' if unit in ('seconds','bytes','FLOP','elements') else 'APPROXIMATE')
     fairness = dict(workload_sha256=workload_manifest['sha256'], executed_workload_sha256=sha256(serialize(chosen)),
-        query_ids=[r['source_id'] for r in chosen], user_ids=[r['user_id'] for r in chosen],
+        **({} if compact else dict(query_ids=[r['source_id'] for r in chosen], user_ids=[r['user_id'] for r in chosen])),
         model_spec=deepcopy(model_spec), seed=c['seed'], cache_capacity_bytes=capacity,
         window_size=c['subsequence_window'],user_count=c['num_users'],bandwidth_mbps=system['bandwidth_mbps'],
         system_spec=deepcopy(system),tokenizer=getattr(tok,'name_or_path',type(tok).__name__))
@@ -99,7 +101,8 @@ def run_baseline(rows, config, model_spec, *, workload_manifest, baseline, max_q
             semantic_encoder=encoder_kind if engine else None,
             logical_semantics='existing M6A fixture hash encoder by default; no attention impact or CHU/PBR; no physical reuse claim',
             cost_scope='Eq.19 analytical FLOPs, excludes embeddings/logits; not full model execution'),
-        query_results=[dict(source_id=row['source_id'],user_id=row['user_id'],summary=s) for row,s in zip(chosen,summaries)])
+        safe_reuse_claimed=False,
+        **({} if compact else dict(query_results=[dict(source_id=row['source_id'],user_id=row['user_id'],summary=s) for row,s in zip(chosen,summaries)])))
 
 
 def run_comparison(rows, config, model_spec, *, baselines=ALL_BASELINES, **kwargs):

@@ -18,6 +18,7 @@ class GlobalCache:
         self.entries = {}
         self.hits = self.misses = 0
         self.now = 0
+        self.peak_logical_cache_bytes = 0
         self.zero_max = zero_max
 
     def advance(self, query_index):
@@ -85,4 +86,6 @@ class GlobalCache:
             if on_event:
                 on_event('EVICT', self.entries[victim], self.eviction.score(normalize(metrics[victim], metrics.values(), self.zero_max)))
             del self.entries[victim]
+        # Resident occupancy after eviction; excludes temporary insertion overflow.
+        self.peak_logical_cache_bytes = max(self.peak_logical_cache_bytes, self.logical_cache_bytes)
         return entry.key in self.entries
