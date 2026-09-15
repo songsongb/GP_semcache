@@ -34,6 +34,7 @@ def test_native_local_formats(tmp_path):
         examples,source=load_source(dataset,path)
         rows,_=normalize(dataset,examples)
         assert rows and source['source_sha256']
+        assert source['source_format'] == 'json'
     with pytest.raises(FileNotFoundError,match='No dataset supplied'):
         load_source('coqa')
 
@@ -107,6 +108,53 @@ def test_hf_coqa_strings_and_jsonl(tmp_path):
     path.write_text(json.dumps(FIXTURES['snips'][0])+'\n')
     examples,source=load_source('snips',path)
     assert examples==FIXTURES['snips']
+    assert source['source_format'] == 'json'  # One JSONL record is valid full JSON.
+
+
+@pytest.mark.parametrize('suffix,layout,detected', [
+    ('.json', 'array', 'json'),
+    ('.jsonl', 'lines', 'jsonl'),
+    ('.json', 'lines', 'jsonl'),
+    ('.json', 'pretty', 'json'),
+    ('.jsonl', 'pretty', 'json'),
+])
+def test_local_json_content_detection(tmp_path, suffix, layout, detected):
+    examples = [dict(FIXTURES['snips'][0], id=str(i), utterance=f'play 음악 {i}')
+                for i in range(2)]
+    if layout == 'lines':
+        text = '\n\n' + '\n \n'.join(json.dumps(ex, ensure_ascii=False) for ex in examples) + '\n'
+    else:
+        text = json.dumps(examples, ensure_ascii=False, indent=2 if layout == 'pretty' else None)
+    path = tmp_path / ('train' + suffix)
+    path.write_text(text, encoding='utf-8')
+    loaded, source = load_source('snips', path)
+    assert loaded == examples
+    assert source['source_format'] == detected
+    import hashlib
+    assert source['source_sha256'] == hashlib.sha256(text.encode('utf-8')).hexdigest()
+    rows, manifest = build_workload('snips', loaded, source)
+    assert manifest['source']['source_format'] == detected
+    assert [r['query_text'] for r in rows] == [ex['utterance'] for ex in examples]
+
+
+@pytest.mark.parametrize('dataset', FIXTURES)
+def test_single_record_jsonl_remains_supported(tmp_path, dataset):
+    path = tmp_path / 'record.jsonl'
+    path.write_text(json.dumps(FIXTURES[dataset][0]) + '\n', encoding='utf-8')
+    examples, source = load_source(dataset, path)
+    assert examples == FIXTURES[dataset]
+    assert source['source_format'] == 'json'
+
+
+def test_malformed_local_json_diagnostics(tmp_path):
+    path = tmp_path / 'train.json'
+    path.write_text('{"id": 1}\n\n{"id": invalid}\n', encoding='utf-8')
+    with pytest.raises(ValueError) as exc:
+        load_source('multiwoz', path)
+    message = str(exc.value)
+    for detail in (str(path), "suffix='.json'", 'full-JSON parse error: Extra data',
+                   'JSONL line 3 error: Expecting value'):
+        assert detail in message
 
 
 def test_cli_prepare_validate_smoke(tmp_path):

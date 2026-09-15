@@ -12,6 +12,25 @@ DATASETS = ('multiwoz', 'coqa', 'snips')
 TRANSFORMATIONS = ('raw_query', 'paper_reproduction_v1')
 
 
+def _parse_local_json(path, text):
+    """Detect JSON first, then JSONL, independently of the filename suffix."""
+    try:
+        return json.loads(text), 'json'
+    except json.JSONDecodeError as full_error:
+        records = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as line_error:
+                raise ValueError(
+                    f'Cannot parse local dataset {path} (suffix={path.suffix!r}): '
+                    f'full-JSON parse error: {full_error}; '
+                    f'JSONL line {line_number} error: {line_error}') from line_error
+        return records, 'jsonl'
+
+
 def load_source(dataset, input_path=None, split='train', *, hf_id=None, hf_config=None,
                 revision=None, allow_download=False):
     if dataset not in DATASETS:
@@ -26,7 +45,7 @@ def load_source(dataset, input_path=None, split='train', *, hf_id=None, hf_confi
         if path.is_file():
             raw = path.read_bytes()
             source['source_sha256'] = hashlib.sha256(raw).hexdigest()
-            data = [json.loads(line) for line in raw.decode('utf-8').splitlines() if line.strip()] if path.suffix == '.jsonl' else json.loads(raw)
+            data, source['source_format'] = _parse_local_json(path, raw.decode('utf-8'))
         else:
             try:
                 from datasets import load_from_disk
@@ -61,6 +80,12 @@ def load_source(dataset, input_path=None, split='train', *, hf_id=None, hf_confi
                      id=f'{intent}:{i}', original_metadata=u)
                 for intent, body in data['intents'].items() for i, u in enumerate(body['utterances'])]
     if isinstance(data, dict):
+        # A one-record JSONL file is also valid JSON. Preserve its record
+        # container using existing schema keys, without relying on the suffix.
+        record_keys = {'multiwoz': ('turns', 'log'), 'coqa': ('story',),
+                       'snips': ('utterance', 'text')}
+        if any(key in data for key in record_keys[dataset]):
+            return [data], source
         if dataset != 'multiwoz':
             raise ValueError('Unsupported source object; expected records')
         data = [dict(value, dialogue_id=key) for key, value in data.items()]
