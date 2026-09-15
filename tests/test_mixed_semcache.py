@@ -52,7 +52,10 @@ def test_exact_control_tiny_opt(users):
     result = validate_mixed_control(users, Tokenizer(), OPTModelAdapter(users), '2 3 4 5 6 7 8 9')
     assert result['exact_control_passed'] and result['matched_windows'] == 2
     assert result['mixed_native_projected_rows'] == 2 and result['reused_rows'] == 6
-    assert result['max_abs_logit_diff'] <= 1e-6 and not result['safe_reuse_claimed']
+    assert result['max_abs_logit_diff'] <= 1e-5 and not result['safe_reuse_claimed']
+    assert result['relative_l2_logit_diff'] <= 1e-6
+    assert result['projection_max_abs_error'] <= 1e-5
+    assert result['projection_max_relative_l2'] <= 1e-6
 
 
 @pytest.mark.parametrize('all_cached', [False, True])
@@ -234,3 +237,59 @@ def test_overlap_and_wrong_scope_rejected_before_projection(users):
         with mixed_projection_path(adapter, 'user_a', [hit, hit], 8):
             pass
     assert all('forward' not in m.__dict__ for i in range(2) for m in adapter.projection_modules(i).values())
+
+
+@pytest.mark.parametrize('component', ['projection', 'logit'])
+@pytest.mark.parametrize('scale,delta,passes', [
+    (16., 7.63e-6, True),
+    (0.01, 5e-7, False),  # Small absolute error, excessive relative error.
+    (128., 2e-5, False),  # Small relative error, excessive absolute error.
+    (1., 0.01, False),
+    (16., 0., True),  # Exact CUDA results continue to pass unchanged.
+])
+def test_implementation_parity_limits(users, monkeypatch, component, scale, delta, passes):
+    from semcache.evaluation import mixed_control
+    from semcache.evaluation.qkv_metrics import similarity
+    reference = torch.full((1, 8, 4), scale, dtype=torch.float32)
+    candidate = reference + delta
+    error = similarity(reference, candidate)
+    if component == 'projection':
+        monkeypatch.setattr(mixed_control, 'similarity', lambda *args: error)
+    else:
+        original = mixed_control.compare_logits
+        def synthetic(*args):
+            result = original(*args)
+            result.update(max_abs_logit_diff=error['max_abs_error'],
+                          relative_l2_logit_diff=error['relative_l2'])
+            return result
+        monkeypatch.setattr(mixed_control, 'compare_logits', synthetic)
+    if passes:
+        result = validate_mixed_control(users, Tokenizer(), OPTModelAdapter(users), '2 3 4 5 6 7 8 9')
+        assert result['exact_control_passed'] and not result['safe_reuse_claimed']
+    else:
+        with pytest.raises(AssertionError) as exc:
+            validate_mixed_control(users, Tokenizer(), OPTModelAdapter(users), '2 3 4 5 6 7 8 9')
+        message = str(exc.value)
+        for label in ('implementation-parity controls', 'not cache-reuse safety thresholds',
+                      'device=cpu', 'dtype=torch.float32', 'absolute_tolerance=1e-05',
+                      'relative_tolerance=1e-06', 'projection_max_abs_error=',
+                      'projection_max_relative_l2=', 'logit_abs_error=',
+                      'logit_relative_l2=', 'KL_suffix=', 'KL_last='):
+            assert label in message
+
+
+@pytest.mark.parametrize('field,value', [
+    ('affected_suffix_mean_kl', 2e-8),
+    ('last_position_kl_baseline_to_injected', 2e-8),
+    ('last_argmax_agreement', False),
+])
+def test_implementation_parity_preserves_kl_and_argmax(users, monkeypatch, field, value):
+    from semcache.evaluation import mixed_control
+    original = mixed_control.compare_logits
+    def damaged(*args):
+        result = original(*args)
+        result[field] = value
+        return result
+    monkeypatch.setattr(mixed_control, 'compare_logits', damaged)
+    with pytest.raises(AssertionError, match='STOP: exact-control'):
+        validate_mixed_control(users, Tokenizer(), OPTModelAdapter(users), '2 3 4 5 6 7 8 9')

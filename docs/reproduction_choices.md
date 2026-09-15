@@ -226,7 +226,7 @@ local CPU evidence; it is not yet pretrained-model or CUDA verified.
 | CHU | rho=.8 | Existing updater arithmetic; applied only to actual reused windows, using their current target span attention. |
 | PBR | Lambda=100 recent cluster queries; conditional mean; low load | Bounded per-cluster history with ID/order, keys and actual impacts. Repeated occurrences of a key within one query contribute their mean, so each query has one indicator/observation. Explicit manual operation, no low-load scheduler; denominator zero retains old I. Historical `pbr_interval_queries` remains for M1 API compatibility; M5 uses `history_lambda` and manual trigger separately. |
 | Mixed projection | Reuse cached tokens; compute unmatched base+LoRA | Inference-only batch-one local instance-forward context; native PEFT receives only unmatched hidden rows for each Q/K/V/all layers; gather/scatter fills full output. No installed source edits. Full projection hooks are rejected because capture validation would recompute cached rows. Context records passive CPU projections for candidate evaluation and restores forwards on success/failure. |
-| Exact gate | No numerical implementation tolerance specified | Fixed 1e-6 absolute/relative projection and logit checks, KL checks and argmax agreement; two disjoint cached windows plus unmatched rows. This is an identity-control tolerance, not a safe reuse threshold. Script 17 repeats the gate before approximate reuse, even if script 18 ran earlier. |
+| Exact gate | No numerical implementation tolerance specified | Fixed absolute <=1e-5 and relative-L2 <=1e-6 projection and logit checks, KL <=1e-8 checks and argmax agreement; two disjoint cached windows plus unmatched rows. This is an identity-control tolerance, not a safe reuse threshold. Script 17 repeats the gate before approximate reuse, even if script 18 ran earlier. |
 | Storage | Logical default 20 GB | Decimal 20 billion-byte budget, CPU physical storage by default. Logical size uses actual configured development QKV dimensions/dtype, excluding metadata overhead; no 20GB preallocation. Captured forward outputs are transient instrumentation, not admitted cache allocation or peak memory measurement. |
 | Savings | 6n'd² base FLOPs; 6n'dr LoRA FLOPs; 4n'd communication elements per layer | Report all-layer sums, separately marked analytical. Communication bytes use one hidden dtype size plus three delta dtype sizes. No network or wall-clock speedup measurement. |
 | Trace | Paper workload not used | Controlled health/weather strings, rank-8 untrained M4 fixtures. No safety/personalization claim; `safe_reuse_claimed=false` throughout. Local tiny-model CLI tests use a character tokenizer; pretrained scripts use the actual LLM tokenizer. |
@@ -255,3 +255,8 @@ PAPER_DEFINED / REPRODUCTION_CHOICE ledger. No hidden TinyBERT checkpoint,
 adapter training recipe or generation protocol is chosen. Logical simulations
 have unavailable attention impact; they do not fabricate CHU/PBR. Paper
 references remain read-only comparison data and never tune the simulator.
+
+FP32 exact-control uses abs<=1e-5 and relative-L2<=1e-6 for portability
+across CPU BLAS/GEMM implementations. CUDA on tested SERAPH GPUs produced
+exact zero difference. These are implementation-parity tolerances, not
+cache-reuse safety thresholds.
