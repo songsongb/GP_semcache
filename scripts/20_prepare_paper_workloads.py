@@ -3,6 +3,7 @@ from _paper_common import parser, load_paper_config
 from semcache.experiments.dataset_adapters import load_source
 from semcache.experiments.workload import build_workload, save_workload
 from semcache.experiments.manifest import canonical
+from semcache.experiments.user_assignment import ASSIGNMENT_MODES
 
 
 def main():
@@ -16,7 +17,7 @@ def main():
     p.add_argument('--order',choices=['source_order','seeded_shuffle'])
     p.add_argument('--user-count',type=int)
     p.add_argument('--transformation',choices=['raw_query','paper_reproduction_v1'])
-    p.add_argument('--user-assignment',choices=['seeded_round_robin','deterministic_hash'])
+    p.add_argument('--user-assignment',choices=ASSIGNMENT_MODES)
     p.add_argument('--hf-id')
     p.add_argument('--hf-config')
     p.add_argument('--revision')

@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from .dataset_adapters import normalize
-from .user_assignment import assign_users, stable_digest
+from .user_assignment import assign_users, stable_digest, assignment_counts
 from .manifest import canonical, sha256, now, write_manifest
 
 CLUSTERS = {'multiwoz': 20, 'coqa': 40, 'snips': 30}
@@ -13,13 +13,15 @@ def serialize(rows):
 
 
 def build_workload(dataset, examples, source, *, seed=42, user_count=50,
-                   assignment='seeded_round_robin', order='source_order',
+                   assignment=None, order='source_order',
                    transformation='raw_query', max_queries=None, tokenizer=None):
     if order not in ('source_order', 'seeded_shuffle'):
         raise ValueError('Unsupported workload ordering')
     if max_queries is not None and (not isinstance(max_queries, int) or isinstance(max_queries, bool) or max_queries < 1):
         raise ValueError('max_queries must be positive or null')
     rows, dropped = normalize(dataset, examples, source['source_split'], transformation)
+    if assignment is None:
+        assignment = 'seeded_group_balanced' if dataset == 'multiwoz' else 'seeded_round_robin'
     transformed_count = len(rows)
     users = assign_users(rows, user_count, seed, assignment)
     for i, (row, user) in enumerate(zip(rows, users)):
@@ -31,6 +33,8 @@ def build_workload(dataset, examples, source, *, seed=42, user_count=50,
     rows = rows[:max_queries]
     for i, row in enumerate(rows):
         row['global_query_index'] = i
+    counts, _ = assignment_counts(rows, user_count)
+    grouped = assignment == 'seeded_group_balanced'
     manifest = dict(dataset=dataset, source=source, source_split=source['source_split'],
         transformation_name=transformation, transformation_version='1', source_example_count=len(examples),
         transformed_query_count=transformed_count, output_query_count=len(rows),
@@ -38,11 +42,15 @@ def build_workload(dataset, examples, source, *, seed=42, user_count=50,
         dropped_query_count=len(dropped), dropped_reasons=dropped,
         limited_query_count=transformed_count-len(rows), max_queries=max_queries,
         user_assignment_rule=assignment, user_count=user_count, ordering_rule=order, seed=seed,
+        assignment_unit='conversation' if grouped else 'query',
+        grouping_field='conversation_id' if grouped else None,
+        assignment_counts_scope='emitted workload after ordering and max_queries', **counts,
         sha256=sha256(serialize(rows)), cluster_target=CLUSTERS[dataset], creation_time=now(),
         tokenizer=getattr(tokenizer, 'name_or_path', None),
         provenance=dict(cluster_target='PAPER_DEFINED', user_count='PAPER_DEFINED' if user_count == 50 else 'REPRODUCTION_CHOICE',
             transformation='REPRODUCTION_CHOICE', ordering_rule='REPRODUCTION_CHOICE',
             user_assignment_rule='REPRODUCTION_CHOICE', seed='REPRODUCTION_CHOICE', counts='MEASURED',
+            assignment_unit='REPRODUCTION_CHOICE', grouping_field='REPRODUCTION_CHOICE',
             source='REPRODUCTION_CHOICE', max_queries='REPRODUCTION_CHOICE'),
         leakage_policy='single explicit source split; no train/eval repartition or adapter training')
     manifest['manifest_sha256'] = sha256(canonical({k:v for k,v in manifest.items() if k != 'creation_time'}).encode('utf-8'))

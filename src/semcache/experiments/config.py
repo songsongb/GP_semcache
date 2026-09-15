@@ -4,6 +4,7 @@ from copy import deepcopy
 from semcache.utils.io import load_config
 from semcache.cache.admission import AdmissionPolicy
 from semcache.cache.eviction import EvictionPolicy
+from .user_assignment import ASSIGNMENT_MODES
 
 
 def merge(left, right):
@@ -52,7 +53,7 @@ def validate_config(c):
         raise ValueError('Invalid impact settings')
     if c['workload']['transformation'] not in ('raw_query','paper_reproduction_v1'):
         raise ValueError('Invalid transformation')
-    if c['user_assignment']['mode'] not in ('seeded_round_robin','deterministic_hash'):
+    if c['user_assignment']['mode'] not in ASSIGNMENT_MODES:
         raise ValueError('Invalid user assignment')
     limit = c['workload']['max_queries']
     if limit is not None and (not isinstance(limit,int) or isinstance(limit,bool) or limit < 1):

@@ -1,3 +1,5 @@
 extends: common.yaml
 dataset: multiwoz
 cluster_count: 20
+user_assignment:
+  mode: seeded_group_balanced

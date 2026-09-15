@@ -178,3 +178,107 @@ def test_cli_prepare_validate_smoke(tmp_path):
     run('20_prepare_paper_workloads.py','--dataset','snips','--config',config,'--input-path',source,'--output',other,'--seed',42)
     assert other.read_bytes()==before
     assert read_workload(workload)[1]['manifest_sha256']==read_workload(other)[1]['manifest_sha256']
+
+
+def multiwoz_groups(count=137):
+    return [dict(dialogue_id=f'd{i}', turns=[
+        dict(turn_id=str(j), speaker='USER', utterance=f'query {i} turn {j}')
+        for j in range(1 + i % 19)]) for i in range(count)]
+
+
+def test_conversation_preserving_assignment_and_balance():
+    examples = multiwoz_groups()
+    rows, manifest = build_workload('multiwoz', examples, {'source_split': 'train'})
+    again, repeated = build_workload('multiwoz', examples, {'source_split': 'train'})
+    assert rows == again
+    assert manifest['sha256'] == repeated['sha256']
+    assert manifest['manifest_sha256'] == repeated['manifest_sha256']
+    assert manifest['user_assignment_rule'] == 'seeded_group_balanced'
+    assert manifest['assignment_unit'] == 'conversation'
+    assert manifest['grouping_field'] == 'conversation_id'
+    assert manifest['provenance']['user_assignment_rule'] == 'REPRODUCTION_CHOICE'
+    assert manifest['seed'] == 42 and manifest['user_count'] == 50
+    assert manifest['cluster_target'] == 20
+    normalized, _ = normalize('multiwoz', examples)
+    assert [r['source_id'] for r in rows] == [r['source_id'] for r in normalized]
+    assert [r['query_text'] for r in rows] == [r['query_text'] for r in normalized]
+    report = validate_workload(rows, manifest)
+    assert report['active_users'] == 50
+    assert report['total_conversation_count'] == len(examples)
+    assert report['conversations_assigned_to_multiple_users'] == 0
+    assert report['conversation_split_ratio'] == 0
+    assert report['users_per_conversation'] == dict(max=1, mean=1)
+    counts = manifest['per_user_record_counts']
+    assert max(counts.values()) - min(counts.values()) <= 19  # Largest indivisible group.
+    assert sum(counts.values()) == len(rows)
+    assert sum(manifest['per_user_conversation_counts'].values()) == len(examples)
+    assert report['conversations_per_user']['min'] >= 1
+    assert report['per_user_record_counts'] == counts
+    assert report['per_user_conversation_counts'] == manifest['per_user_conversation_counts']
+    # Assignment is independent of input order and query text, using identities and sizes only.
+    reversed_rows = [dict(r, query_text='different text') for r in reversed(normalized)]
+    assert assign_users(reversed_rows, mode='seeded_group_balanced') == [r['user_id'] for r in reversed(rows)]
+    assert assign_users(normalized, seed=43, mode='seeded_group_balanced') != [r['user_id'] for r in rows]
+
+
+def test_group_assignment_validation_and_legacy_comparison():
+    from copy import deepcopy
+    examples = multiwoz_groups(10)
+    source = {'source_split': 'train'}
+    rows, manifest = build_workload('multiwoz', examples, source)
+    broken = deepcopy(rows)
+    broken[2]['user_id'] = 'user_049' if broken[1]['user_id'] != 'user_049' else 'user_048'
+    with pytest.raises(ValueError, match='conversations_assigned_to_multiple_users=1'):
+        validate_workload(broken, manifest)
+    broken[2]['conversation_id'] = None
+    with pytest.raises(ValueError, match='requires conversation_id'):
+        validate_workload(broken, manifest)
+    with pytest.raises(ValueError, match='requires a nonempty conversation_id'):
+        assign_users([dict(conversation_id=None)], mode='seeded_group_balanced')
+    legacy, old_manifest = build_workload('multiwoz', examples, source, assignment='seeded_round_robin')
+    assert old_manifest['assignment_unit'] == 'query'
+    assert old_manifest['grouping_field'] is None
+    assert [r['user_id'] for r in legacy] == assign_users(legacy, mode='seeded_round_robin')
+    report = validate_workload(legacy, old_manifest)
+    assert report['conversations_assigned_to_multiple_users'] == 9
+    assert report['conversation_split_ratio'] == .9
+    assert report['users_per_conversation'] == dict(max=10, mean=5.5)
+
+
+def test_group_assignment_ordering_and_limited_counts():
+    examples = multiwoz_groups()
+    source = {'source_split': 'train'}
+    rows, _ = build_workload('multiwoz', examples, source)
+    limited, manifest = build_workload('multiwoz', examples, source, max_queries=17)
+    assert limited == rows[:17]
+    assert sum(manifest['per_user_record_counts'].values()) == 17
+    assert sum(manifest['per_user_conversation_counts'].values()) == len({r['conversation_id'] for r in limited})
+    assert validate_workload(limited, manifest)['queries_per_user']['min'] == 0
+    shuffled, m = build_workload('multiwoz', examples, source, order='seeded_shuffle')
+    assert [r['source_id'] for r in shuffled] != [r['source_id'] for r in rows]
+    assert {r['source_id']: r['user_id'] for r in shuffled} == {r['source_id']: r['user_id'] for r in rows}
+    assert validate_workload(shuffled, m)['conversations_assigned_to_multiple_users'] == 0
+
+
+def test_multiwoz_assignment_config_and_cli(tmp_path):
+    import subprocess
+    import sys
+    from semcache.experiments.config import load_paper_config
+    root = Path(__file__).resolve().parents[1]
+    config = root / 'configs/paper/multiwoz.yaml'
+    assert load_paper_config(config)['user_assignment']['mode'] == 'seeded_group_balanced'
+    source = tmp_path / 'source.json'
+    source.write_text(json.dumps(multiwoz_groups(51)), encoding='utf-8')
+    for mode in (None, 'seeded_group_balanced', 'seeded_round_robin'):
+        output = tmp_path / f'{mode}.jsonl'
+        command = [sys.executable, str(root / 'scripts/20_prepare_paper_workloads.py'),
+                   '--dataset', 'multiwoz', '--config', str(config),
+                   '--input-path', str(source), '--output', str(output)]
+        if mode:
+            command += ['--user-assignment', mode]
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        rows, manifest = read_workload(output)
+        assert manifest['user_assignment_rule'] == (mode or 'seeded_group_balanced')
+        report = validate_workload(rows, manifest)
+        assert report['active_users'] == 50
+        assert (report['conversations_assigned_to_multiple_users'] == 0) == (mode != 'seeded_round_robin')

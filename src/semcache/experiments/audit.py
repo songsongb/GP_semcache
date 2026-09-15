@@ -6,6 +6,7 @@ windows in the target query; overlapping positions count once.
 """
 from collections import Counter, defaultdict
 from .manifest import canonical
+from .user_assignment import assignment_counts
 
 
 def percentile(values, p):
@@ -49,12 +50,31 @@ def validate_workload(rows, manifest, tokenizer=None, w=3):
     tokenize = (lambda text: tokenizer(text)['input_ids']) if tokenizer else str.split
     users = Counter(r['user_id'] for r in rows)
     counts = list(users.values()) + [0]*max(0, manifest['user_count']-len(users))
+    assignment, conversations = assignment_counts(rows, manifest['user_count'])
+    users_per_conversation = [len(u) for u in conversations.values()]
+    split_count = sum(n > 1 for n in users_per_conversation)
+    if (manifest.get('user_assignment_rule') == 'seeded_group_balanced'
+            or manifest.get('assignment_unit') == 'conversation'):
+        if any(not r.get('conversation_id') for r in rows):
+            raise ValueError('Conversation-preserving assignment requires conversation_id on every record')
+        if split_count:
+            raise ValueError(f'Conversation-preserving assignment violated: '
+                             f'conversations_assigned_to_multiple_users={split_count}; required 0')
+    conversation_counts = list(assignment['per_user_conversation_counts'].values())
     domains = defaultdict(list)
     for r in rows:
         domains[canonical(r['domain_or_intent'])].append(r)
     lengths = [len(tokenize(r['query_text'])) for r in rows]
     return dict(query_count=len(rows), configured_users=manifest['user_count'], active_users=len(users),
         queries_per_user=dict(min=min(counts, default=0), median=percentile(counts, .5), max=max(counts, default=0)),
+        total_conversation_count=len(conversations),
+        conversations_assigned_to_multiple_users=split_count,
+        conversation_split_ratio=split_count/len(conversations) if conversations else 0,
+        users_per_conversation=dict(max=max(users_per_conversation, default=0),
+            mean=sum(users_per_conversation)/len(conversations) if conversations else 0),
+        conversations_per_user=dict(min=min(conversation_counts, default=0),
+            median=percentile(conversation_counts, .5), max=max(conversation_counts, default=0)),
+        **assignment,
         domain_distribution={k:len(v) for k,v in domains.items()},
         empty_query_count=sum(not r['query_text'].strip() for r in rows),
         empty_reference_count=sum(not (r['reference_text'] or '').strip() for r in rows),
