@@ -522,3 +522,10 @@ Eq.20 ratio. Measured OPT-125m/A2000 and paper OPT-6.7B/A100 latency are
 NOT_COMPARABLE. Full Table II, Fig.6–10, BLEU and paper-model GPU runs remain
 future milestones. Earlier README sections describe historical milestone scope;
 this section supersedes their deferred dataset/cost-interface statements.
+
+### M6B-1 baseline comparison
+
+The CPU logical/analytical runner now supports UD_ONLY, ES_ONLY, FBC and SEMCACHE
+on identical prepared workloads. See [semantics, limitations and SERAPH smoke
+commands](docs/milestone6b1_status.md). This is baseline infrastructure; M6B and
+Table-II/BLEU reproduction are not complete.
