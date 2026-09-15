@@ -61,6 +61,11 @@ semantic labels, similarity, impact, CHU, PBR or hybrid scores.
 
 Both variants are REPRODUCTION_CHOICE. Threshold 2 is fixed for interpretable
 methodological sensitivity; it was not tuned against results or paper values.
+Their top-level `baseline_semantics_provenance` agrees with
+`fbc_metadata.provenance`: REPRODUCTION_CHOICE, including the legacy FBC name.
+`baseline_family_provenance` is PAPER_DEFINED for every baseline. UD_ONLY,
+ES_ONLY and SEMCACHE retain PAPER_DEFINED architecture semantics; SemCache's
+logical implementation choices remain separately marked REPRODUCTION_CHOICE.
 Neither variant is claimed as the exact paper FBC. Small workloads need not
 produce capacity eviction; admission rates depend on actual observations.
 

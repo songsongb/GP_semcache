@@ -26,7 +26,12 @@ def test_interface_fairness_and_provenance(monkeypatch):
     assert all(r['fairness'] == results[0]['fairness'] for r in results)
     assert all(r['query_count'] == 5 and r['analytical_latency_s'] is None and r['system_memory_bytes'] is None for r in results)
     assert results[2]['fbc_metadata']['provenance'] == 'REPRODUCTION_CHOICE'
-    assert all(r['baseline_semantics_provenance'] == 'PAPER_DEFINED' for r in results)
+    for r in results:
+        assert r['baseline_family_provenance'] == 'PAPER_DEFINED'
+        if r['fbc_metadata'] is not None:
+            assert r['baseline_semantics_provenance'] == r['fbc_metadata']['provenance'] == 'REPRODUCTION_CHOICE'
+        else:
+            assert r['baseline_semantics_provenance'] == 'PAPER_DEFINED'
     assert all(v['metric_source'] == 'SIMULATED' for r in results for v in r['metrics'].values())
     def forbidden(*a,**kw):
         raise AssertionError('Semantic engine constructed')
@@ -50,6 +55,31 @@ def test_fbc_frequency_lru_and_overflow():
     assert cache.frequencies[('b',)] == 2
     assert FrequencyLRUCache(1,3,2).query('a b c')['admission_count'] == 0
     assert FrequencyLRUCache(2,3,1).query('a b')['block_lookup_count'] == 0
+
+
+@pytest.mark.parametrize('baseline,expected', [
+    ('UD_ONLY', (None, None, 0, None, None)),
+    ('ES_ONLY', (None, None, 0, None, None)),
+    ('FBC', (10, 8, 12, 2, 2)),
+    ('FBC_V1', (10, 8, 12, 2, 2)),
+    ('FBC_V2', (10, 6, 9, 4, 2)),
+    ('SEMCACHE', (10, 8, 12, 2, 2)),
+])
+def test_provenance_patch_preserves_smoke_counts(baseline, expected):
+    # Fixed synthetic M6B-1 smoke observations captured before the metadata patch.
+    rows,m,c,model = setup()
+    out = run_baseline(rows,c,model,workload_manifest=m,baseline=baseline,max_queries=5)
+    fields = ('block_lookup_count','block_hit_count','reused_token_count',
+              'admission_candidate_count','admission_count')
+    assert tuple(out[k] for k in fields) == expected
+    assert out['eviction_count'] == (None if baseline in ('UD_ONLY','ES_ONLY') else 0)
+    assert out['baseline_family_provenance'] == 'PAPER_DEFINED'
+    if baseline in ('FBC','FBC_V1','FBC_V2'):
+        assert out['baseline_semantics_provenance'] == out['fbc_metadata']['provenance'] == 'REPRODUCTION_CHOICE'
+    else:
+        assert out['baseline_semantics_provenance'] == 'PAPER_DEFINED'
+    if baseline == 'SEMCACHE':
+        assert out['reproduction_choices']['provenance'] == 'REPRODUCTION_CHOICE'
 
 
 def test_fbc_ignores_semantics_and_users_and_is_deterministic():
