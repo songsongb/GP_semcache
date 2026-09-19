@@ -1,4 +1,4 @@
-# SemCache reproduction — Milestones 1–6A
+# SemCache reproduction — Milestones 1–7
 
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
@@ -6,11 +6,12 @@ INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repos
 root is the primary specification. This root serves as the requested
 `semcache-repro/` directory; the supplied paper is preserved in place.
 
-**Current status:** M1–M5 and the M6A experimental foundation are implemented.
+**Current status:** M1–M7 structural components are implemented.
 M2–M5 are **user-reported REAL-GPU VERIFIED on SERAPH** with pretrained
 OPT-125m. M6A is **CPU-TESTED** using synthetic datasets and random tiny OPT;
 real datasets, pretrained M6A and CUDA M6A are **NOT YET VERIFIED**.
 **No paper result is reproduced.** See [M6A status and commands](docs/milestone6a_status.md),
+[M7 semantic architecture and commands](docs/M7_FULL_SEMANTIC_SEMCACHE.md),
 [paper experiment specification](docs/paper_experiment_spec.md), and
 [workload reconstruction](docs/workload_reconstruction.md).
 
@@ -22,7 +23,8 @@ real datasets, pretrained M6A and CUDA M6A are **NOT YET VERIFIED**.
 | M4 | LoRA / EdgeLoRA decomposition |
 | M5 | Integrated controlled SemCache prefill system |
 | M6A | Dataset/workload, provenance, logical smoke and analytical experiment foundation |
-| M6B onward | Paper evaluation and full-generation validation — future work |
+| M7 | Actual TinyBERT, actual attention impact, CHU/PBR and tiny OPT integration probe |
+| Future | Paper evaluation and full-generation validation |
 
 
 SemCache caches **per-layer Q, K and V projection blocks** across users within

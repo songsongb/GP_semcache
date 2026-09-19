@@ -114,6 +114,11 @@ def test_integrated_cross_user_cluster_isolation_chu_pbr(users):
     engine = make_engine(users)
     first = engine.query('2 3 4 5 6 7 8 9', 'user_a', 'source', True)
     assert first['summary']['block_hit_count'] == 0 and engine.cache.physical_tensor_bytes > 0
+    admitted_impacts = {event['cache_key']: event['I'] for event in first['events']
+                        if event['event_type'] == 'INSERT'}
+    assert admitted_impacts and all(value > 0 for value in admitted_impacts.values())
+    assert all(entry.impact == pytest.approx(admitted_impacts[entry.key])
+               for entry in engine.cache.entries.values())
     assert all(e.qkv_metadata['component_scope'] == 'total_qkv' for e in engine.cache.entries.values())
     second = engine.query('10 2 3 4 5 6 7 8 9', 'user_b', 'target', True)
     assert second['summary']['accepted_nonoverlap_hits'] == 2

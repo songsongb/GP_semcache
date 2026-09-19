@@ -5,7 +5,8 @@ from .semantic.subsequence import SubsequenceExtractor
 from .semantic.matcher import ExactTokenMatcher
 from .semantic.hit_selection import CacheHit, select_nonoverlapping
 from .cache.cache_entry import CacheEntry
-from .cache.metric_manager import CacheMetricManager, attention_impact
+from .cache.metric_manager import CacheMetricManager, actual_attention_impact
+from .cache.attention_impact import MeanLayerHeadFrobeniusReducer
 from .cache.cache_metrics import normalize
 from .edgelora.mixed_projection import mixed_projection_path
 from .evaluation.logit_metrics import compare_logits
@@ -15,12 +16,18 @@ from .simulation.cost_model import projection_savings
 class SemCacheEngine:
     def __init__(self, model, tokenizer, adapter, encoder, clusterer, cache, *, window_size=3,
                  storage_device='cpu', rho=0.8, history_lambda=100, frequency_window=100,
-                 metadata=None, seed=42):
+                 metadata=None, seed=42, impact_reducer=None, pbr_interval_queries=None,
+                 verbose_impact_events=False):
         self.model, self.tokenizer, self.adapter = model, tokenizer, adapter
         self.encoder, self.clusterer, self.cache = encoder, clusterer, cache
         self.extractor, self.matcher = SubsequenceExtractor(window_size), ExactTokenMatcher()
         self.storage_device, self.metadata, self.seed = storage_device, metadata or {}, seed
         self.metrics = CacheMetricManager(cache, rho, history_lambda, frequency_window)
+        self.impact_reducer = impact_reducer or MeanLayerHeadFrobeniusReducer()
+        if pbr_interval_queries is not None and pbr_interval_queries < 1:
+            raise ValueError('PBR interval must be positive or None')
+        self.pbr_interval_queries = pbr_interval_queries
+        self.verbose_impact_events = verbose_impact_events
         self.events = []
         self.query_id = None
 
@@ -48,8 +55,7 @@ class SemCacheEngine:
         self.model.eval()
         self.emit('QUERY', query_text=query_text, user_id=user_id, adapter_name=user_id, token_ids=ids)
         vector = self.encoder.encode([query_text])[0]
-        cluster = self.clusterer.assign(vector)
-        distance = math.dist(vector, self.clusterer.centroids[cluster])
+        cluster, distance = self.clusterer.assign_with_distance(vector)
         self.clusterer.observe(vector)
         updated = self.clusterer.queries % self.clusterer.update_interval == 0
         self.emit('CLUSTER_ASSIGN', cluster_id=cluster, cluster_distance=distance, cluster_updated=updated)
@@ -82,7 +88,9 @@ class SemCacheEngine:
         impacts = defaultdict(list)
         span_impacts = {}
         for w in windows:
-            impact = attention_impact(output.attentions, w.start, w.end)
+            impact = actual_attention_impact(output.attentions, w.start, w.end,
+                                             torch.ones(len(ids), dtype=torch.bool),
+                                             self.impact_reducer)
             span_impacts[w.start] = impact
             impacts[self.matcher.key(cluster, w)].append(impact)
         # A query contributes one observation per key; repeated occurrences mean.
@@ -91,8 +99,10 @@ class SemCacheEngine:
         for hit in selected:
             old = hit.entry.impact
             self.metrics.reused(hit.entry, span_impacts[hit.window.start])
-            self.emit('CHU', **self.entry_fields(hit.entry), old_impact=old,
-                      current_impact=span_impacts[hit.window.start], impact_update_kind='chu')
+            self.emit('CHU', **self.entry_fields(hit.entry), old_I=old,
+                      current_attention_impact=span_impacts[hit.window.start], new_I=hit.entry.impact,
+                      old_impact=old, current_impact=span_impacts[hit.window.start],
+                      block_key=hit.entry.key, impact_update_kind='chu')
         considered = set()
         for window in misses:
             key = self.matcher.key(cluster, window)
@@ -132,6 +142,9 @@ class SemCacheEngine:
             self.cache.insert(entry, frequencies[key], frequencies, materialize=materialize, on_event=cache_event)
             if not allowed and self.cache.physical_tensor_bytes != before:
                 raise AssertionError('Denied candidate allocated cache storage')
+        pbr_updates = []
+        if self.pbr_interval_queries and self.clusterer.queries % self.pbr_interval_queries == 0:
+            pbr_updates = self.recalculate_cluster(cluster, trigger='fixed_query_interval')
         reused = sum(mask)
         recomputed = len(ids)-reused
         assert reused + recomputed == len(ids)
@@ -167,6 +180,11 @@ class SemCacheEngine:
             projection_accounting_scope='rows per Q/K/V per layer; all layers', projection_layers=layers,
             **savings, paper_estimated_comm_bytes_saved=comm_bytes,
             savings_scope='analytical sum over all layers; no wall-clock speedup claim',
+            semantic_impact_provider='actual_attention_probabilities',
+            attention_impact_reducer=self.impact_reducer.metadata,
+            chu_rho=self.metrics.updater.rho, pbr_history_lambda=self.metrics.history.history_lambda,
+            pbr_trigger_policy='manual' if self.pbr_interval_queries is None else 'fixed_query_interval_REPRODUCTION_CHOICE',
+            pbr_updates_this_query=len(pbr_updates),
             baseline_comparison_available=baseline is not None, **quality,
             metric_source='measured except logical capacity and paper_estimated analytical savings', safe_reuse_claimed=False)
         return dict(summary=row, events=self.events[event_start:], logits=logits, projection_audit=audit.records)
@@ -229,9 +247,14 @@ class SemCacheEngine:
             events=self.events[start:])
 
     def pbr(self, cluster):
+        return self.recalculate_cluster(cluster)
+
+    def recalculate_cluster(self, cluster, trigger='manual'):
+        """Force paper Eq.13 over bounded scalar history for one cluster."""
         updates = self.metrics.pbr(cluster)
         for update in updates:
-            self.emit('OPTIONAL_PBR', cluster_id=cluster, impact_update_kind='manual_pbr', **update)
+            self.emit('PBR', cluster_id=cluster, impact_update_kind='pbr',
+                      trigger_policy=trigger, **update)
         return updates
 
     def lookup_latest_token(self, cluster_id, token_id, target_position):

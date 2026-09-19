@@ -24,10 +24,12 @@ cache:
   age_unit: query
   admission_frequency_window_queries: 100
 semantic_impact:
+  enabled: true
   rho: 0.8
   pbr_interval_queries: 100
   mode: chu+pbr
-  provider: actual_attention_rows
+  provider: actual_attention_probabilities
+  reducer: mean_layer_head_frobenius_v1
   history_lambda: 100
 execution_mode: ANALYTICAL_SIMULATION
 execution_scope: prefill_only

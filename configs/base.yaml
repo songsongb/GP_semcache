@@ -27,14 +27,17 @@ cache:
   age_unit: query
   admission_frequency_window_queries: 100
 semantic_impact:
+  enabled: true
   rho: 0.8
   pbr_interval_queries: 100
   mode: chu+pbr
-  provider: actual_attention_rows  # M5: mean heads; row L2; sum tokens/layers.
+  provider: actual_attention_probabilities
+  reducer: mean_layer_head_frobenius_v1  # REPRODUCTION_CHOICE.
   history_lambda: 100
 semantic_encoder:
-  backend: huggingface_text
-  checkpoint: null  # Must be explicitly supplied; paper checkpoint unspecified.
+  backend: tinybert_huggingface
+  model_id: huawei-noah/TinyBERT_General_4L_312D  # REPRODUCTION_CHOICE; overrideable.
+  checkpoint: huawei-noah/TinyBERT_General_4L_312D  # Backward-compatible alias.
   revision: main
   pooling: masked_mean
   max_length: 512

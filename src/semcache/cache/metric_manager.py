@@ -1,6 +1,7 @@
 """Query clock, appearance history, actual-reuse updates and manual PBR."""
 from collections import Counter, defaultdict, deque
 from .impact_updater import AttentionImpactProvider, SemanticImpactUpdater
+from .attention_impact import MeanLayerHeadFrobeniusReducer
 
 
 def attention_impact(attentions, start, end):
@@ -21,6 +22,12 @@ def attention_impact(attentions, start, end):
         value += rows.norm(dim=-1).mean(dim=1).sum().item()
     SemanticImpactUpdater._validate(value)
     return value
+
+
+def actual_attention_impact(attentions, start, end, valid_attention_mask=None, reducer=None):
+    """M7 reducer entry point; old ``attention_impact`` remains M5-compatible."""
+    return (reducer or MeanLayerHeadFrobeniusReducer()).reduce(
+        attentions, start, end, valid_attention_mask)
 
 
 class QueryImpactHistory(AttentionImpactProvider):
@@ -75,6 +82,8 @@ class CacheMetricManager:
                 self.updater._validate(value)
                 entry.impact = value
                 entry.updated_at = self.cache.now
-            updates.append(dict(cache_key=entry.key, old_impact=old, I=entry.impact,
+            updates.append(dict(cache_key=entry.key, old_I=old, new_I=entry.impact,
+                                old_impact=old, I=entry.impact,
+                                occurrence_count=sum(entry.key in q['impacts'] for q in self.history.history[cluster]),
                                 denominator_zero=value is None))
         return updates

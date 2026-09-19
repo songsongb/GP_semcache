@@ -27,12 +27,17 @@ class IntentClusterer:
         self.pending = []
         self.queries = 0
 
-    def assign(self, embedding):
+    def assign_with_distance(self, embedding):
         if not self.centroids:
             raise RuntimeError("Initialize on warmup embeddings first")
         if len(embedding) != len(self.centroids[0]) or not all(map(math.isfinite, embedding)):
             raise ValueError("Invalid embedding")
-        return min(range(self.num_clusters), key=lambda c: sum((a-b)**2 for a, b in zip(embedding, self.centroids[c])))
+        squared = [sum((a-b)**2 for a, b in zip(embedding, centroid)) for centroid in self.centroids]
+        cluster = min(range(self.num_clusters), key=squared.__getitem__)
+        return cluster, math.sqrt(squared[cluster])
+
+    def assign(self, embedding):
+        return self.assign_with_distance(embedding)[0]
 
     def update(self, cluster_id, embedding):
         self.assign(embedding)  # dimensional validation

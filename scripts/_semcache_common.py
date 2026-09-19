@@ -3,7 +3,7 @@ from semcache.models.loader import load_model
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
 from semcache.utils.seed import seed_everything
-from semcache.semantic.encoder import ControlledEncoder, HuggingFaceTextEncoder
+from semcache.semantic.encoder import ControlledEncoder, HuggingFaceTextEncoder, TinyBERTSemanticEncoder
 from semcache.semantic.intent_clusterer import IntentClusterer
 from semcache.cache.global_cache import GlobalCache
 from semcache.cache.admission import AdmissionPolicy
@@ -49,6 +49,9 @@ def engine_for(config, model, tokenizer, metadata, adapter, capacity=None):
     elif c['encoder_kind'] == 'huggingface_text':
         encoder = HuggingFaceTextEncoder(**config['semantic_encoder'])
         centroids = c['initial_centroids']  # Must match explicitly configured encoder dimensions.
+    elif c['encoder_kind'] == 'tinybert':
+        encoder = TinyBERTSemanticEncoder(**config['semantic_encoder'])
+        centroids = c['initial_centroids']  # Explicit warmup embeddings are also supported by script 29.
     else:
         raise ValueError('Unsupported semantic encoder kind')
     clusterer = IntentClusterer(len(centroids), config['cluster_update_interval_queries'])
