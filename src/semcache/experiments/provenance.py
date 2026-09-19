@@ -24,7 +24,9 @@ def configuration_provenance(config):
     """Per-leaf source ledger. Unknown/overridden settings are choices, not paper facts."""
     paper = {
         'num_users':50,'lora_rank':8,'subsequence_window':3,'logical_cache_capacity_gb':20,
-        'cluster_update_interval_queries':100,'admission.alpha':.5,'admission.beta':.3,
+        'clustering.update_mode':'immediate_eq9',
+        'clustering.update_rule':'incremental_mean_after_every_assignment',
+        'admission.alpha':.5,'admission.beta':.3,
         'admission.delta':.2,'admission.threshold':.3,'eviction.alpha':.4,'eviction.beta':.3,
         'eviction.gamma':.2,'eviction.delta':.1,'semantic_impact.rho':.8,'semantic_impact.history_lambda':100,
         'system.es_gpu':'NVIDIA A100 80GB','system.es_cpu':'Intel Xeon Gold 6338',

@@ -60,7 +60,8 @@ def make_logical_engine(rows, config, encoder_kind='fixture', allow_download=Fal
         centroids = encoder.encode(texts[:c])
     else:
         raise ValueError('Unknown encoder kind')
-    clusterer = IntentClusterer(c,config['cluster_update_interval_queries'])
+    clusterer = IntentClusterer(c, config['cluster_update_interval_queries'],
+                                update_mode=config['clustering']['update_mode'])
     clusterer.initialize(centroids, counts=[0]*c if encoder_kind == 'fixture' else None)
     cache = GlobalCache(int(config['logical_cache_capacity_gb']*1e9),
         AdmissionPolicy(**config['admission']), EvictionPolicy(**config['eviction']))
@@ -93,7 +94,8 @@ def run_workload(rows, config, model_spec, *, engine, workload_manifest, run_id,
     if (engine.cache.capacity_bytes != int(config['logical_cache_capacity_gb']*1e9)
             or engine.clusterer.num_clusters != config['cluster_count']
             or engine.extractor.window_size != config['subsequence_window']
-            or engine.clusterer.update_interval != config['cluster_update_interval_queries']):
+            or engine.clusterer.update_interval != config['cluster_update_interval_queries']
+            or engine.clusterer.update_mode != config['clustering']['update_mode']):
         raise ValueError('Provisioned engine cache/cluster/window settings differ from run config')
     if not logical:
         module = engine.adapter.projection_module(0, 'q')

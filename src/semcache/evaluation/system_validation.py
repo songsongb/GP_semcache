@@ -14,7 +14,7 @@ from semcache.cache.metric_manager import CacheMetricManager
 def validate_frontend():
     encoder = ControlledEncoder({'health-like': [0., 0.], 'weather-like': [10., 10.]})
     assert encoder.encode(['health-like']) == encoder.encode(['health-like'])
-    clusterer = IntentClusterer(2, update_interval=2)
+    clusterer = IntentClusterer(2, update_interval=2, update_mode='buffered')
     clusterer.initialize([[0, 0], [10, 10]], counts=[1, 1])
     assert clusterer.observe([2, 0]) == 0 and clusterer.centroids[0] == [0, 0]
     assert clusterer.observe([4, 0]) == 0 and clusterer.centroids[0] == [2, 0]

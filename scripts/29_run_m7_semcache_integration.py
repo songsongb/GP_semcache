@@ -41,8 +41,9 @@ def main():
         "Book an Italian restaurant in central London tonight.",
     ]
     warmup = encoder.encode(texts)
-    clusterer = IntentClusterer(2, update_interval=100, initialization="first_k")
-    clusterer.initialize(warmup, counts=[0, 0])
+    clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
+    # first_k means each warmup embedding is already incorporated once: N_c=1.
+    clusterer.initialize(warmup)
     cache = GlobalCache(256 * 1024 * 1024)
     engine = SemCacheEngine(model, tokenizer, OPTModelAdapter(model), encoder, clusterer, cache,
                             rho=.8, history_lambda=args.pbr_history_lambda,
@@ -61,9 +62,14 @@ def main():
         "semantic_encoder": encoder.metadata,
         "clustering": {"cluster_count": 2, "distance_metric": "euclidean_l2",
             "initialization": "first_k_REPRODUCTION_CHOICE",
-            "centroid_update_rule": "Eq.9 incremental mean, batched every 100 queries",
+            "update_mode": "immediate_eq9",
+            "centroid_update_rule": "Eq.9 incremental mean after every assignment",
             "assignments": [{"query_id": row["query_id"], "cluster_id": row["cluster_id"],
-                             "nearest_centroid_distance": row["cluster_distance"]} for row in rows],
+                             "nearest_centroid_distance_pre_update": row["nearest_centroid_distance_pre_update"],
+                             "centroid_update_applied": row["centroid_update_applied"],
+                             "cluster_count_before": row["cluster_count_before"],
+                             "cluster_count_after": row["cluster_count_after"],
+                             "centroid_shift_l2": row["centroid_shift_l2"]} for row in rows],
             "provenance": {"equations": "PAPER_DEFINED", "initialization": "REPRODUCTION_CHOICE"}},
         "reuse": {"query_count": len(rows), "block_lookup_count": sum(r["block_lookup_count"] for r in rows),
             "block_hit_count": sum(r["block_hit_count"] for r in rows),

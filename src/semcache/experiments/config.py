@@ -40,7 +40,9 @@ def validate_config(c):
         raise ValueError('Dataset-specific cluster_count required')
     if c['workload']['order'] not in ('source_order','seeded_shuffle'):
         raise ValueError('Invalid ordering')
-    if c['clustering'] != dict(initialization='first_k', update_rule='batched_incremental_mean'):
+    expected_clustering = dict(initialization='first_k', update_mode='immediate_eq9',
+                               update_rule='incremental_mean_after_every_assignment')
+    if c['clustering'] != expected_clustering:
         raise ValueError('Unsupported clustering policy')
     if c['match_rule'] != 'exact_token_ids_within_cluster':
         raise ValueError('Unsupported matching rule')

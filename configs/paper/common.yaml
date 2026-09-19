@@ -1,10 +1,11 @@
 seed: 42
 num_users: 50
 lora_rank: 8
-cluster_update_interval_queries: 100
+cluster_update_interval_queries: 100  # Legacy/optional buffered mode only; REPRODUCTION_CHOICE.
 clustering:
   initialization: first_k
-  update_rule: batched_incremental_mean
+  update_mode: immediate_eq9
+  update_rule: incremental_mean_after_every_assignment
 subsequence_window: 3
 match_rule: exact_token_ids_within_cluster
 logical_cache_capacity_gb: 20

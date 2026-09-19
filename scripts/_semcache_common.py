@@ -39,7 +39,8 @@ def engine_for(config, model, tokenizer, metadata, adapter, capacity=None):
     if (config['match_rule'] != 'exact_token_ids_within_cluster'
             or config['cache']['normalization'] != 'current_pool_plus_candidate'
             or config['cache']['zero_max'] != 0 or config['cache']['age_unit'] != 'query'
-            or config['clustering']['update_rule'] != 'batched_incremental_mean'
+            or config['clustering']['update_rule'] != 'incremental_mean_after_every_assignment'
+            or config['clustering']['update_mode'] != 'immediate_eq9'
             or c['overlap_policy'] != 'earliest_start_then_impact_then_key'
             or c['pbr_trigger'] != 'manual'):
         raise ValueError('Unsupported M5 reproduction policy')
@@ -54,7 +55,8 @@ def engine_for(config, model, tokenizer, metadata, adapter, capacity=None):
         centroids = c['initial_centroids']  # Explicit warmup embeddings are also supported by script 29.
     else:
         raise ValueError('Unsupported semantic encoder kind')
-    clusterer = IntentClusterer(len(centroids), config['cluster_update_interval_queries'])
+    clusterer = IntentClusterer(len(centroids), config['cluster_update_interval_queries'],
+                                update_mode=config['clustering']['update_mode'])
     clusterer.initialize(centroids, counts=[0]*len(centroids))
     cache = GlobalCache(capacity if capacity is not None else int(config['logical_cache_capacity_gb']*10**9),
                         AdmissionPolicy(**config['admission']), EvictionPolicy(**config['eviction']))

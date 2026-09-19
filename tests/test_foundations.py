@@ -26,7 +26,8 @@ def test_cluster_assignment_and_mean():
 
 
 def test_batched_update():
-    c = IntentClusterer(1, update_interval=2)
+    # Optional legacy batching is a REPRODUCTION_CHOICE, not paper Eq.9 timing.
+    c = IntentClusterer(1, update_interval=2, update_mode='buffered')
     c.initialize([[0]])
     c.observe([3])
     assert c.centroids == [[0]]

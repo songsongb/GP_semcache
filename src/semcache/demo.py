@@ -25,8 +25,10 @@ def run_demo(config):
         raise ValueError("Need one controlled embedding per query")
     vocab = {word: i for i, word in enumerate(sorted({w for q in queries for w in q.split()}))}
     encoder = ControlledEncoder(dict(zip(queries, d["embeddings"])))
-    clusterer = IntentClusterer(config["intent_clusters"][config["dataset"]], config["cluster_update_interval_queries"], config["clustering"]["initialization"])
-    if config["clustering"]["update_rule"] != "batched_incremental_mean":
+    clusterer = IntentClusterer(config["intent_clusters"][config["dataset"]],
+        config["cluster_update_interval_queries"], config["clustering"]["initialization"],
+        config["clustering"]["update_mode"])
+    if config["clustering"]["update_rule"] != "incremental_mean_after_every_assignment":
         raise ValueError("Unsupported centroid update policy")
     clusterer.initialize(d["centroids"], counts=[0]*clusterer.num_clusters)
     extractor = SubsequenceExtractor(config["subsequence_window"])

@@ -55,13 +55,53 @@ def test_masked_mean_ignores_padding():
     torch.testing.assert_close(actual, torch.tensor([[2., 3.]]))
 
 
-def test_l2_assignment_incremental_mean_and_membership_count():
-    clusterer = IntentClusterer(2, update_interval=1)
-    clusterer.initialize([[0., 0.], [10., 10.]], counts=[2, 1])
-    assert clusterer.assign_with_distance([1., 0.]) == pytest.approx((0, 1.))
-    clusterer.update(0, [3., 3.])
-    assert clusterer.centroids[0] == pytest.approx([1., 1.])
+def test_immediate_eq9_uses_preupdate_centroid_and_updates_only_assignment():
+    clusterer = IntentClusterer(2)
+    clusterer.initialize([[1., 3.], [20., 20.]], counts=[3, 2])
+    untouched = list(clusterer.centroids[1])
+    result = clusterer.observe_with_diagnostics([5., 7.])
+    assert result['cluster_id'] == 0
+    assert result['nearest_centroid_distance_pre_update'] == pytest.approx(32 ** .5)
+    assert result['centroid_update_applied'] is True
+    assert result['cluster_count_before'] == 3 and result['cluster_count_after'] == 4
+    assert result['centroid_shift_l2'] == pytest.approx(2 ** .5)
+    assert clusterer.centroids[0] == pytest.approx([2., 4.])
+    assert clusterer.centroids[1] == untouched
+    assert clusterer.counts == [4, 2]
+
+
+def test_second_query_sees_updated_centroid_and_each_observation_counts_once():
+    clusterer = IntentClusterer(2)
+    clusterer.initialize([[0.], [10.]])  # first_k samples imply counts [1, 1].
+    first = clusterer.observe_with_diagnostics([4.])
+    assert first['cluster_id'] == 0 and clusterer.centroids[0] == [2.]
+    second = clusterer.observe_with_diagnostics([6.])
+    # With the updated centroid, distances tie at four and stable tie-break selects 0.
+    assert second['cluster_id'] == 0
+    assert second['nearest_centroid_distance_pre_update'] == pytest.approx(4.)
+    assert clusterer.centroids[0] == pytest.approx([10./3])
     assert clusterer.counts == [3, 1]
+
+
+def test_identical_embedding_applies_eq9_and_increments_count_with_zero_shift():
+    clusterer = IntentClusterer(1)
+    clusterer.initialize([[2., 4.]])
+    result = clusterer.observe_with_diagnostics([2., 4.])
+    assert result['centroid_update_applied']
+    assert result['cluster_count_before'] == 1 and result['cluster_count_after'] == 2
+    assert result['centroid_shift_l2'] == 0
+    assert clusterer.counts == [2]
+
+
+def test_first_k_counts_and_optional_buffered_mode_are_explicit():
+    clusterer = IntentClusterer(2)
+    clusterer.initialize([[1.], [9.], [100.]])
+    assert clusterer.centroids == [[1.], [9.]] and clusterer.counts == [1, 1]
+    buffered = IntentClusterer(1, update_interval=2, update_mode='buffered')
+    buffered.initialize([[0.]])
+    assert not buffered.observe_with_diagnostics([2.])['centroid_update_applied']
+    buffered.observe([4.])
+    assert buffered.centroids == [[2.]] and buffered.counts == [3]
 
 
 def test_attention_reducer_known_value_and_invalid_cells_excluded():

@@ -24,7 +24,8 @@ history. The old controlled encoder and logical simulation remain available.
 | Assignment/update | nearest Euclidean centroid (Eq. 8), incremental mean (Eq. 9) | `PAPER_DEFINED` |
 | Cluster counts | MultiWOZ 20, CoQA 40, SNIPS 30 | `PAPER_DEFINED` |
 | Initialization | first C embeddings (`first_k`) | `REPRODUCTION_CHOICE` |
-| Centroid schedule | buffer observations, flush every configured 100 queries | `REPRODUCTION_CHOICE` |
+| Centroid schedule | assign using current centroids, then immediately apply Eq. 9 | `PAPER_DEFINED` |
+| Optional buffered centroid mode | flush every configured interval | `REPRODUCTION_CHOICE` |
 | Attention reducer | `mean_layer_head_frobenius_v1` | `REPRODUCTION_CHOICE` |
 | Cold block impact | current query's reduced attention | `REPRODUCTION_CHOICE` |
 | CHU rho | 0.8 | `PAPER_DEFINED` |
@@ -44,12 +45,30 @@ Assignment is
 
 `c = argmin_c ||e_u - mu_c||_2`.
 
-The selected cluster's diagnostic includes the unsquared L2 distance. At an
-update flush, each observation applies
+The selected cluster's diagnostic includes the pre-update unsquared L2 distance.
+Immediately after assignment, the selected centroid applies
 
 `mu_c <- (N_c mu_c + e_u) / (N_c + 1)`
 
-and increments `N_c`. Embeddings are not normalized.
+and increments `N_c` exactly once. Only that centroid changes, and the next
+query observes the updated value. The normal M7 mode is `immediate_eq9`; the
+legacy `buffered` mode remains available only as an explicit reproduction
+choice and is not described as the paper's update timing.
+
+Per-query output records the pre-update distance, count before/after, whether
+the update was applied, and centroid-shift L2 without serializing centroids.
+The backward-compatible `cluster_distance` is the pre-update distance, while
+`cluster_updated` is an alias for `centroid_update_applied` in normal M7 output.
+
+With `first_k` initialization, the first C embeddings become the C centroids and
+each initializes its membership count to one because it has already been
+incorporated. Synthetic callers supplying externally chosen centroids may pass
+explicit counts (including zero), but subsequent observations still increment
+the selected count exactly once.
+
+Intent-centroid updating is independent of semantic-impact PBR. Clustering
+updates after every query. PBR instead retains the most recent Lambda scalar
+impact observations per cluster; its paper-default Lambda remains 100.
 
 For each layer `l` and head `h`, the default reducer selects all valid query
 positions and block key positions `[start,end)`. Padding and cells where the key

@@ -1,13 +1,16 @@
-"""Eq. 8 assignment and Eq. 9 means, with explicit batched update choice."""
+"""Paper Eq. 8 assignment followed by Eq. 9 online centroid updates."""
 import math
 
 
 class IntentClusterer:
-    def __init__(self, num_clusters, update_interval=100, initialization="first_k"):
-        if num_clusters < 1 or update_interval < 1 or initialization != "first_k":
+    def __init__(self, num_clusters, update_interval=100, initialization="first_k",
+                 update_mode="immediate_eq9"):
+        if (num_clusters < 1 or update_interval < 1 or initialization != "first_k"
+                or update_mode not in {"immediate_eq9", "buffered"}):
             raise ValueError("Invalid cluster configuration")
         self.num_clusters = num_clusters
         self.update_interval = update_interval
+        self.update_mode = update_mode
         self.centroids = []
         self.counts = []
         self.pending = []
@@ -48,12 +51,27 @@ class IntentClusterer:
         self.counts[cluster_id] += 1
 
     def observe(self, embedding):
-        c = self.assign(embedding)
-        self.pending.append((c, list(embedding)))
+        return self.observe_with_diagnostics(embedding)["cluster_id"]
+
+    def observe_with_diagnostics(self, embedding):
+        """Assign against current centroids, then update according to the mode."""
+        c, distance = self.assign_with_distance(embedding)
+        before_count = self.counts[c]
+        before_centroid = list(self.centroids[c])
         self.queries += 1
-        if self.queries % self.update_interval == 0:
-            self.flush()
-        return c
+        applied = False
+        if self.update_mode == "immediate_eq9":
+            self.update(c, embedding)
+            applied = True
+        else:
+            self.pending.append((c, list(embedding)))
+            if self.queries % self.update_interval == 0:
+                self.flush()
+        shift = math.dist(before_centroid, self.centroids[c])
+        return dict(cluster_id=c, nearest_centroid_distance_pre_update=distance,
+                    centroid_update_applied=applied,
+                    cluster_count_before=before_count,
+                    cluster_count_after=self.counts[c], centroid_shift_l2=shift)
 
     def flush(self):
         for c, embedding in self.pending:

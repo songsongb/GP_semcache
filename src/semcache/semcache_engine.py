@@ -55,10 +55,12 @@ class SemCacheEngine:
         self.model.eval()
         self.emit('QUERY', query_text=query_text, user_id=user_id, adapter_name=user_id, token_ids=ids)
         vector = self.encoder.encode([query_text])[0]
-        cluster, distance = self.clusterer.assign_with_distance(vector)
-        self.clusterer.observe(vector)
-        updated = self.clusterer.queries % self.clusterer.update_interval == 0
-        self.emit('CLUSTER_ASSIGN', cluster_id=cluster, cluster_distance=distance, cluster_updated=updated)
+        cluster_update = self.clusterer.observe_with_diagnostics(vector)
+        cluster = cluster_update['cluster_id']
+        distance = cluster_update['nearest_centroid_distance_pre_update']
+        updated = cluster_update['centroid_update_applied']
+        self.emit('CLUSTER_ASSIGN', cluster_distance=distance, cluster_updated=updated,
+                  **cluster_update)
         windows = self.extractor.extract(ids)
         self.metrics.arrive([self.matcher.key(cluster, w) for w in windows])
         self.emit('SUBSEQUENCE_EXTRACT', cluster_id=cluster, window_size=self.extractor.window_size,
@@ -169,7 +171,13 @@ class SemCacheEngine:
             encoder_kind='fixture' if self.encoder.metadata.get('checkpoint') == 'controlled_vectors_v1' else 'huggingface_text',
             encoder_model_id=None if self.encoder.metadata.get('checkpoint') == 'controlled_vectors_v1' else self.encoder.metadata.get('checkpoint'),
             cluster_id=cluster, cluster_distance=distance,
-            cluster_updated=updated, window_size=self.extractor.window_size, match_policy=self.matcher.match_rule,
+            nearest_centroid_distance_pre_update=distance,
+            cluster_updated=updated, centroid_update_applied=updated,
+            cluster_count_before=cluster_update['cluster_count_before'],
+            cluster_count_after=cluster_update['cluster_count_after'],
+            centroid_shift_l2=cluster_update['centroid_shift_l2'],
+            cluster_update_mode=self.clusterer.update_mode,
+            window_size=self.extractor.window_size, match_policy=self.matcher.match_rule,
             candidate_windows=len(windows), block_lookup_count=len(windows), block_hit_count=len(hits),
             accepted_nonoverlap_hits=len(selected), reused_unique_token_count=reused, query_token_count=len(ids),
             recomputed_tokens=recomputed, token_reuse_ratio=reused/len(ids),
@@ -201,11 +209,11 @@ class SemCacheEngine:
         if not ids:
             raise ValueError('Empty tokenized query')
         vector = self.encoder.encode([query_text])[0]
-        cluster = self.clusterer.assign(vector)
-        self.clusterer.observe(vector)
+        cluster_update = self.clusterer.observe_with_diagnostics(vector)
+        cluster = cluster_update['cluster_id']
         windows = self.extractor.extract(ids)
         self.metrics.arrive([self.matcher.key(cluster, w) for w in windows])
-        self.emit('CLUSTER_ASSIGN', cluster_id=cluster, execution_mode='ANALYTICAL_SIMULATION')
+        self.emit('CLUSTER_ASSIGN', execution_mode='ANALYTICAL_SIMULATION', **cluster_update)
         self.emit('SUBSEQUENCE_EXTRACT', candidate_windows=len(windows))
         hits, misses = [], []
         for w in windows:
@@ -238,6 +246,11 @@ class SemCacheEngine:
             self.emit('ADMIT' if allowed else 'DENY', admission_score=self.cache.admission.score(normalized), **self.entry_fields(entry))
             self.cache.insert(entry, self.metrics.frequencies[key], self.metrics.frequencies, on_event=cache_event)
         return dict(summary=dict(query_id=query_id, user_id=user_id, cluster_id=cluster,
+            nearest_centroid_distance_pre_update=cluster_update['nearest_centroid_distance_pre_update'],
+            centroid_update_applied=cluster_update['centroid_update_applied'],
+            cluster_count_before=cluster_update['cluster_count_before'],
+            cluster_count_after=cluster_update['cluster_count_after'],
+            centroid_shift_l2=cluster_update['centroid_shift_l2'],
             candidate_windows=len(windows), block_lookup_count=len(windows), block_hit_count=len(hits),
             reused_token_count=sum(mask), query_token_count=len(ids),
             admission_count=admissions, admission_candidate_count=candidates, eviction_count=evictions,

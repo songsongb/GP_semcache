@@ -24,6 +24,9 @@ def test_defaults_and_model_metadata():
         assert config['admission']==dict(alpha=.5,beta=.3,delta=.2,threshold=.3)
         assert config['eviction']==dict(alpha=.4,beta=.3,gamma=.2,delta=.1)
         assert config['semantic_impact']['rho']==.8 and config['semantic_impact']['history_lambda']==100
+        assert config['clustering']['update_mode']=='immediate_eq9'
+        assert config['clustering']['update_rule']=='incremental_mean_after_every_assignment'
+        # Retained only for explicit legacy buffered mode; unrelated to PBR Lambda.
         assert config['cluster_update_interval_queries']==100
         assert config['system']['bandwidth_mbps']==200
         assert config['semantic_encoder']['model_id'] is None

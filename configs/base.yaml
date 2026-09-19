@@ -12,10 +12,11 @@ model:
   attention_implementation: eager
 dataset: MultiWOZ
 intent_clusters: {MultiWOZ: 20, CoQA: 40, SNIPS: 30}
-cluster_update_interval_queries: 100
+cluster_update_interval_queries: 100  # Used only by optional buffered mode.
 clustering:
   initialization: first_k
-  update_rule: batched_incremental_mean
+  update_mode: immediate_eq9
+  update_rule: incremental_mean_after_every_assignment
 subsequence_window: 3
 match_rule: exact_token_ids_within_cluster
 logical_cache_capacity_gb: 20
