@@ -11,6 +11,8 @@ from .cache.cache_metrics import normalize
 from .edgelora.mixed_projection import mixed_projection_path
 from .evaluation.logit_metrics import compare_logits
 from .simulation.cost_model import projection_savings
+from .metrics.timing import CPUWallTimer, TimingRegistry
+from .edgelora.mixed_projection import mixed_qkv_elapsed_ms
 
 
 class SemCacheEngine:
@@ -44,47 +46,72 @@ class SemCacheEngine:
             F=entry.frequency, A=entry.age(self.cache.now), I=entry.impact, S=entry.size_bytes,
             component_scope=entry.qkv_metadata.get('component_scope'))
 
-    def query(self, query_text, user_id, query_id, compare_baseline=False):
+    def query(self, query_text, user_id, query_id, compare_baseline=False,
+              execution_mode='SEMCACHE_PHYSICAL_REUSE', collect_timing=False,
+              baseline_logits=None):
         import torch
+        if execution_mode not in ('SEMCACHE_LOOKUP_NO_REUSE', 'SEMCACHE_PHYSICAL_REUSE'):
+            raise ValueError('Engine supports SemCache modes; native mode bypasses the engine')
+        request_timer = CPUWallTimer()
+        request_timer.__enter__()
+        timings = TimingRegistry(next(self.model.parameters()).device)
         self.query_id = query_id
         event_start = len(self.events)
-        ids = list(self.tokenizer(query_text)['input_ids'])
+        with timings.cpu('tokenization_ms', parent='request_wall_ms'):
+            ids = list(self.tokenizer(query_text)['input_ids'])
         if not ids:
             raise ValueError('Empty tokenized query')
         self.model.set_adapter(user_id)
         self.model.eval()
         self.emit('QUERY', query_text=query_text, user_id=user_id, adapter_name=user_id, token_ids=ids)
-        vector = self.encoder.encode([query_text])[0]
-        cluster_update = self.clusterer.observe_with_diagnostics(vector)
+        with timings.cpu('semantic_encode_ms', parent='request_wall_ms'):
+            vector = self.encoder.encode([query_text])[0]
+        with timings.cpu('cluster_assign_update_ms', parent='request_wall_ms'):
+            cluster_update = self.clusterer.observe_with_diagnostics(vector)
         cluster = cluster_update['cluster_id']
         distance = cluster_update['nearest_centroid_distance_pre_update']
         updated = cluster_update['centroid_update_applied']
         self.emit('CLUSTER_ASSIGN', cluster_distance=distance, cluster_updated=updated,
                   **cluster_update)
-        windows = self.extractor.extract(ids)
+        with timings.cpu('subsequence_extract_ms', parent='request_wall_ms'):
+            windows = self.extractor.extract(ids)
         self.metrics.arrive([self.matcher.key(cluster, w) for w in windows])
         self.emit('SUBSEQUENCE_EXTRACT', cluster_id=cluster, window_size=self.extractor.window_size,
                   windows=[dict(token_ids=w.token_ids, target_start=w.start, target_end=w.end) for w in windows])
         hits, misses = [], []
-        for window in windows:
-            key = self.matcher.key(cluster, window)
-            entry = self.cache.lookup(key, record_reuse=False)
-            details = dict(cache_key=key, target_start=window.start, target_end=window.end, cluster_id=cluster)
-            self.emit('CACHE_LOOKUP', **details)
-            self.emit('HIT' if entry is not None else 'MISS', **details)
-            if entry is None:
-                misses.append(window)
-            else:
-                hits.append(CacheHit(window, entry, entry.impact or 0.0))
-        selected, mask = select_nonoverlapping(hits, len(ids))
+        with timings.cpu('cache_lookup_ms', parent='request_wall_ms'):
+            for window in windows:
+                key = self.matcher.key(cluster, window)
+                entry = self.cache.lookup(key, record_reuse=False)
+                details = dict(cache_key=key, target_start=window.start, target_end=window.end, cluster_id=cluster)
+                self.emit('CACHE_LOOKUP', **details)
+                self.emit('HIT' if entry is not None else 'MISS', **details)
+                if entry is None:
+                    misses.append(window)
+                else:
+                    hits.append(CacheHit(window, entry, entry.impact or 0.0))
+        with timings.cpu('hit_selection_ms', parent='request_wall_ms'):
+            selected, mask = select_nonoverlapping(hits, len(ids))
+        execution_hits = selected if execution_mode == 'SEMCACHE_PHYSICAL_REUSE' else []
         self.emit('NON_OVERLAP_RESOLVE', hit_count=len(hits), accepted_nonoverlap_hits=len(selected), reused_mask=mask)
         for hit in selected:
             self.emit('FETCH', **self.entry_fields(hit.entry), target_start=hit.window.start, target_end=hit.window.end)
         inputs = dict(input_ids=torch.tensor([ids], device=next(self.model.parameters()).device), use_cache=False)
         with torch.inference_mode():
-            baseline = self.model(**inputs).logits.detach().cpu() if compare_baseline else None
-            with mixed_projection_path(self.adapter, user_id, selected, len(ids)) as audit:
-                output = self.model(**inputs, output_attentions=True)
+            baseline = (baseline_logits.detach().cpu() if baseline_logits is not None else
+                        (self.model(**inputs).logits.detach().cpu() if compare_baseline else None))
+            cuda_measure = collect_timing and inputs['input_ids'].is_cuda
+            if cuda_measure:
+                with timings.cuda('prefill_gpu_ms', parent=None, inclusive='inclusive'):
+                    with mixed_projection_path(self.adapter, user_id, execution_hits, len(ids), measure_cuda=True) as audit:
+                        output = self.model(**inputs, output_attentions=True)
+            else:
+                with mixed_projection_path(self.adapter, user_id, execution_hits, len(ids)) as audit:
+                    output = self.model(**inputs, output_attentions=True)
+        if cuda_measure:
+            # Resolve the enclosing event once before any host materialization;
+            # all per-projection event pairs are now complete as well.
+            timings.values['prefill_gpu_ms'].resolve(synchronize=True)
         for record in audit.records.values():
             self.emit('MIXED_PROJECT', **record)
         impacts = defaultdict(list)
@@ -98,6 +125,8 @@ class SemCacheEngine:
         # A query contributes one observation per key; repeated occurrences mean.
         per_query = {key: sum(values)/len(values) for key, values in impacts.items()}
         self.metrics.history.append(cluster, query_id, self.cache.now, per_query)
+        chu_timer = CPUWallTimer()
+        chu_timer.__enter__()
         for hit in selected:
             old = hit.entry.impact
             self.metrics.reused(hit.entry, span_impacts[hit.window.start])
@@ -105,7 +134,14 @@ class SemCacheEngine:
                       current_attention_impact=span_impacts[hit.window.start], new_I=hit.entry.impact,
                       old_impact=old, current_impact=span_impacts[hit.window.start],
                       block_key=hit.entry.key, impact_update_kind='chu')
+        chu_timer.__exit__(None, None, None)
+        timings.values['chu_update_ms'] = chu_timer.elapsed_ms
+        timings.scopes['chu_update_ms'] = dict(timing_scope='chu_update_ms', timing_parent='request_wall_ms',
+            inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
         considered = set()
+        policy_timer = CPUWallTimer()
+        policy_timer.__enter__()
+        materialization_ms = 0.0
         for window in misses:
             key = self.matcher.key(cluster, window)
             if key in self.cache.entries or key in considered:
@@ -128,9 +164,14 @@ class SemCacheEngine:
                       admission_decision=allowed)
             before = self.cache.physical_tensor_bytes
             def materialize():
+                nonlocal materialization_ms
+                materialize_timer = CPUWallTimer()
+                materialize_timer.__enter__()
                 physical = CacheEntry.from_tensors(cluster, window.token_ids, (window.start, window.end),
                                                   blocks, self.storage_device)
                 physical.impact, physical.qkv_metadata = entry.impact, entry.qkv_metadata
+                materialize_timer.__exit__(None, None, None)
+                materialization_ms += materialize_timer.elapsed_ms
                 return physical
             def cache_event(kind, block, eviction_score):
                 normalized_fields = {}
@@ -144,10 +185,24 @@ class SemCacheEngine:
             self.cache.insert(entry, frequencies[key], frequencies, materialize=materialize, on_event=cache_event)
             if not allowed and self.cache.physical_tensor_bytes != before:
                 raise AssertionError('Denied candidate allocated cache storage')
+        policy_timer.__exit__(None, None, None)
+        timings.values['cache_policy_ms'] = policy_timer.elapsed_ms
+        timings.scopes['cache_policy_ms'] = dict(timing_scope='cache_policy_ms', timing_parent='request_wall_ms',
+            inclusive_or_exclusive='inclusive', clock='cpu_perf_counter_ns')
+        timings.values['cache_materialization_ms'] = materialization_ms
+        timings.scopes['cache_materialization_ms'] = dict(timing_scope='cache_materialization_ms', timing_parent='cache_policy_ms',
+            inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
         pbr_updates = []
+        pbr_timer = CPUWallTimer()
+        pbr_timer.__enter__()
         if self.pbr_interval_queries and self.clusterer.queries % self.pbr_interval_queries == 0:
             pbr_updates = self.recalculate_cluster(cluster, trigger='fixed_query_interval')
-        reused = sum(mask)
+        pbr_timer.__exit__(None, None, None)
+        timings.values['pbr_update_ms'] = pbr_timer.elapsed_ms
+        timings.scopes['pbr_update_ms'] = dict(timing_scope='pbr_update_ms', timing_parent='request_wall_ms',
+            inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
+        logical_reused = sum(mask)
+        reused = logical_reused if execution_mode == 'SEMCACHE_PHYSICAL_REUSE' else 0
         recomputed = len(ids)-reused
         assert reused + recomputed == len(ids)
         logits = output.logits.detach().cpu()
@@ -165,7 +220,22 @@ class SemCacheEngine:
         # PEFT casts hidden rows to adapter dtype for the delta calculation.
         comm_bytes = reused*d*layers*(module.get_base_layer().weight.element_size()
                                       + 3*module.lora_B[user_id].weight.element_size())
+        timing_values, timing_scopes = timings.export() if collect_timing else ({}, {})
+        request_timer.__exit__(None, None, None)
+        if collect_timing:
+            timing_values['request_wall_ms'] = request_timer.elapsed_ms
+            timing_scopes['request_wall_ms'] = dict(timing_scope='request_wall_ms', timing_parent=None,
+                inclusive_or_exclusive='inclusive', clock='cpu_perf_counter_ns')
+            timing_values['mixed_qkv_execution_ms'] = mixed_qkv_elapsed_ms(
+                audit, enclosing_region_synchronized='prefill_gpu_ms' in timing_values)
+            timing_values['qkv_execution_ms'] = timing_values['mixed_qkv_execution_ms']
+            timing_scopes['mixed_qkv_execution_ms'] = dict(timing_scope='mixed_qkv_execution_ms',
+                timing_parent='prefill_gpu_ms', inclusive_or_exclusive='exclusive', clock='cuda_event')
+            timing_scopes['qkv_execution_ms'] = dict(timing_scope='alias of mixed_qkv_execution_ms',
+                timing_parent='prefill_gpu_ms', inclusive_or_exclusive='exclusive', clock='cuda_event')
+        projection_skip_used = any(record['reused_projection_rows'] > 0 for record in audit.records.values())
         row = dict(query_id=query_id, user_id=user_id, adapter_name=user_id, query_text=query_text,
+            token_ids=ids,
             model_id=self.metadata.get('model'), resolved_model_revision=self.metadata.get('resolved_model_revision'),
             dtype=str(next(self.model.parameters()).dtype), seed=self.seed,
             encoder_kind='fixture' if self.encoder.metadata.get('checkpoint') == 'controlled_vectors_v1' else 'huggingface_text',
@@ -179,7 +249,8 @@ class SemCacheEngine:
             cluster_update_mode=self.clusterer.update_mode,
             window_size=self.extractor.window_size, match_policy=self.matcher.match_rule,
             candidate_windows=len(windows), block_lookup_count=len(windows), block_hit_count=len(hits),
-            accepted_nonoverlap_hits=len(selected), reused_unique_token_count=reused, query_token_count=len(ids),
+            accepted_nonoverlap_hits=len(selected), reused_unique_token_count=reused,
+            logical_reusable_token_count=logical_reused, query_token_count=len(ids),
             recomputed_tokens=recomputed, token_reuse_ratio=reused/len(ids),
             block_hit_ratio=len(hits)/len(windows) if windows else 0,
             logical_cache_occupancy=self.cache.logical_cache_bytes, physical_cache_bytes=self.cache.physical_tensor_bytes,
@@ -194,6 +265,9 @@ class SemCacheEngine:
             pbr_trigger_policy='manual' if self.pbr_interval_queries is None else 'fixed_query_interval_REPRODUCTION_CHOICE',
             pbr_updates_this_query=len(pbr_updates),
             baseline_comparison_available=baseline is not None, **quality,
+            mode=execution_mode, physical_reuse_used=projection_skip_used,
+            projection_skip_used=projection_skip_used,
+            timing=timing_values, timing_scopes=timing_scopes,
             metric_source='measured except logical capacity and paper_estimated analytical savings', safe_reuse_claimed=False)
         return dict(summary=row, events=self.events[event_start:], logits=logits, projection_audit=audit.records)
 

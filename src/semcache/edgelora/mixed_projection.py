@@ -2,10 +2,11 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 from semcache.models.lora_decomposition import validate_projection
+from semcache.metrics.timing import resolve_cuda_event_pairs
 
 
 @contextmanager
-def mixed_projection_path(adapter, adapter_name, hits, sequence_length):
+def mixed_projection_path(adapter, adapter_name, hits, sequence_length, *, measure_cuda=False):
     """Patch instance forwards only; restore exact original attributes in finally.
 
     Module hooks must be absent: M2 validation hooks independently re-project
@@ -25,7 +26,7 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length):
     fresh_positions = (~mask).nonzero().flatten()
     reused = int(mask.sum())
     assert reused + len(fresh_positions) == sequence_length
-    audit = SimpleNamespace(records={}, projections={}, reused_mask=mask)
+    audit = SimpleNamespace(records={}, projections={}, reused_mask=mask, cuda_event_pairs=[])
     originals = []
 
     def replacement(layer, name, module, native):
@@ -35,6 +36,11 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length):
                 raise RuntimeError('Use one forward per mixed context')
             if args or kwargs or hidden_states.shape != (1, sequence_length, module.in_features):
                 raise ValueError('Mixed path requires batch-one prefill hidden states only')
+            start = end = None
+            if measure_cuda and hidden_states.is_cuda:
+                start, end = (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
+                with torch.cuda.device(hidden_states.device):
+                    start.record()
             with torch.inference_mode():
                 # This is the ONLY invocation of the native PEFT forward.
                 index = fresh_positions.to(hidden_states.device)
@@ -53,7 +59,14 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length):
                     native_projection_rows=len(index), reused_projection_rows=reused,
                     expected_saved_projection_positions=reused, native_call_count=int(fresh is not None),
                     native_positions=fresh_positions.tolist(), component_scope='total_qkv')
-                audit.projections.setdefault(layer, {})[name] = output.detach().cpu().clone()
+                # Keep passive detached captures on the execution device. Moving every
+                # projection to CPU here creates a host barrier per Q/K/V call;
+                # admitted spans are copied to storage later by CacheEntry.
+                audit.projections.setdefault(layer, {})[name] = output.detach()
+                if end is not None:
+                    with torch.cuda.device(hidden_states.device):
+                        end.record()
+                    audit.cuda_event_pairs.append((start, end))
                 return output
         return forward
 
@@ -74,3 +87,11 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length):
     finally:
         for module in originals:
             del module.forward
+
+
+def mixed_qkv_elapsed_ms(audit, *, enclosing_region_synchronized=False):
+    """Sum disjoint projection events; an enclosing event normally owns the sync."""
+    if not audit.cuda_event_pairs:
+        return None
+    return sum(resolve_cuda_event_pairs(audit.cuda_event_pairs,
+        synchronize=not enclosing_region_synchronized))

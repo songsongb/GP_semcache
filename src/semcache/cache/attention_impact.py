@@ -1,5 +1,6 @@
 """Actual attention-derived impact with explicit replaceable reduction."""
 from abc import ABC, abstractmethod
+import math
 
 
 class AttentionImpactReducer(ABC):
@@ -28,7 +29,7 @@ class MeanLayerHeadFrobeniusReducer(AttentionImpactReducer):
         import torch
         if not attentions or not 0 <= start < end:
             raise ValueError("Need attention tensors and a nonempty key span")
-        norms = []
+        norm_tensors = []
         for attention in attentions:
             if attention is None or attention.ndim != 4 or attention.shape[0] != 1:
                 raise ValueError("Expected batch-one [batch, head, query, key] attention")
@@ -50,10 +51,13 @@ class MeanLayerHeadFrobeniusReducer(AttentionImpactReducer):
                     raise ValueError("Valid mask does not cover attention positions")
                 valid &= mask[:q, None] & mask[start:end][None, :]
             masked = values * valid.unsqueeze(0)
-            if not torch.isfinite(masked).all():
-                raise ValueError("Nonfinite attention")
-            norms.extend(masked.square().sum(dim=(-2, -1)).sqrt().tolist())
+            norm_tensors.append(masked.square().sum(dim=(-2, -1)).sqrt())
+        # One host materialization after all layers, not one GPU/CPU barrier per
+        # layer. Python summation preserves the established aggregation order.
+        norms = torch.cat(norm_tensors).tolist()
+        if not all(math.isfinite(value) for value in norms):
+            raise ValueError("Nonfinite attention")
         value = sum(norms) / len(norms)
-        if not torch.isfinite(torch.tensor(value)) or value < 0:
+        if not math.isfinite(value) or value < 0:
             raise ValueError("Invalid attention impact")
         return value
