@@ -14,13 +14,25 @@ from semcache.evaluation.lora_probe import (capture_user, decomposition_rows, ru
 
 
 def tiny_base():
-    with torch.random.fork_rng():
+    # The default fork_rng device set includes every CUDA device.  This fixture
+    # is deliberately CPU-only and must also work with a CUDA-enabled PyTorch
+    # build on login nodes that have no accessible NVIDIA driver.
+    with torch.random.fork_rng(devices=[]):
         torch.manual_seed(42)
         c = transformers.OPTConfig(vocab_size=256, hidden_size=16, word_embed_proj_dim=16,
             num_hidden_layers=2, num_attention_heads=2, ffn_dim=32, max_position_embeddings=256,
             dropout=0, attention_dropout=0)
         c._attn_implementation = 'eager'
         return transformers.OPTForCausalLM(c).eval()
+
+
+def test_tiny_base_never_initializes_cuda(monkeypatch):
+    def forbidden_cuda_init(*args, **kwargs):
+        raise AssertionError("CPU-only tiny_base attempted CUDA initialization")
+
+    monkeypatch.setattr(torch.cuda, "_lazy_init", forbidden_cuda_init)
+    model = tiny_base()
+    assert next(model.parameters()).device.type == "cpu"
 
 
 @pytest.fixture
