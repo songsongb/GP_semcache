@@ -110,9 +110,19 @@ Scopes are stored per raw record in `timing_scopes`:
 | `pbr_update_ms` | CPU wall | configured interval check and any triggered PBR update | exclusive child |
 | `prefill_gpu_ms` | CUDA event | one eager OPT forward including all transformer work and mixed QKV | inclusive root GPU region |
 | `mixed_qkv_execution_ms` | CUDA events | sum of disjoint patched Q/K/V calls: native PEFT projection for fresh rows plus cached retrieval/merge | exclusive child of prefill |
+| `correctness_reference_ms` | CPU wall plus synchronized GPU forward | separate native reference request | outside `request_wall_ms` |
+| `quality_diagnostics_ms` | CPU wall | logit host materialization and error/KL/argmax reductions | outside `request_wall_ms` |
 
 `qkv_execution_ms` is a schema-compatible alias of
 `mixed_qkv_execution_ms`; never sum the two.
+
+`request_wall_ms` closes after the selected execution mode and its SemCache
+control/cache-policy path complete, before logits are materialized for benchmark
+comparison. The correctness-reference forward is executed by the runner before
+the measured request. Timed engine calls reject the legacy inline-reference
+option unless an externally computed `baseline_logits` tensor is supplied.
+Quality diagnostics remain in every measured record but neither the reference
+forward nor logit comparison is part of request latency.
 
 `base_qkv_projection_ms`, `lora_qkv_projection_ms`, `attention_ms`, and
 `remaining_transformer_ms` are null: PEFT's native projection combines base and
@@ -132,6 +142,12 @@ corresponding peak minus baseline (clamped at zero).
 `model_weight_memory_bytes` is the sum of model parameter storage. These are
 local-process CUDA allocator metrics, **not** the paper's total ES/UD system
 memory and not paper-equivalent.
+
+Environment and raw records also identify `physical_cache_storage_device` from
+the runtime engine and derive `cache_transfer_path` from that device and the
+actual model execution device. The current CPU-cache/CUDA-execution setup emits
+`cpu` and `cpu_to_cuda_on_reuse`; this transfer/merge cost is intentionally not
+optimized away in M8.
 
 Communication savings remain analytical. Saved elements and bytes use the M7
 paper-style accounting. If `--bandwidth-gbps` is supplied, transfer time is
@@ -175,6 +191,10 @@ sequence length, batch size, optimizer rate, gradient checkpointing, and mixed
 precision are explicit. Checkpointing and fp16 autocast are opt-in and recorded
 as **REPRODUCTION_CHOICE**. This is systems timing, not convergence or accuracy.
 It does not train or extrapolate 50 adapters, and 6.7B training is unsupported.
+`total_training_wall_s` remains inclusive of every optimization step, including
+first-step startup overhead. `first_step_ms`, `steady_state_step_mean_ms`, and
+`steady_state_step_p50_ms` provide a diagnostic split only; steady state drops
+exactly the first step and does not alter total time or throughput.
 
 ## Limitations
 

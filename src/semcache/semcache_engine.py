@@ -11,7 +11,7 @@ from .cache.cache_metrics import normalize
 from .edgelora.mixed_projection import mixed_projection_path
 from .evaluation.logit_metrics import compare_logits
 from .simulation.cost_model import projection_savings
-from .metrics.timing import CPUWallTimer, TimingRegistry
+from .metrics.timing import CPUWallTimer, TimingRegistry, close_request_timing
 from .edgelora.mixed_projection import mixed_qkv_elapsed_ms
 
 
@@ -50,6 +50,9 @@ class SemCacheEngine:
               execution_mode='SEMCACHE_PHYSICAL_REUSE', collect_timing=False,
               baseline_logits=None):
         import torch
+        if collect_timing and compare_baseline and baseline_logits is None:
+            raise ValueError('Timed queries require baseline_logits computed outside request timing')
+        external_baseline = baseline_logits.detach().cpu() if baseline_logits is not None else None
         if execution_mode not in ('SEMCACHE_LOOKUP_NO_REUSE', 'SEMCACHE_PHYSICAL_REUSE'):
             raise ValueError('Engine supports SemCache modes; native mode bypasses the engine')
         request_timer = CPUWallTimer()
@@ -98,7 +101,7 @@ class SemCacheEngine:
             self.emit('FETCH', **self.entry_fields(hit.entry), target_start=hit.window.start, target_end=hit.window.end)
         inputs = dict(input_ids=torch.tensor([ids], device=next(self.model.parameters()).device), use_cache=False)
         with torch.inference_mode():
-            baseline = (baseline_logits.detach().cpu() if baseline_logits is not None else
+            baseline = (external_baseline if external_baseline is not None else
                         (self.model(**inputs).logits.detach().cpu() if compare_baseline else None))
             cuda_measure = collect_timing and inputs['input_ids'].is_cuda
             if cuda_measure:
@@ -205,11 +208,22 @@ class SemCacheEngine:
         reused = logical_reused if execution_mode == 'SEMCACHE_PHYSICAL_REUSE' else 0
         recomputed = len(ids)-reused
         assert reused + recomputed == len(ids)
+        # The measured request ends after execution and cache-policy work.
+        # Logit transfer/comparison below exists only for benchmark diagnostics.
+        timing_values, timing_scopes = close_request_timing(
+            request_timer, timings, collect_timing)
+        quality_timer = CPUWallTimer()
+        quality_timer.__enter__()
         logits = output.logits.detach().cpu()
         quality = compare_logits(baseline, logits, selected[0].window.start if selected else 0) if baseline is not None else dict.fromkeys([
             'max_abs_logit_diff', 'mean_abs_logit_diff', 'relative_l2_logit_diff', 'logit_cosine_similarity',
             'last_position_kl_baseline_to_injected', 'affected_suffix_mean_kl', 'baseline_last_argmax_token_id',
             'injected_last_argmax_token_id', 'last_argmax_agreement', 'prefix_max_abs_logit_diff'])
+        quality_timer.__exit__(None, None, None)
+        if collect_timing:
+            timing_values['quality_diagnostics_ms'] = quality_timer.elapsed_ms
+            timing_scopes['quality_diagnostics_ms'] = dict(timing_scope='logit materialization and quality comparison',
+                timing_parent=None, inclusive_or_exclusive='exclusive_outside_request', clock='cpu_perf_counter_ns')
         module = self.adapter.projection_module(0, 'q')
         d, r, layers = module.in_features, module.r[user_id], len(self.adapter.layers)
         # Analytical equations per layer, then sum over the all-layer scope.
@@ -220,12 +234,7 @@ class SemCacheEngine:
         # PEFT casts hidden rows to adapter dtype for the delta calculation.
         comm_bytes = reused*d*layers*(module.get_base_layer().weight.element_size()
                                       + 3*module.lora_B[user_id].weight.element_size())
-        timing_values, timing_scopes = timings.export() if collect_timing else ({}, {})
-        request_timer.__exit__(None, None, None)
         if collect_timing:
-            timing_values['request_wall_ms'] = request_timer.elapsed_ms
-            timing_scopes['request_wall_ms'] = dict(timing_scope='request_wall_ms', timing_parent=None,
-                inclusive_or_exclusive='inclusive', clock='cpu_perf_counter_ns')
             timing_values['mixed_qkv_execution_ms'] = mixed_qkv_elapsed_ms(
                 audit, enclosing_region_synchronized='prefill_gpu_ms' in timing_values)
             timing_values['qkv_execution_ms'] = timing_values['mixed_qkv_execution_ms']

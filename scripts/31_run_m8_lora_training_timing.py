@@ -10,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from semcache.metrics.m8 import environment_record, model_config, training_record
+from semcache.metrics.m8 import (environment_record, model_config,
+                                 training_record, training_timing_summary)
 from semcache.models.loader import load_model
 from semcache.utils.io import write_json
 from semcache.utils.seed import seed_everything
@@ -91,6 +92,7 @@ def main():
             token_count += int(batch["attention_mask"].sum())
         epoch_s.append((time.perf_counter_ns() - epoch_start) / 1e9)
     total_s = (time.perf_counter_ns() - total_start) / 1e9
+    timing_summary = training_timing_summary(total_s, step_ms)
     allocated = torch.cuda.max_memory_allocated() if torch.cuda.is_available() and args.device.startswith("cuda") else None
     reserved = torch.cuda.max_memory_reserved() if torch.cuda.is_available() and args.device.startswith("cuda") else None
     with tempfile.TemporaryDirectory(prefix="semcache-m8-") as directory:
@@ -103,12 +105,14 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj"], sample_count=args.samples, epochs=args.epochs,
         sequence_length=args.sequence_length, batch_size=args.batch_size,
         gradient_checkpointing=args.gradient_checkpointing, mixed_precision=args.mixed_precision,
-        total_training_wall_s=total_s, epoch_time_s=epoch_s, step_time_ms=step_ms,
+        epoch_time_s=epoch_s, step_time_ms=step_ms, **timing_summary,
         samples_per_second=args.samples * args.epochs / total_s, tokens_per_second=token_count / total_s,
         peak_cuda_allocated_bytes=allocated, peak_cuda_reserved_bytes=reserved,
         trainable_parameter_count=trainable, adapter_checkpoint_bytes=checkpoint_bytes,
         measured_or_estimated="MEASURED", reproduction_choices=dict(dataset="deterministic synthetic fixture",
             optimizer="AdamW", learning_rate=args.learning_rate, convergence_goal=False,
+            total_training_wall_scope="all optimization steps including first-step startup overhead",
+            steady_state_scope="diagnostic only; all optimization steps except the first",
             gradient_checkpointing=args.gradient_checkpointing, mixed_precision=args.mixed_precision))
     write_json(args.output, {"environment": env, "result": row})
     print(f"Saved training timing to {args.output}")

@@ -22,6 +22,7 @@ TIMING_FIELDS = (
     "cache_materialization_ms", "base_qkv_projection_ms",
     "lora_qkv_projection_ms", "qkv_execution_ms", "mixed_qkv_execution_ms", "attention_ms",
     "remaining_transformer_ms", "prefill_gpu_ms", "request_wall_ms",
+    "correctness_reference_ms", "quality_diagnostics_ms",
 )
 
 RAW_FIELDS = (
@@ -40,6 +41,7 @@ RAW_FIELDS = (
     "controlled_exact_parity", "repetition_state_semantics",
     "warmup_state_semantics", "trace_position", "seed",
     "attention_implementation", "prompt_token_ids_sha256",
+    "physical_cache_storage_device", "cache_transfer_path",
     "cuda_allocated_before_bytes", "cuda_reserved_before_bytes",
     "incremental_peak_allocated_bytes", "incremental_peak_reserved_bytes",
 )
@@ -50,6 +52,7 @@ TRAINING_FIELDS = (
     "sample_count", "epochs", "sequence_length", "batch_size",
     "gradient_checkpointing", "mixed_precision", "total_training_wall_s",
     "epoch_time_s", "step_time_ms", "samples_per_second", "tokens_per_second",
+    "first_step_ms", "steady_state_step_mean_ms", "steady_state_step_p50_ms",
     "peak_cuda_allocated_bytes", "peak_cuda_reserved_bytes",
     "trainable_parameter_count", "adapter_checkpoint_bytes",
     "measured_or_estimated", "reproduction_choices",
@@ -86,6 +89,28 @@ def incremental_memory(allocated_before, reserved_before, peak_allocated, peak_r
         return dict(incremental_peak_allocated_bytes=None, incremental_peak_reserved_bytes=None)
     return dict(incremental_peak_allocated_bytes=max(0, peak_allocated - allocated_before),
                 incremental_peak_reserved_bytes=max(0, peak_reserved - reserved_before))
+
+
+def cache_transfer_path(storage_device, execution_device):
+    storage, execution = str(storage_device), str(execution_device)
+    storage_kind, execution_kind = storage.split(":", 1)[0], execution.split(":", 1)[0]
+    if storage_kind == execution_kind:
+        return f"{storage_kind}_local_on_reuse"
+    return f"{storage_kind}_to_{execution_kind}_on_reuse"
+
+
+def training_step_diagnostics(step_times_ms):
+    values = [float(value) for value in step_times_ms]
+    steady = values[1:]
+    return dict(first_step_ms=values[0] if values else None,
+        steady_state_step_mean_ms=mean(steady) if steady else None,
+        steady_state_step_p50_ms=median(steady) if steady else None)
+
+
+def training_timing_summary(total_training_wall_s, step_times_ms):
+    """Preserve startup-inclusive total and add a diagnostic step split."""
+    return dict(total_training_wall_s=float(total_training_wall_s),
+                **training_step_diagnostics(step_times_ms))
 
 
 def mode_identity(model_revision, tokenizer_revision, dtype, token_hash, adapter_name,

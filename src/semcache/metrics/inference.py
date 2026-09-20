@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from semcache.evaluation.logit_metrics import compare_logits
-from semcache.metrics.m8 import incremental_memory, raw_record, token_ids_sha256
+from semcache.metrics.m8 import (cache_transfer_path, incremental_memory,
+                                 raw_record, token_ids_sha256)
 from semcache.metrics.timing import CPUWallTimer, CUDATimer
 
 
@@ -56,11 +57,14 @@ def native_request(model, tokenizer, text, user_id, *, collect_quality=True):
                 output = model(**inputs)
         if cuda_timer:
             _ = cuda_timer.elapsed_ms
-    logits = output.logits.detach().cpu()
-    quality = compare_logits(logits, logits, 0) if collect_quality else {}
+    quality_timer = CPUWallTimer()
+    with quality_timer:
+        logits = output.logits.detach().cpu()
+        quality = compare_logits(logits, logits, 0) if collect_quality else {}
     return dict(ids=ids, logits=logits, tokenization_ms=token_timer.elapsed_ms,
                 prefill_gpu_ms=cuda_timer.elapsed_ms if cuda_timer else None,
-                request_wall_ms=wall.elapsed_ms, quality=quality)
+                request_wall_ms=wall.elapsed_ms, quality_diagnostics_ms=quality_timer.elapsed_ms,
+                quality=quality)
 
 
 def record_from_engine(result, *, experiment_id, repeat_index, warmup_runs,
@@ -90,6 +94,8 @@ def record_from_engine(result, *, experiment_id, repeat_index, warmup_runs,
         argmax_agreement=s["last_argmax_agreement"], timing_scopes=s.get("timing_scopes"),
         controlled_exact_parity=condition == "same_user_exact",
         prompt_token_ids_sha256=token_ids_sha256(s.get("token_ids", [])),
+        physical_cache_storage_device=str(s["physical_storage_device"]),
+        cache_transfer_path=cache_transfer_path(s["physical_storage_device"], model_metadata["device"]),
         measured_or_analytical="MEASURED",
         **{name: timing.get(name) for name in raw_record().keys() if name.endswith("_ms") and name not in comm},
         **comm)

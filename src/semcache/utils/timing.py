@@ -108,6 +108,17 @@ class TimingRegistry:
         return values, dict(self.scopes)
 
 
+def close_request_timing(request_timer, registry, collect_timing):
+    """Close execution timing before any correctness-only diagnostics."""
+    values, scopes = registry.export() if collect_timing else ({}, {})
+    request_timer.__exit__(None, None, None)
+    if collect_timing:
+        values["request_wall_ms"] = request_timer.elapsed_ms
+        scopes["request_wall_ms"] = asdict(TimingScope(
+            "request_wall_ms", None, "inclusive", "cpu_perf_counter_ns"))
+    return values, scopes
+
+
 @contextmanager
 def timer(device=None):
     """Backward-compatible synchronized broad timer used by pre-M8 callers."""

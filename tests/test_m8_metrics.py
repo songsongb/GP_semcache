@@ -3,10 +3,11 @@ import time
 import pytest
 
 from semcache.metrics.m8 import (MODES, RAW_FIELDS, TRAINING_FIELDS,
-    aggregate_raw, analytical_communication, incremental_memory, mode_identity,
-    model_config, raw_record, repetition_schedule, token_ids_sha256, training_record)
+    aggregate_raw, analytical_communication, cache_transfer_path, incremental_memory,
+    mode_identity, model_config, raw_record, repetition_schedule, token_ids_sha256,
+    training_record, training_step_diagnostics, training_timing_summary)
 from semcache.metrics.timing import (CPUWallTimer, CUDATimer, TimingRegistry,
-                                     resolve_cuda_event_pairs)
+    close_request_timing, resolve_cuda_event_pairs)
 
 
 def test_cpu_wall_timer_and_scope_metadata():
@@ -20,6 +21,17 @@ def test_cpu_wall_timer_and_scope_metadata():
     with CPUWallTimer() as timer:
         pass
     assert timer.elapsed_ms >= 0
+
+
+def test_correctness_work_is_outside_request_wall():
+    request = CPUWallTimer()
+    request.__enter__()
+    time.sleep(.001)
+    values, scopes = close_request_timing(request, TimingRegistry(), True)
+    with CPUWallTimer() as correctness:
+        time.sleep(.025)
+    assert values["request_wall_ms"] < correctness.elapsed_ms
+    assert scopes["request_wall_ms"]["timing_parent"] is None
 
 
 def test_cuda_timer_or_clean_skip():
@@ -79,6 +91,8 @@ def test_raw_memory_and_training_schemas_are_complete():
     assert row["attention_ms"] is None and row["peak_cuda_allocated_bytes"] is None
     assert row["cuda_allocated_before_bytes"] is None
     assert row["incremental_peak_allocated_bytes"] is None
+    assert row["correctness_reference_ms"] is None
+    assert row["physical_cache_storage_device"] is None
     assert row["safe_reuse_claimed"] is False
     training = training_record(experiment_id="t", model_id="facebook/opt-125m")
     assert tuple(training) == TRAINING_FIELDS
@@ -126,6 +140,24 @@ def test_incremental_peak_memory_math_and_nulls():
         incremental_peak_allocated_bytes=None, incremental_peak_reserved_bytes=None)
 
 
+def test_cache_storage_transfer_provenance_uses_runtime_devices():
+    assert cache_transfer_path("cpu", "cuda:0") == "cpu_to_cuda_on_reuse"
+    assert cache_transfer_path("cuda:1", "cuda:1") == "cuda_local_on_reuse"
+
+
+def test_training_step_diagnostic_keeps_first_step_separate():
+    result = training_step_diagnostics([100., 20., 40.])
+    assert result == dict(first_step_ms=100., steady_state_step_mean_ms=30.,
+        steady_state_step_p50_ms=30.)
+    one = training_step_diagnostics([100.])
+    assert one["first_step_ms"] == 100.
+    assert one["steady_state_step_mean_ms"] is None
+    summary = training_timing_summary(0.175, [100., 20., 40.])
+    # Total remains caller-measured/startup-inclusive; diagnostics do not rewrite it.
+    assert summary["total_training_wall_s"] == 0.175
+    assert summary["first_step_ms"] == 100.
+
+
 def test_communication_is_analytical_only():
     result = analytical_communication(100, 2, 1000)
     assert result == dict(saved_communication_elements=100, saved_communication_bytes=200,
@@ -141,13 +173,23 @@ def test_engine_mode_separation_and_physical_skip():
     from semcache.models.lora_fixtures import create_controlled_users
     users = create_controlled_users(tiny_base())[0]
     engine = make_engine(users)
-    engine.query("2 3 4 5 6 7 8 9", "user_a", "source")
+    source = engine.query("2 3 4 5 6 7 8 9", "user_a", "source")
+    with pytest.raises(ValueError, match="outside request timing"):
+        engine.query("2 3 4 5 6 7 8 9", "user_a", "invalid-reference",
+            compare_baseline=True, collect_timing=True)
     lookup = engine.query("2 3 4 5 6 7 8 9", "user_a", "lookup",
-        execution_mode="SEMCACHE_LOOKUP_NO_REUSE", collect_timing=True)["summary"]
+        execution_mode="SEMCACHE_LOOKUP_NO_REUSE", collect_timing=True,
+        baseline_logits=source["logits"])["summary"]
     assert lookup["block_hit_count"] and lookup["reused_unique_token_count"] == 0
     assert not lookup["physical_reuse_used"] and not lookup["projection_skip_used"]
     physical = engine.query("2 3 4 5 6 7 8 9", "user_a", "physical",
-        execution_mode="SEMCACHE_PHYSICAL_REUSE", collect_timing=True)["summary"]
+        execution_mode="SEMCACHE_PHYSICAL_REUSE", collect_timing=True,
+        baseline_logits=source["logits"])["summary"]
     assert physical["reused_unique_token_count"] > 0
     assert physical["physical_reuse_used"] and physical["projection_skip_used"]
     assert physical["timing"]["mixed_qkv_execution_ms"] is None  # CPU fixture: no fake GPU zero.
+    assert physical["timing"]["quality_diagnostics_ms"] is not None
+    assert physical["max_abs_logit_diff"] is not None
+    assert physical["relative_l2_logit_diff"] is not None
+    assert physical["last_position_kl_baseline_to_injected"] is not None
+    assert physical["last_argmax_agreement"] is not None

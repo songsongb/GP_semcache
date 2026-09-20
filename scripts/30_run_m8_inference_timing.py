@@ -12,7 +12,7 @@ from semcache.cache.global_cache import GlobalCache
 from semcache.metrics.inference import (begin_cuda_memory_measurement,
     finish_cuda_memory_measurement, model_weight_bytes, native_request, record_from_engine)
 from semcache.metrics.m8 import (MODES, aggregate_raw, environment_record, model_config,
-    mode_identity, raw_record, repetition_schedule, token_ids_sha256)
+    cache_transfer_path, mode_identity, raw_record, repetition_schedule, token_ids_sha256)
 from semcache.models.loader import load_model
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
@@ -60,6 +60,8 @@ def main():
         attention_implementation="eager"))
     model, lora_metadata = create_controlled_users(model)
     adapter = OPTModelAdapter(model)
+    execution_device = str(next(model.parameters()).device)
+    configured_cache_storage_device = "cpu"
     encoder = TinyBERTSemanticEncoder(device=args.device, dtype=cfg["dtype"],
                                       local_files_only=not args.allow_download)
     anchors = [WORKLOAD[0][2], WORKLOAD[-1][2]]
@@ -69,12 +71,19 @@ def main():
         clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
         clusterer.initialize(anchor_vectors)
         return SemCacheEngine(model, tokenizer, adapter, encoder, clusterer,
-            GlobalCache(256 * 1024 * 1024), metadata=metadata, storage_device="cpu")
+            GlobalCache(256 * 1024 * 1024), metadata=metadata,
+            storage_device=configured_cache_storage_device)
 
     import torch
+    # Output provenance is read back from the runtime engine rather than copied
+    # from a reporting constant.
+    cache_storage_device = str(engine().storage_device)
+    transfer_path = cache_transfer_path(cache_storage_device, execution_device)
     env = environment_record(torch)
     env.update(model=metadata, semantic_encoder=encoder.metadata, lora=lora_metadata,
                benchmark_kind="microbenchmark", safe_reuse_claimed=False,
+               physical_cache_storage_device=cache_storage_device,
+               cache_transfer_path=transfer_path,
                warmup_runs=cfg["warmup_runs"], measured_runs=cfg["measured_runs"])
     experiment_id = f"m8-{uuid.uuid4().hex[:12]}"
     gpu_name = env.get("gpu_name")
@@ -89,7 +98,7 @@ def main():
             # cache-policy counters for every trace. Previous warmups are discarded.
             semcache = engine() if mode != "NATIVE_NO_CACHE" else None
             for trace_position, (condition, user, text) in enumerate(workload):
-                reference = native_request(model, tokenizer, text, user)
+                reference = native_request(model, tokenizer, text, user, collect_quality=False)
                 reference_hash = token_ids_sha256(reference["ids"])
                 allocated_before, reserved_before = begin_cuda_memory_measurement(torch, args.device)
                 if mode == "NATIVE_NO_CACHE":
@@ -108,10 +117,14 @@ def main():
                         measured_runs=cfg["measured_runs"], repeat_index=repeat,
                         tokenization_ms=measured["tokenization_ms"], prefill_gpu_ms=measured["prefill_gpu_ms"],
                         request_wall_ms=measured["request_wall_ms"], model_weight_memory_bytes=weights,
+                        correctness_reference_ms=reference["request_wall_ms"],
+                        quality_diagnostics_ms=measured["quality_diagnostics_ms"],
                         max_abs_logit_diff=q["max_abs_logit_diff"], relative_l2_logit_diff=q["relative_l2_logit_diff"],
                         last_position_kl=q["last_position_kl_baseline_to_injected"],
                         argmax_agreement=q["last_argmax_agreement"], measured_or_analytical="MEASURED",
                         communication_metric_source="ANALYTICAL / SIMULATED",
+                        physical_cache_storage_device=cache_storage_device,
+                        cache_transfer_path=transfer_path,
                         controlled_exact_parity=True,
                         timing_scopes={"request_wall_ms": {"timing_scope": "complete native request",
                             "timing_parent": None, "inclusive_or_exclusive": "inclusive", "clock": "cpu_perf_counter_ns"},
@@ -129,6 +142,7 @@ def main():
                         bandwidth_bytes_per_s=bandwidth)
                 row.update(finish_cuda_memory_measurement(torch, args.device,
                     allocated_before, reserved_before))
+                row["correctness_reference_ms"] = reference["request_wall_ms"]
                 row.update(repetition_state_semantics=("stateless" if mode == "NATIVE_NO_CACHE"
                            else "reconstructed_precondition"),
                     warmup_state_semantics="fresh_discarded_trace",
