@@ -228,6 +228,49 @@ Use `--output-dir` or `--experiment-suffix` to keep length sweeps separate from
 earlier smoke results. Length 512 is accepted explicitly but is not part of the
 recommended default OPT-2.7B sweep.
 
+## Repeated-subsequence correctness audit
+
+The scaling prompt cycles a 46-word natural paragraph when more text is needed.
+The cache key is only `(cluster_id, w=3 token IDs)`; it contains no occurrence
+or absolute-position identity. On a cold request, the first candidate for a key
+is retained and later occurrences are deduplicated. Reusing that entry at a
+different occurrence can inject QKV computed from different positional and
+contextual hidden states even when the full source and destination prompts and
+adapter are identical. This explains why the short unique-window fixture can
+have exact parity while repeated longer prompts can diverge.
+
+`prompt_subsequence_audit.json` reports, for each requested prompt and topic,
+total and unique windows, duplicated key count, maximum occurrence count, and
+every duplicated window's token IDs and positions. Raw physical rows additionally
+contain `reuse_block_provenance`, including source/destination query, user,
+adapter, positions, occurrence counts, admission order, expected-cold-source
+status, and deduplication/overwrite status. Normal selection is unchanged.
+
+The optional `--position-aligned-diagnostic` adds a mechanism-isolation mode.
+It permits a cached hit only when the complete source/destination token sequence,
+absolute span, user, and adapter all match. This is not SemCache replacement
+policy and is excluded from reuse-delta comparisons.
+
+Cold-request `admission_audit` records every unique candidate's score, decision,
+reason, source occurrence count, candidate order, and admission order.
+`deduplication_audit` records repeated/resident-key suppression and confirms that
+existing entries are not overwritten. The length-64 pattern is expected from
+the existing policy rather than capacity tuning: `metrics.arrive` counts every
+window before admission, so repeated keys have higher normalized frequency,
+while once-occurring keys can fall at or below the strict `score > 0.3`
+threshold. At longer cyclic prompts, most keys occur repeatedly and therefore
+receive higher frequency evidence. The emitted audit is the authoritative
+per-run verification; thresholds are not changed.
+
+`controlled_exact_fixture` now identifies the same-user exact-input test case.
+It does not assert success. `controlled_exact_parity_passed` separately requires
+maximum absolute error <= 1e-5, relative L2 <= 1e-6, absolute last-position KL
+<= 1e-8, and argmax agreement. Physical scaling rows at requested lengths 64+
+are labelled `correctness_not_validated_for_lengths_ge_64` pending the strict
+position-aligned diagnostic. Existing performance observations remain valid as
+measurements of the current implementation, not as validated approximate-output
+quality results.
+
 Quality fields remain attached: maximum absolute and relative L2 logit error,
 last-position KL (baseline to measured), and last-token argmax agreement.
 Argmax agreement alone is never treated as a safety claim.

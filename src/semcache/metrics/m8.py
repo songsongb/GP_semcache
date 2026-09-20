@@ -41,7 +41,9 @@ RAW_FIELDS = (
     "saved_communication_bytes", "estimated_communication_ms",
     "measured_or_analytical", "communication_metric_source",
     "safe_reuse_claimed", "timing_scopes",
-    "controlled_exact_parity", "repetition_state_semantics",
+    "controlled_exact_fixture", "controlled_exact_parity_passed",
+    "controlled_exact_parity_tolerances", "correctness_validation_status",
+    "repetition_state_semantics",
     "warmup_state_semantics", "trace_position", "seed",
     "attention_implementation", "prompt_token_ids_sha256",
     "physical_cache_storage_device", "cache_transfer_path",
@@ -49,6 +51,9 @@ RAW_FIELDS = (
     "unaccounted_request_ms", "timing_coverage_ratio",
     "cuda_allocated_before_bytes", "cuda_reserved_before_bytes",
     "incremental_peak_allocated_bytes", "incremental_peak_reserved_bytes",
+    "reuse_block_provenance", "admission_audit", "deduplication_audit", "admission_candidate_count",
+    "admitted_block_count", "rejected_block_count", "deduplicated_window_count",
+    "prompt_subsequence_audit",
 )
 
 TRAINING_FIELDS = (
@@ -116,6 +121,22 @@ def training_timing_summary(total_training_wall_s, step_times_ms):
     """Preserve startup-inclusive total and add a diagnostic step split."""
     return dict(total_training_wall_s=float(total_training_wall_s),
                 **training_step_diagnostics(step_times_ms))
+
+
+EXACT_PARITY_TOLERANCES = dict(max_abs_logit_diff=1e-5,
+                               relative_l2_logit_diff=1e-6,
+                               last_position_kl=1e-8)
+
+
+def exact_parity_passed(row):
+    required = (row.get("max_abs_logit_diff"), row.get("relative_l2_logit_diff"),
+                row.get("last_position_kl"), row.get("argmax_agreement"))
+    if any(value is None for value in required):
+        return None
+    return bool(required[0] <= EXACT_PARITY_TOLERANCES["max_abs_logit_diff"]
+        and required[1] <= EXACT_PARITY_TOLERANCES["relative_l2_logit_diff"]
+        and abs(required[2]) <= EXACT_PARITY_TOLERANCES["last_position_kl"]
+        and required[3])
 
 
 def mode_identity(model_revision, tokenizer_revision, dtype, token_hash, adapter_name,
@@ -199,8 +220,16 @@ def reuse_delta_summary(rows):
         result = dict(experiment_id=key[0], model_id=key[1], requested_prompt_tokens=key[2],
             actual_prompt_tokens=key[3], query_id=key[4],
             candidate_blocks=mean(r["candidate_blocks"] for r in physical),
+            physical_reused_tokens=mean(r["reused_tokens"] for r in physical),
+            physical_recomputed_tokens=mean(r["recomputed_tokens"] for r in physical),
+            physical_token_reuse_ratio=mean(r["token_reuse_ratio"] for r in physical),
+            physical_block_hits=mean(r["block_hits"] for r in physical),
             attention_impact_ms=mean(r["attention_impact_ms"] for r in physical),
-            attention_impact_ms_per_block=mean(r["attention_impact_ms_per_block"] for r in physical))
+            attention_impact_ms_per_block=mean(r["attention_impact_ms_per_block"] for r in physical),
+            physical_correctness_validation_status=(
+                "correctness_not_validated_for_lengths_ge_64" if key[2] is not None and key[2] >= 64
+                else "controlled_exact_parity_passed" if all(r.get("controlled_exact_parity_passed") for r in physical)
+                else "controlled_exact_parity_failed"))
         for label, field in metrics.items():
             a = mean(r[field] for r in lookup)
             b = mean(r[field] for r in physical)
@@ -224,6 +253,12 @@ def raw_record(**values):
     row["timestamp"] = row["timestamp"] or datetime.now(timezone.utc).isoformat()
     row["hostname"] = row["hostname"] or socket.gethostname()
     row["safe_reuse_claimed"] = False
+    if row.get("controlled_exact_fixture"):
+        row["controlled_exact_parity_passed"] = exact_parity_passed(row)
+        row["controlled_exact_parity_tolerances"] = dict(EXACT_PARITY_TOLERANCES)
+    else:
+        row["controlled_exact_parity_passed"] = None
+        row["controlled_exact_parity_tolerances"] = None
     blocks, impact_ms = row.get("attention_impact_block_count"), row.get("attention_impact_ms")
     row["attention_impact_ms_per_block"] = (
         impact_ms / blocks if impact_ms is not None and blocks is not None and blocks > 0 else None)

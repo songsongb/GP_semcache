@@ -14,7 +14,8 @@ from semcache.metrics.inference import (begin_cuda_memory_measurement,
 from semcache.metrics.m8 import (MODES, aggregate_raw, environment_record, model_config,
     cache_transfer_path, mode_identity, raw_record, repetition_schedule,
     reuse_delta_summary, token_ids_sha256)
-from semcache.metrics.scaling_workload import controlled_length_trace, parse_prompt_lengths
+from semcache.metrics.scaling_workload import (controlled_length_trace, parse_prompt_lengths,
+                                               subsequence_occurrence_report)
 from semcache.models.loader import load_model
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
@@ -46,6 +47,8 @@ def parse_args():
     p.add_argument("--bandwidth-gbps", type=float)
     p.add_argument("--prompt-lengths", help="Optional comma-separated controlled lengths: 32,64,128,256[,512]")
     p.add_argument("--experiment-suffix", help="Write into OUTPUT_DIR/SUFFIX to avoid overwriting prior results")
+    p.add_argument("--position-aligned-diagnostic", action="store_true",
+                   help="Add the strict same-user/same-position mechanism-isolation mode")
     p.add_argument("--output-dir", type=Path, default=ROOT / "results/m8")
     return p.parse_args()
 
@@ -64,7 +67,7 @@ def main():
                        warmup_runs=args.warmup_runs, measured_runs=args.measured_runs)
     condition_count = 4 if prompt_lengths else (3 if cfg["large"] else len(WORKLOAD))
     print(f"M8 work summary: model={args.model}, lengths={prompt_lengths or ['compatibility']}, "
-          f"conditions={condition_count}, modes=3, "
+          f"conditions={condition_count}, modes={4 if args.position_aligned_diagnostic else 3}, "
           f"warmups={cfg['warmup_runs']}, measured={cfg['measured_runs']}, dtype={cfg['dtype']}")
     seed_everything(42)
     model, tokenizer, metadata = load_model(dict(name=args.model, tokenizer=args.model,
@@ -93,6 +96,12 @@ def main():
         trace_specs.append(dict(workload=trace,
             anchor_vectors=encoded_anchors[index * 2:index * 2 + 2],
             requested_prompt_tokens=trace[0]["requested_prompt_tokens"]))
+    prompt_audits = []
+    for trace in traces:
+        for item in (trace[0], trace[-1]):
+            prompt_audits.append(dict(requested_prompt_tokens=item["requested_prompt_tokens"],
+                actual_prompt_tokens=item["actual_prompt_tokens"], topic=item["topic"],
+                **(item.get("subsequence_audit") or subsequence_occurrence_report(item["token_ids"]))))
 
     def engine(anchor_vectors):
         clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
@@ -120,7 +129,9 @@ def main():
     bandwidth = args.bandwidth_gbps * 1e9 / 8 if args.bandwidth_gbps else None
     rows = []
     expected_identity = {}
-    for mode in MODES:
+    modes = MODES + (("SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC",)
+                     if args.position_aligned_diagnostic else ())
+    for mode in modes:
         schedule = repetition_schedule(cfg["warmup_runs"], cfg["measured_runs"])
         for trace_spec, scheduled in ((trace, item) for trace in trace_specs for item in schedule):
             repeat, phase = scheduled["repeat_index"], scheduled["phase"]
@@ -163,7 +174,8 @@ def main():
                         communication_metric_source="ANALYTICAL / SIMULATED",
                         physical_cache_storage_device=cache_storage_device,
                         cache_transfer_path=transfer_path,
-                        controlled_exact_parity=True,
+                        controlled_exact_fixture=condition == "same_user_exact",
+                        correctness_validation_status="native_self_parity",
                         timing_scopes={"request_wall_ms": {"timing_scope": "complete native request",
                             "timing_parent": None, "inclusive_or_exclusive": "inclusive", "clock": "cpu_perf_counter_ns"},
                             "prefill_wall_ms": {"timing_scope": "model forward plus CUDA timing resolution",
@@ -188,6 +200,17 @@ def main():
                     allocated_before, reserved_before))
                 row["requested_prompt_tokens"] = item["requested_prompt_tokens"]
                 row["actual_prompt_tokens"] = len(reference["ids"])
+                row["prompt_subsequence_audit"] = item.get("subsequence_audit") or subsequence_occurrence_report(reference["ids"])
+                if mode == "SEMCACHE_PHYSICAL_REUSE":
+                    row["correctness_validation_status"] = (
+                        "correctness_not_validated_for_lengths_ge_64"
+                        if item["requested_prompt_tokens"] is not None and item["requested_prompt_tokens"] >= 64
+                        else "controlled_exact_parity_passed" if row.get("controlled_exact_parity_passed")
+                        else "controlled_exact_parity_failed")
+                elif mode == "SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC":
+                    row["correctness_validation_status"] = (
+                        "position_aligned_parity_passed" if row.get("controlled_exact_parity_passed")
+                        else "position_aligned_parity_failed")
                 row["correctness_reference_ms"] = reference["request_wall_ms"]
                 row.update(repetition_state_semantics=("stateless" if mode == "NATIVE_NO_CACHE"
                            else "reconstructed_precondition"),
@@ -206,6 +229,7 @@ def main():
     write_jsonl(args.output_dir / "inference_raw.jsonl", rows)
     write_csv(args.output_dir / "inference_summary.csv", aggregate_raw(rows))
     write_csv(args.output_dir / "inference_reuse_deltas.csv", reuse_delta_summary(rows))
+    write_json(args.output_dir / "prompt_subsequence_audit.json", prompt_audits)
     write_json(args.output_dir / "inference_environment.json", env)
     print(f"Saved {len(rows)} raw records to {args.output_dir}; safe_reuse_claimed=false")
 

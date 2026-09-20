@@ -1,9 +1,10 @@
 """Controlled prefill orchestration. Architecture details belong in ModelAdapter."""
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from .semantic.subsequence import SubsequenceExtractor
 from .semantic.matcher import ExactTokenMatcher
-from .semantic.hit_selection import CacheHit, select_nonoverlapping
+from .semantic.hit_selection import (CacheHit, select_nonoverlapping,
+                                     select_position_aligned_diagnostic)
 from .cache.cache_entry import CacheEntry
 from .cache.metric_manager import CacheMetricManager, actual_attention_impact
 from .cache.attention_impact import MeanLayerHeadFrobeniusReducer
@@ -32,6 +33,8 @@ class SemCacheEngine:
         self.verbose_impact_events = verbose_impact_events
         self.events = []
         self.query_id = None
+        self._admission_candidate_order = 0
+        self._admission_order = 0
 
     def emit(self, event_type, **details):
         event = dict(query_id=self.query_id, step=len(self.events)+1, event_type=event_type,
@@ -53,7 +56,8 @@ class SemCacheEngine:
         if collect_timing and compare_baseline and baseline_logits is None:
             raise ValueError('Timed queries require baseline_logits computed outside request timing')
         external_baseline = baseline_logits.detach().cpu() if baseline_logits is not None else None
-        if execution_mode not in ('SEMCACHE_LOOKUP_NO_REUSE', 'SEMCACHE_PHYSICAL_REUSE'):
+        if execution_mode not in ('SEMCACHE_LOOKUP_NO_REUSE', 'SEMCACHE_PHYSICAL_REUSE',
+                                  'SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC'):
             raise ValueError('Engine supports SemCache modes; native mode bypasses the engine')
         request_timer = CPUWallTimer()
         request_timer.__enter__()
@@ -78,6 +82,7 @@ class SemCacheEngine:
                   **cluster_update)
         with timings.cpu('subsequence_extract_ms', parent='request_wall_ms'):
             windows = self.extractor.extract(ids)
+        occurrence_counts = Counter(w.token_ids for w in windows)
         self.metrics.arrive([self.matcher.key(cluster, w) for w in windows])
         self.emit('SUBSEQUENCE_EXTRACT', cluster_id=cluster, window_size=self.extractor.window_size,
                   windows=[dict(token_ids=w.token_ids, target_start=w.start, target_end=w.end) for w in windows])
@@ -95,7 +100,30 @@ class SemCacheEngine:
                     hits.append(CacheHit(window, entry, entry.impact or 0.0))
         with timings.cpu('hit_selection_ms', parent='request_wall_ms'):
             selected, mask = select_nonoverlapping(hits, len(ids))
-        execution_hits = selected if execution_mode == 'SEMCACHE_PHYSICAL_REUSE' else []
+            if execution_mode == 'SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC':
+                selected, mask = select_position_aligned_diagnostic(
+                    hits, len(ids), ids, user_id)
+        execution_hits = selected if execution_mode in (
+            'SEMCACHE_PHYSICAL_REUSE', 'SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC') else []
+        reuse_block_provenance = [dict(cache_key=hit.entry.key,
+            token_ids=list(hit.window.token_ids),
+            source_query_id=hit.entry.qkv_metadata.get('source_query_id'),
+            source_user=hit.entry.qkv_metadata.get('source_user'),
+            source_adapter=hit.entry.qkv_metadata.get('source_adapter'),
+            source_start=hit.entry.positions[0], source_end=hit.entry.positions[1],
+            destination_query_id=query_id, destination_user=user_id, destination_adapter=user_id,
+            destination_start=hit.window.start, destination_end=hit.window.end,
+            positions_identical=hit.entry.positions == (hit.window.start, hit.window.end),
+            source_occurrence_count=hit.entry.qkv_metadata.get('source_occurrence_count'),
+            destination_occurrence_count=occurrence_counts[hit.window.token_ids],
+            expected_cold_miss_source=hit.entry.qkv_metadata.get('source_query_id') == 'cold_miss',
+            admission_candidate_order=hit.entry.qkv_metadata.get('admission_candidate_order'),
+            admission_order=hit.entry.qkv_metadata.get('admission_order'),
+            existing_key_overwritten=hit.entry.qkv_metadata.get('existing_key_overwritten', False),
+            source_duplicate_deduplicated=hit.entry.qkv_metadata.get('source_occurrence_count', 1) > 1)
+            for hit in selected]
+        for provenance in reuse_block_provenance:
+            self.emit('REUSE_PROVENANCE', **provenance)
         self.emit('NON_OVERLAP_RESOLVE', hit_count=len(hits), accepted_nonoverlap_hits=len(selected), reused_mask=mask)
         for hit in selected:
             self.emit('FETCH', **self.entry_fields(hit.entry), target_start=hit.window.start, target_end=hit.window.end)
@@ -162,26 +190,51 @@ class SemCacheEngine:
         timings.scopes['chu_update_ms'] = dict(timing_scope='chu_update_ms', timing_parent='request_wall_ms',
             inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
         considered = set()
+        admission_audit = []
+        deduplication_audit = []
         policy_timer = CPUWallTimer()
         policy_timer.__enter__()
         materialization_ms = 0.0
         for window in misses:
             key = self.matcher.key(cluster, window)
             if key in self.cache.entries or key in considered:
+                dedup = dict(cache_key=key, source_start=window.start,
+                    source_end=window.end, existing_resident=key in self.cache.entries,
+                    duplicate_in_current_query=key in considered, existing_key_overwritten=False)
+                deduplication_audit.append(dedup)
+                self.emit('DEDUPLICATE', **dedup)
                 continue
             considered.add(key)
+            self._admission_candidate_order += 1
             blocks = {layer: tuple(record[n][:, window.start:window.end] for n in 'qkv')
                       for layer, record in audit.projections.items()}
             size = sum(t.numel()*t.element_size() for qkv in blocks.values() for t in qkv)
             entry = CacheEntry(cluster, window.token_ids, (window.start, window.end), size,
-                impact=span_impacts[window.start], qkv_metadata=dict(component_scope='total_qkv', source_user=user_id))
+                impact=span_impacts[window.start], qkv_metadata=dict(component_scope='total_qkv',
+                    source_user=user_id, source_adapter=user_id, source_query_id=query_id,
+                    source_query_token_ids=tuple(ids),
+                    source_occurrence_count=occurrence_counts[window.token_ids],
+                    admission_candidate_order=self._admission_candidate_order,
+                    existing_key_overwritten=False))
             frequencies = self.metrics.frequencies
             normalized = self.cache.admission_metrics(entry, frequencies[key], frequencies)
             score = self.cache.admission.score(normalized)
             allowed = self.cache.admission.admit(normalized) and size <= self.cache.capacity_bytes
+            rejection_reason = (None if allowed else
+                ('entry_exceeds_capacity' if size > self.cache.capacity_bytes else 'admission_score_at_or_below_threshold'))
+            if allowed:
+                self._admission_order += 1
+                entry.qkv_metadata['admission_order'] = self._admission_order
+            admission_audit.append(dict(cache_key=key, source_start=window.start,
+                source_end=window.end, admission_score=score, admission_decision=allowed,
+                rejection_reason=rejection_reason,
+                admission_candidate_order=self._admission_candidate_order,
+                admission_order=entry.qkv_metadata.get('admission_order'),
+                source_occurrence_count=occurrence_counts[window.token_ids]))
             self.emit('ADMISSION_SCORE', **self.entry_fields(entry), admission_F=frequencies[key],
                       F_bar=normalized.frequency, A_bar=normalized.age, I_bar=normalized.impact,
                       S_bar=normalized.size, admission_score=score, admission_decision=allowed,
+                      rejection_reason=rejection_reason,
                       target_start=window.start, target_end=window.end)
             self.emit('ADMIT' if allowed else 'DENY', **self.entry_fields(entry), admission_score=score,
                       admission_decision=allowed)
@@ -225,7 +278,8 @@ class SemCacheEngine:
         timings.scopes['pbr_update_ms'] = dict(timing_scope='pbr_update_ms', timing_parent='request_wall_ms',
             inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
         logical_reused = sum(mask)
-        reused = logical_reused if execution_mode == 'SEMCACHE_PHYSICAL_REUSE' else 0
+        reused = logical_reused if execution_mode in (
+            'SEMCACHE_PHYSICAL_REUSE', 'SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC') else 0
         recomputed = len(ids)-reused
         assert reused + recomputed == len(ids)
         # The measured request ends after execution and cache-policy work.
@@ -302,6 +356,13 @@ class SemCacheEngine:
             chu_rho=self.metrics.updater.rho, pbr_history_lambda=self.metrics.history.history_lambda,
             pbr_trigger_policy='manual' if self.pbr_interval_queries is None else 'fixed_query_interval_REPRODUCTION_CHOICE',
             pbr_updates_this_query=len(pbr_updates),
+            reuse_block_provenance=reuse_block_provenance,
+            admission_audit=admission_audit,
+            deduplication_audit=deduplication_audit,
+            admission_candidate_count=len(admission_audit),
+            admitted_block_count=sum(item['admission_decision'] for item in admission_audit),
+            rejected_block_count=sum(not item['admission_decision'] for item in admission_audit),
+            deduplicated_window_count=sum(occurrence_counts.values()) - len(occurrence_counts),
             baseline_comparison_available=baseline is not None, **quality,
             mode=execution_mode, physical_reuse_used=projection_skip_used,
             projection_skip_used=projection_skip_used,

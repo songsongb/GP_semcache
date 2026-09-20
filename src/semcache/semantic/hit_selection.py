@@ -24,3 +24,18 @@ def select_nonoverlapping(hits, sequence_length):
         used[w.start:w.end] = [True] * (w.end-w.start)
         selected.append(hit)
     return selected, used
+
+
+def select_position_aligned_diagnostic(hits, sequence_length, destination_token_ids,
+                                       destination_user):
+    """Mechanism control only; never used by normal SemCache selection."""
+    destination = tuple(destination_token_ids)
+    aligned = []
+    for hit in hits:
+        metadata = hit.entry.qkv_metadata
+        if (tuple(metadata.get('source_query_token_ids', ())) == destination
+                and hit.entry.positions == (hit.window.start, hit.window.end)
+                and metadata.get('source_user') == destination_user
+                and metadata.get('source_adapter') == destination_user):
+            aligned.append(hit)
+    return select_nonoverlapping(aligned, sequence_length)

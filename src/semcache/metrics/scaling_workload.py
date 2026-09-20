@@ -1,4 +1,5 @@
 """Deterministic natural-text fixtures for M8 prompt-length scaling."""
+from collections import defaultdict
 
 HOTEL_TEXT = (
     "A traveler is planning a careful visit to Cambridge and needs a quiet hotel near the railway station. "
@@ -43,6 +44,8 @@ def construct_natural_prompt(tokenizer, target_tokens, *, topic="hotel"):
 def controlled_length_trace(tokenizer, target_tokens):
     exact = construct_natural_prompt(tokenizer, target_tokens, topic="hotel")
     unrelated = construct_natural_prompt(tokenizer, target_tokens, topic="unrelated")
+    exact["subsequence_audit"] = subsequence_occurrence_report(exact["token_ids"])
+    unrelated["subsequence_audit"] = subsequence_occurrence_report(unrelated["token_ids"])
     trace = [
         dict(condition="cold_miss", user_id="user_a", **exact),
         dict(condition="same_user_exact", user_id="user_a", **exact),
@@ -64,3 +67,16 @@ def parse_prompt_lengths(value):
     if not lengths or len(set(lengths)) != len(lengths) or any(x not in (32, 64, 128, 256, 512) for x in lengths):
         raise ValueError("Prompt lengths must be unique values from 32,64,128,256,512")
     return lengths
+
+
+def subsequence_occurrence_report(token_ids, window_size=3):
+    positions = defaultdict(list)
+    for start in range(max(0, len(token_ids) - window_size + 1)):
+        positions[tuple(token_ids[start:start + window_size])].append(start)
+    duplicated = [dict(token_ids=list(key), positions=starts, occurrences=len(starts))
+                  for key, starts in positions.items() if len(starts) > 1]
+    duplicated.sort(key=lambda item: (item["positions"][0], item["token_ids"]))
+    return dict(total_windows=sum(len(x) for x in positions.values()),
+        unique_windows=len(positions), duplicated_key_count=len(duplicated),
+        max_occurrences=max((len(x) for x in positions.values()), default=0),
+        duplicated_windows=duplicated)

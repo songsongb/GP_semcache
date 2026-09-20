@@ -6,9 +6,9 @@ from semcache.metrics.m8 import (MODES, RAW_FIELDS, TRAINING_FIELDS,
     aggregate_raw, analytical_communication, cache_transfer_path, incremental_memory,
     mode_identity, model_config, raw_record, repetition_schedule, token_ids_sha256,
     request_timing_accounting, training_record, training_step_diagnostics,
-    reuse_delta_summary, training_timing_summary)
+    exact_parity_passed, reuse_delta_summary, training_timing_summary)
 from semcache.metrics.scaling_workload import (construct_natural_prompt,
-    controlled_length_trace, parse_prompt_lengths)
+    controlled_length_trace, parse_prompt_lengths, subsequence_occurrence_report)
 from semcache.metrics.timing import (CPUWallTimer, CUDATimer, TimingRegistry,
     close_request_timing, resolve_cuda_event_pairs)
 
@@ -104,9 +104,20 @@ def test_controlled_prompt_construction_is_deterministic_and_exact_repeats_match
         "cold_miss", "same_user_exact", "cross_user_exact", "unrelated"]
     assert trace[0]["token_ids"] == trace[1]["token_ids"] == trace[2]["token_ids"]
     assert trace[0]["text"] == trace[1]["text"] == trace[2]["text"]
+    assert trace[0]["subsequence_audit"]["duplicated_key_count"] > 0
     assert parse_prompt_lengths("32,64,128,256") == [32, 64, 128, 256]
     with pytest.raises(ValueError):
         parse_prompt_lengths("32,32")
+
+
+def test_duplicate_w3_occurrence_detection_reports_positions():
+    report = subsequence_occurrence_report([1, 2, 3, 1, 2, 3, 1], 3)
+    assert report["total_windows"] == 5
+    assert report["unique_windows"] == 3
+    assert report["duplicated_key_count"] == 2
+    assert report["max_occurrences"] == 2
+    assert report["duplicated_windows"][0] == dict(
+        token_ids=[1, 2, 3], positions=[0, 3], occurrences=2)
 
 
 def test_prompt_length_is_an_explicit_summary_group():
@@ -127,6 +138,7 @@ def test_reuse_delta_sign_convention():
         rows.append(raw_record(experiment_id="x", model_id="m", mode=mode,
             query_id="same_user_exact", requested_prompt_tokens=64, actual_prompt_tokens=65,
             candidate_blocks=63, attention_impact_ms=30., attention_impact_block_count=63,
+            reused_tokens=60, recomputed_tokens=5, token_reuse_ratio=60/65, block_hits=61,
             mixed_qkv_execution_ms=qkv, prefill_wall_ms=prefill, request_wall_ms=request))
     result = reuse_delta_summary(rows)[0]
     assert result["qkv_reuse_delta_ms"] == 20.
@@ -135,6 +147,49 @@ def test_reuse_delta_sign_convention():
     assert result["prefill_reuse_delta_ms"] == -20.
     assert result["request_reuse_delta_ms"] == -30.
     assert result["request_observed_direction"] == "physical_slower"
+    assert result["physical_reused_tokens"] == 60
+    assert result["physical_token_reuse_ratio"] == pytest.approx(60/65)
+    assert result["physical_correctness_validation_status"] == "correctness_not_validated_for_lengths_ge_64"
+
+
+def test_parity_field_means_numerical_success_not_fixture_name():
+    divergent = raw_record(controlled_exact_fixture=True, max_abs_logit_diff=1.,
+        relative_l2_logit_diff=.2, last_position_kl=1., argmax_agreement=False)
+    assert divergent["controlled_exact_fixture"] is True
+    assert divergent["controlled_exact_parity_passed"] is False
+    assert exact_parity_passed(divergent) is False
+    exact = raw_record(controlled_exact_fixture=True, max_abs_logit_diff=0.,
+        relative_l2_logit_diff=0., last_position_kl=0., argmax_agreement=True)
+    assert exact["controlled_exact_parity_passed"] is True
+
+
+def test_position_aligned_diagnostic_checks_source_position_adapter_and_prompt():
+    from semcache.cache.cache_entry import CacheEntry
+    from semcache.semantic.hit_selection import CacheHit, select_position_aligned_diagnostic
+    from semcache.semantic.subsequence import Subsequence
+    ids = (1, 2, 3, 1, 2, 3)
+    entry = CacheEntry(0, (1, 2, 3), (0, 3), 1,
+        qkv_metadata=dict(source_query_token_ids=ids, source_user="user_a",
+                          source_adapter="user_a", source_query_id="cold_miss"))
+    aligned = CacheHit(Subsequence((1, 2, 3), 0, 3), entry)
+    repeated_wrong_position = CacheHit(Subsequence((1, 2, 3), 3, 6), entry)
+    selected, mask = select_position_aligned_diagnostic(
+        [aligned, repeated_wrong_position], len(ids), ids, "user_a")
+    assert selected == [aligned] and sum(mask) == 3
+    assert select_position_aligned_diagnostic([aligned], len(ids), ids, "user_b")[0] == []
+    assert select_position_aligned_diagnostic([aligned], len(ids), ids + (4,), "user_a")[0] == []
+
+
+def test_length64_admission_audit_schema():
+    audit = dict(cache_key=(0, (1, 2, 3)), source_start=0, source_end=3,
+        admission_score=.29, admission_decision=False,
+        rejection_reason="admission_score_at_or_below_threshold",
+        admission_candidate_order=1, admission_order=None, source_occurrence_count=1)
+    row = raw_record(admission_audit=[audit], admission_candidate_count=1,
+        admitted_block_count=0, rejected_block_count=1, deduplicated_window_count=0)
+    assert row["admission_audit"][0]["rejection_reason"]
+    assert row["admission_candidate_count"] == (
+        row["admitted_block_count"] + row["rejected_block_count"])
 
 
 def test_attention_impact_schema_and_residual_accounting_are_nonoverlapping():
@@ -282,3 +337,13 @@ def test_engine_mode_separation_and_physical_skip():
     assert physical["relative_l2_logit_diff"] is not None
     assert physical["last_position_kl_baseline_to_injected"] is not None
     assert physical["last_argmax_agreement"] is not None
+    provenance = physical["reuse_block_provenance"]
+    assert provenance and all(item["source_query_id"] == "source" for item in provenance)
+    assert all(item["source_user"] == item["source_adapter"] == "user_a" for item in provenance)
+    assert all("positions_identical" in item for item in provenance)
+    diagnostic = engine.query("2 3 4 5 6 7 8 9", "user_a", "aligned",
+        execution_mode="SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC", collect_timing=True,
+        baseline_logits=source["logits"])["summary"]
+    assert diagnostic["projection_skip_used"]
+    assert all(item["positions_identical"] for item in diagnostic["reuse_block_provenance"])
+    assert all(item["source_user"] == item["destination_user"] for item in diagnostic["reuse_block_provenance"])
