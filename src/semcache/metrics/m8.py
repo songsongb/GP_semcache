@@ -19,6 +19,7 @@ TIMING_FIELDS = (
     "semantic_encode_ms", "cluster_assign_update_ms", "tokenization_ms",
     "subsequence_extract_ms", "cache_lookup_ms", "hit_selection_ms",
     "cache_policy_ms", "chu_update_ms", "pbr_update_ms",
+    "attention_impact_ms", "attention_impact_ms_per_block",
     "cache_materialization_ms", "base_qkv_projection_ms",
     "lora_qkv_projection_ms", "qkv_execution_ms", "mixed_qkv_execution_ms", "attention_ms",
     "remaining_transformer_ms", "prefill_gpu_ms", "request_wall_ms",
@@ -42,6 +43,8 @@ RAW_FIELDS = (
     "warmup_state_semantics", "trace_position", "seed",
     "attention_implementation", "prompt_token_ids_sha256",
     "physical_cache_storage_device", "cache_transfer_path",
+    "attention_impact_block_count", "timing_accounted_ms",
+    "unaccounted_request_ms", "timing_coverage_ratio",
     "cuda_allocated_before_bytes", "cuda_reserved_before_bytes",
     "incremental_peak_allocated_bytes", "incremental_peak_reserved_bytes",
 )
@@ -121,6 +124,27 @@ def mode_identity(model_revision, tokenizer_revision, dtype, token_hash, adapter
         seed=seed, attention_implementation=attention_implementation)
 
 
+# Mutually exclusive, top-level regions inside request_wall_ms. Inclusive child
+# timers (cache materialization, mixed QKV) and outside diagnostics are omitted.
+REQUEST_ACCOUNTING_FIELDS = (
+    "tokenization_ms", "semantic_encode_ms", "cluster_assign_update_ms",
+    "subsequence_extract_ms", "cache_lookup_ms", "hit_selection_ms",
+    "prefill_gpu_ms", "attention_impact_ms", "chu_update_ms",
+    "cache_policy_ms", "pbr_update_ms",
+)
+
+
+def request_timing_accounting(timing):
+    request = timing.get("request_wall_ms")
+    if request is None:
+        return dict(timing_accounted_ms=None, unaccounted_request_ms=None,
+                    timing_coverage_ratio=None)
+    accounted = sum(float(timing.get(name) or 0.0) for name in REQUEST_ACCOUNTING_FIELDS)
+    return dict(timing_accounted_ms=accounted,
+                unaccounted_request_ms=float(request) - accounted,
+                timing_coverage_ratio=(accounted / float(request) if request else None))
+
+
 def percentile(values, p):
     if not values:
         return None
@@ -157,6 +181,7 @@ def raw_record(**values):
     row["timestamp"] = row["timestamp"] or datetime.now(timezone.utc).isoformat()
     row["hostname"] = row["hostname"] or socket.gethostname()
     row["safe_reuse_claimed"] = False
+    row.update(request_timing_accounting(row))
     return row
 
 

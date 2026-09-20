@@ -5,7 +5,8 @@ import pytest
 from semcache.metrics.m8 import (MODES, RAW_FIELDS, TRAINING_FIELDS,
     aggregate_raw, analytical_communication, cache_transfer_path, incremental_memory,
     mode_identity, model_config, raw_record, repetition_schedule, token_ids_sha256,
-    training_record, training_step_diagnostics, training_timing_summary)
+    request_timing_accounting, training_record, training_step_diagnostics,
+    training_timing_summary)
 from semcache.metrics.timing import (CPUWallTimer, CUDATimer, TimingRegistry,
     close_request_timing, resolve_cuda_event_pairs)
 
@@ -83,6 +84,22 @@ def test_aggregation_p50_p95_and_nulls():
     assert summary["p50"] == 2.5 and summary["p95"] == pytest.approx(3.85)
     empty = next(x for x in aggregate_raw(rows) if x["metric"] == "attention_ms")
     assert empty["count"] == 0 and empty["mean"] is None
+
+
+def test_attention_impact_schema_and_residual_accounting_are_nonoverlapping():
+    row = raw_record(experiment_id="x", model_id="m", mode=MODES[2], query_id="q",
+        request_wall_ms=100., tokenization_ms=1., semantic_encode_ms=10.,
+        cluster_assign_update_ms=1., subsequence_extract_ms=1., cache_lookup_ms=1.,
+        hit_selection_ms=1., prefill_gpu_ms=50., attention_impact_ms=20.,
+        chu_update_ms=1., cache_policy_ms=5., cache_materialization_ms=500.,
+        pbr_update_ms=1., mixed_qkv_execution_ms=500.,
+        correctness_reference_ms=800., quality_diagnostics_ms=900.,
+        attention_impact_block_count=9, attention_impact_ms_per_block=20/9)
+    assert row["timing_accounted_ms"] == 92.
+    assert row["unaccounted_request_ms"] == 8.
+    assert row["timing_coverage_ratio"] == .92
+    # Inclusive children and outside-request correctness work are not subtracted.
+    assert request_timing_accounting(row)["timing_accounted_ms"] == 92.
 
 
 def test_raw_memory_and_training_schemas_are_complete():
@@ -189,6 +206,12 @@ def test_engine_mode_separation_and_physical_skip():
     assert physical["physical_reuse_used"] and physical["projection_skip_used"]
     assert physical["timing"]["mixed_qkv_execution_ms"] is None  # CPU fixture: no fake GPU zero.
     assert physical["timing"]["quality_diagnostics_ms"] is not None
+    assert physical["timing"]["attention_impact_ms"] is not None
+    assert physical["timing"]["attention_impact_ms_per_block"] is not None
+    scope = physical["timing_scopes"]["attention_impact_ms"]
+    assert scope["timing_parent"] == "request_wall_ms"
+    assert scope["inclusive_or_exclusive"] == "exclusive"
+    assert physical["attention_impact_block_count"] == physical["candidate_windows"]
     assert physical["max_abs_logit_diff"] is not None
     assert physical["relative_l2_logit_diff"] is not None
     assert physical["last_position_kl_baseline_to_injected"] is not None

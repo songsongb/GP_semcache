@@ -91,7 +91,9 @@ not an event-resolution synchronization call.
 The attention-impact reducer likewise accumulates all layer/head norm tensors
 before one host materialization per evaluated block; it no longer materializes
 one result per Transformer layer. Multiple candidate blocks still require their
-own impact reductions as genuine M7 control-plane work.
+own impact reductions as genuine M7 control-plane work. `attention_impact_ms`
+uses CPU wall time, not CUDA Events, because its scope deliberately includes the
+host wait caused by each block's GPU-to-CPU norm-vector materialization.
 
 Scopes are stored per raw record in `timing_scopes`:
 
@@ -104,6 +106,8 @@ Scopes are stored per raw record in `timing_scopes`:
 | `subsequence_extract_ms` | CPU wall | exact window construction | exclusive child |
 | `cache_lookup_ms` | CPU wall | all global-cache lookups and lookup events | exclusive child |
 | `hit_selection_ms` | CPU wall | non-overlap selection | exclusive child |
+| `attention_impact_ms` | CPU wall | all candidate-block attention reductions, host materialization, per-key means, and history insertion | exclusive child |
+| `attention_impact_ms_per_block` | derived | attention-impact wall time divided by candidate-block count | child diagnostic; do not sum |
 | `chu_update_ms` | CPU wall | all selected-hit CHU scalar updates and events | exclusive child |
 | `cache_policy_ms` | CPU wall | admission scoring, insertion, and eviction for misses | inclusive child |
 | `cache_materialization_ms` | CPU wall | tensor-to-cache-entry copies during admitted insertions | exclusive child of cache policy |
@@ -130,6 +134,28 @@ LoRA work, while splitting attention/remaining work requires more intrusive
 module rewriting. Inclusive parents must never be summed with their children;
 in particular, do not add cache materialization to cache policy or mixed QKV to
 prefill.
+
+## Request timing coverage
+
+Raw rows include `timing_accounted_ms`, `unaccounted_request_ms`, and
+`timing_coverage_ratio`. The accounted value sums only these mutually exclusive
+top-level request regions:
+
+`tokenization_ms + semantic_encode_ms + cluster_assign_update_ms +`
+`subsequence_extract_ms + cache_lookup_ms + hit_selection_ms + prefill_gpu_ms +`
+`attention_impact_ms + chu_update_ms + cache_policy_ms + pbr_update_ms`.
+
+Then:
+
+`unaccounted_request_ms = request_wall_ms - timing_accounted_ms`
+
+`timing_coverage_ratio = timing_accounted_ms / request_wall_ms`.
+
+The residual is intentionally signed and is not forced to zero. The calculation
+does not add `cache_materialization_ms` because it is inside `cache_policy_ms`,
+does not add mixed/QKV timing because it is inside `prefill_gpu_ms`, and does not
+add `correctness_reference_ms` or `quality_diagnostics_ms` because both are
+outside the request.
 
 ## Memory and communication
 

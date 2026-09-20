@@ -117,6 +117,8 @@ class SemCacheEngine:
             timings.values['prefill_gpu_ms'].resolve(synchronize=True)
         for record in audit.records.values():
             self.emit('MIXED_PROJECT', **record)
+        attention_impact_timer = CPUWallTimer()
+        attention_impact_timer.__enter__()
         impacts = defaultdict(list)
         span_impacts = {}
         for w in windows:
@@ -128,6 +130,17 @@ class SemCacheEngine:
         # A query contributes one observation per key; repeated occurrences mean.
         per_query = {key: sum(values)/len(values) for key, values in impacts.items()}
         self.metrics.history.append(cluster, query_id, self.cache.now, per_query)
+        attention_impact_timer.__exit__(None, None, None)
+        timings.values['attention_impact_ms'] = attention_impact_timer.elapsed_ms
+        timings.values['attention_impact_ms_per_block'] = (
+            attention_impact_timer.elapsed_ms / len(windows) if windows else None)
+        timings.scopes['attention_impact_ms'] = dict(
+            timing_scope='all candidate-block attention reductions, host materialization, and query impact construction',
+            timing_parent='request_wall_ms', inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
+        timings.scopes['attention_impact_ms_per_block'] = dict(
+            timing_scope='attention_impact_ms divided by candidate block count',
+            timing_parent='attention_impact_ms', inclusive_or_exclusive='derived_do_not_sum',
+            clock='derived_from_cpu_perf_counter_ns')
         chu_timer = CPUWallTimer()
         chu_timer.__enter__()
         for hit in selected:
@@ -269,6 +282,8 @@ class SemCacheEngine:
             **savings, paper_estimated_comm_bytes_saved=comm_bytes,
             savings_scope='analytical sum over all layers; no wall-clock speedup claim',
             semantic_impact_provider='actual_attention_probabilities',
+            attention_impact_block_count=len(windows),
+            attention_impact_ms_per_block=(attention_impact_timer.elapsed_ms / len(windows) if windows else None),
             attention_impact_reducer=self.impact_reducer.metadata,
             chu_rho=self.metrics.updater.rho, pbr_history_lambda=self.metrics.history.history_lambda,
             pbr_trigger_policy='manual' if self.pbr_interval_queries is None else 'fixed_query_interval_REPRODUCTION_CHOICE',
