@@ -31,6 +31,7 @@ RAW_FIELDS = (
     "experiment_id", "timestamp", "hostname", "gpu_name", "model_id",
     "model_revision", "tokenizer_revision", "dtype", "mode", "query_id",
     "user_id", "adapter_name", "prompt_tokens", "reused_tokens",
+    "requested_prompt_tokens", "actual_prompt_tokens",
     "recomputed_tokens", "token_reuse_ratio", "block_hits", "candidate_blocks",
     "physical_reuse_used", "projection_skip_used", "warmup_runs",
     "measured_runs", "repeat_index", *TIMING_FIELDS,
@@ -159,17 +160,58 @@ def aggregate_raw(rows):
     """One row per experiment/mode/query/metric with distribution statistics."""
     groups = {}
     for row in rows:
-        key = (row["experiment_id"], row["model_id"], row["mode"], row["query_id"])
+        key = (row["experiment_id"], row["model_id"], row["mode"], row["query_id"],
+               row.get("requested_prompt_tokens"), row.get("actual_prompt_tokens"))
         groups.setdefault(key, []).append(row)
     output = []
-    for key, items in sorted(groups.items()):
+    for key, items in sorted(groups.items(), key=lambda item: tuple(str(v) for v in item[0])):
         for field in TIMING_FIELDS:
             values = [r.get(field) for r in items if r.get(field) is not None]
             output.append(dict(experiment_id=key[0], model_id=key[1], mode=key[2],
-                query_id=key[3], metric=field, count=len(values), mean=mean(values) if values else None,
+                query_id=key[3], requested_prompt_tokens=key[4], actual_prompt_tokens=key[5],
+                metric=field, count=len(values), mean=mean(values) if values else None,
                 p50=median(values) if values else None, p95=percentile(values, .95),
                 std=pstdev(values) if values else None, min=min(values) if values else None,
                 max=max(values) if values else None, unit="ms", metric_source="MEASURED"))
+    return output
+
+
+def reuse_delta_summary(rows):
+    """Mean lookup-minus-physical deltas; positive means reuse is faster."""
+    metrics = {
+        "qkv": "mixed_qkv_execution_ms",
+        "prefill": "prefill_wall_ms",
+        "request": "request_wall_ms",
+    }
+    groups = {}
+    for row in rows:
+        if row.get("query_id") not in ("same_user_exact", "cross_user_exact"):
+            continue
+        key = (row["experiment_id"], row["model_id"], row.get("requested_prompt_tokens"),
+               row.get("actual_prompt_tokens"), row["query_id"])
+        groups.setdefault(key, {}).setdefault(row["mode"], []).append(row)
+    output = []
+    for key, modes in sorted(groups.items(), key=lambda item: tuple(str(v) for v in item[0])):
+        lookup = modes.get("SEMCACHE_LOOKUP_NO_REUSE", [])
+        physical = modes.get("SEMCACHE_PHYSICAL_REUSE", [])
+        if not lookup or not physical:
+            continue
+        result = dict(experiment_id=key[0], model_id=key[1], requested_prompt_tokens=key[2],
+            actual_prompt_tokens=key[3], query_id=key[4],
+            candidate_blocks=mean(r["candidate_blocks"] for r in physical),
+            attention_impact_ms=mean(r["attention_impact_ms"] for r in physical),
+            attention_impact_ms_per_block=mean(r["attention_impact_ms_per_block"] for r in physical))
+        for label, field in metrics.items():
+            a = mean(r[field] for r in lookup)
+            b = mean(r[field] for r in physical)
+            delta = a - b
+            result[f"lookup_no_reuse_{field}"] = a
+            result[f"physical_reuse_{field}"] = b
+            result[f"{label}_reuse_delta_ms"] = delta
+            result[f"{label}_reuse_delta_percent"] = delta / a * 100 if a else None
+            result[f"{label}_observed_direction"] = (
+                "physical_faster" if delta > 0 else "physical_slower" if delta < 0 else "tie")
+        output.append(result)
     return output
 
 

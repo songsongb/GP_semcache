@@ -6,7 +6,9 @@ from semcache.metrics.m8 import (MODES, RAW_FIELDS, TRAINING_FIELDS,
     aggregate_raw, analytical_communication, cache_transfer_path, incremental_memory,
     mode_identity, model_config, raw_record, repetition_schedule, token_ids_sha256,
     request_timing_accounting, training_record, training_step_diagnostics,
-    training_timing_summary)
+    reuse_delta_summary, training_timing_summary)
+from semcache.metrics.scaling_workload import (construct_natural_prompt,
+    controlled_length_trace, parse_prompt_lengths)
 from semcache.metrics.timing import (CPUWallTimer, CUDATimer, TimingRegistry,
     close_request_timing, resolve_cuda_event_pairs)
 
@@ -84,6 +86,55 @@ def test_aggregation_p50_p95_and_nulls():
     assert summary["p50"] == 2.5 and summary["p95"] == pytest.approx(3.85)
     empty = next(x for x in aggregate_raw(rows) if x["metric"] == "attention_ms")
     assert empty["count"] == 0 and empty["mean"] is None
+
+
+class WhitespaceTokenizer:
+    def __call__(self, text):
+        return {"input_ids": [0] + [sum(map(ord, word)) for word in text.split()]}
+
+
+def test_controlled_prompt_construction_is_deterministic_and_exact_repeats_match():
+    tokenizer = WhitespaceTokenizer()
+    a = construct_natural_prompt(tokenizer, 32, topic="hotel")
+    b = construct_natural_prompt(tokenizer, 32, topic="hotel")
+    assert a == b and a["requested_prompt_tokens"] == 32
+    assert a["actual_prompt_tokens"] == len(a["token_ids"])
+    trace = controlled_length_trace(tokenizer, 64)
+    assert [item["condition"] for item in trace] == [
+        "cold_miss", "same_user_exact", "cross_user_exact", "unrelated"]
+    assert trace[0]["token_ids"] == trace[1]["token_ids"] == trace[2]["token_ids"]
+    assert trace[0]["text"] == trace[1]["text"] == trace[2]["text"]
+    assert parse_prompt_lengths("32,64,128,256") == [32, 64, 128, 256]
+    with pytest.raises(ValueError):
+        parse_prompt_lengths("32,32")
+
+
+def test_prompt_length_is_an_explicit_summary_group():
+    rows = [raw_record(experiment_id="x", model_id="m", mode=MODES[0], query_id="q",
+        requested_prompt_tokens=length, actual_prompt_tokens=length + 1, request_wall_ms=float(length))
+        for length in (32, 64)]
+    summary = [row for row in aggregate_raw(rows) if row["metric"] == "request_wall_ms"]
+    assert {(row["requested_prompt_tokens"], row["actual_prompt_tokens"]) for row in summary} == {
+        (32, 33), (64, 65)}
+
+
+def test_reuse_delta_sign_convention():
+    rows = []
+    for mode, qkv, prefill, request in [
+        ("SEMCACHE_LOOKUP_NO_REUSE", 100., 200., 300.),
+        ("SEMCACHE_PHYSICAL_REUSE", 80., 220., 330.),
+    ]:
+        rows.append(raw_record(experiment_id="x", model_id="m", mode=mode,
+            query_id="same_user_exact", requested_prompt_tokens=64, actual_prompt_tokens=65,
+            candidate_blocks=63, attention_impact_ms=30., attention_impact_block_count=63,
+            mixed_qkv_execution_ms=qkv, prefill_wall_ms=prefill, request_wall_ms=request))
+    result = reuse_delta_summary(rows)[0]
+    assert result["qkv_reuse_delta_ms"] == 20.
+    assert result["qkv_reuse_delta_percent"] == 20.
+    assert result["qkv_observed_direction"] == "physical_faster"
+    assert result["prefill_reuse_delta_ms"] == -20.
+    assert result["request_reuse_delta_ms"] == -30.
+    assert result["request_observed_direction"] == "physical_slower"
 
 
 def test_attention_impact_schema_and_residual_accounting_are_nonoverlapping():

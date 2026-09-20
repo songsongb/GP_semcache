@@ -39,6 +39,20 @@ Reported reuse ratios are calculated from actual accepted non-overlapping spans;
 no target ratio is fabricated. Exact parity is only labelled for controlled
 identity cases and is not generalized to arbitrary cross-user reuse.
 
+An explicit `--prompt-lengths 32,64,128,256` enables controlled length scaling.
+For each length, the runner incrementally takes words from a fixed natural-text
+paragraph (cycling deterministically when necessary), asks the loaded tokenizer
+for the real token IDs, and selects the closest prefix to the requested count.
+Hotel/travel text supplies the cold and exact-repeat conditions; distinct
+gardening/weather text supplies the unrelated condition. Same-user and
+cross-user repeats use the exact same string and assert identical token IDs.
+Construction and anchor encoding happen outside measured requests.
+
+`requested_prompt_tokens` records the target and `actual_prompt_tokens` records
+the tokenizer result. Reuse tokens, recomputed tokens, candidate blocks, hits,
+and ratios always come from the unchanged M7 execution; no reuse ratio is
+forced. Omitting `--prompt-lengths` retains the original compatibility trace.
+
 The state policy is `reconstructed_precondition`. Every SemCache trace starts
 with a newly constructed clusterer initialized from the same anchor vectors, an
 empty cache, and fresh F/A/I/history counters. Within that trace:
@@ -195,10 +209,24 @@ is never added to measured GPU or wall time.
 - `results/m8/inference_raw.jsonl`: one complete schema-stable record per
   measured repetition, mode, and query; unavailable timers are JSON null.
 - `results/m8/inference_summary.csv`: count, mean, p50, p95, population std,
-  min, and max for every timing field, grouped by experiment/model/mode/query.
+  min, and max for every timing field, grouped by experiment/model/mode/query
+  and requested/actual prompt length.
+- `results/m8/inference_reuse_deltas.csv`: exact-hit lookup-versus-physical
+  QKV, prefill-wall, and request-wall mean differences by prompt length.
 - `results/m8/inference_environment.json`: host, CUDA/PyTorch, exact resolved
   revisions, encoder, adapter, dtype, and repetition configuration.
 - `results/m8/lora_training.json`: separate adapter-training result.
+
+Reuse deltas use `lookup_no_reuse - physical_reuse`; positive means physical
+reuse was faster and negative means it was slower. Percent differences divide
+that delta by the lookup-no-reuse mean. The output reports an observed direction
+for each length and metric but makes no crossover claim unless signs actually
+change across measured lengths. Candidate-block and attention-impact scaling
+diagnostics are emitted beside the deltas.
+
+Use `--output-dir` or `--experiment-suffix` to keep length sweeps separate from
+earlier smoke results. Length 512 is accepted explicitly but is not part of the
+recommended default OPT-2.7B sweep.
 
 Quality fields remain attached: maximum absolute and relative L2 logit error,
 last-position KL (baseline to measured), and last-token argmax agreement.

@@ -12,7 +12,9 @@ from semcache.cache.global_cache import GlobalCache
 from semcache.metrics.inference import (begin_cuda_memory_measurement,
     finish_cuda_memory_measurement, model_weight_bytes, native_request, record_from_engine)
 from semcache.metrics.m8 import (MODES, aggregate_raw, environment_record, model_config,
-    cache_transfer_path, mode_identity, raw_record, repetition_schedule, token_ids_sha256)
+    cache_transfer_path, mode_identity, raw_record, repetition_schedule,
+    reuse_delta_summary, token_ids_sha256)
+from semcache.metrics.scaling_workload import controlled_length_trace, parse_prompt_lengths
 from semcache.models.loader import load_model
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
@@ -42,16 +44,27 @@ def parse_args():
     p.add_argument("--revision", help="Optional requested HF revision; resolved commits are always recorded")
     p.add_argument("--tokenizer-revision")
     p.add_argument("--bandwidth-gbps", type=float)
+    p.add_argument("--prompt-lengths", help="Optional comma-separated controlled lengths: 32,64,128,256[,512]")
+    p.add_argument("--experiment-suffix", help="Write into OUTPUT_DIR/SUFFIX to avoid overwriting prior results")
     p.add_argument("--output-dir", type=Path, default=ROOT / "results/m8")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    try:
+        prompt_lengths = parse_prompt_lengths(args.prompt_lengths)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.experiment_suffix:
+        if Path(args.experiment_suffix).name != args.experiment_suffix:
+            raise SystemExit("--experiment-suffix must be one path component")
+        args.output_dir = args.output_dir / args.experiment_suffix
     cfg = model_config(args.model, allow_large_model=args.allow_large_model, dtype=args.dtype,
                        warmup_runs=args.warmup_runs, measured_runs=args.measured_runs)
-    workload = WORKLOAD[:3] if cfg["large"] else WORKLOAD
-    print(f"M8 work summary: model={args.model}, conditions={len(workload)}, modes=3, "
+    condition_count = 4 if prompt_lengths else (3 if cfg["large"] else len(WORKLOAD))
+    print(f"M8 work summary: model={args.model}, lengths={prompt_lengths or ['compatibility']}, "
+          f"conditions={condition_count}, modes=3, "
           f"warmups={cfg['warmup_runs']}, measured={cfg['measured_runs']}, dtype={cfg['dtype']}")
     seed_everything(42)
     model, tokenizer, metadata = load_model(dict(name=args.model, tokenizer=args.model,
@@ -64,10 +77,24 @@ def main():
     configured_cache_storage_device = "cpu"
     encoder = TinyBERTSemanticEncoder(device=args.device, dtype=cfg["dtype"],
                                       local_files_only=not args.allow_download)
-    anchors = [WORKLOAD[0][2], WORKLOAD[-1][2]]
-    anchor_vectors = encoder.encode(anchors)
+    if prompt_lengths:
+        traces = [controlled_length_trace(tokenizer, length) for length in prompt_lengths]
+    else:
+        compatibility = WORKLOAD[:3] if cfg["large"] else WORKLOAD
+        traces = [[dict(condition=condition, user_id=user, text=text,
+                    requested_prompt_tokens=None,
+                    actual_prompt_tokens=len(tokenizer(text)["input_ids"]),
+                    token_ids=list(tokenizer(text)["input_ids"]), topic="compatibility")
+                   for condition, user, text in compatibility]]
+    anchor_texts = [text for trace in traces for text in (trace[0]["text"], trace[-1]["text"])]
+    encoded_anchors = encoder.encode(anchor_texts)
+    trace_specs = []
+    for index, trace in enumerate(traces):
+        trace_specs.append(dict(workload=trace,
+            anchor_vectors=encoded_anchors[index * 2:index * 2 + 2],
+            requested_prompt_tokens=trace[0]["requested_prompt_tokens"]))
 
-    def engine():
+    def engine(anchor_vectors):
         clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
         clusterer.initialize(anchor_vectors)
         return SemCacheEngine(model, tokenizer, adapter, encoder, clusterer,
@@ -77,13 +104,15 @@ def main():
     import torch
     # Output provenance is read back from the runtime engine rather than copied
     # from a reporting constant.
-    cache_storage_device = str(engine().storage_device)
+    cache_storage_device = str(engine(trace_specs[0]["anchor_vectors"]).storage_device)
     transfer_path = cache_transfer_path(cache_storage_device, execution_device)
     env = environment_record(torch)
     env.update(model=metadata, semantic_encoder=encoder.metadata, lora=lora_metadata,
                benchmark_kind="microbenchmark", safe_reuse_claimed=False,
                physical_cache_storage_device=cache_storage_device,
                cache_transfer_path=transfer_path,
+               requested_prompt_lengths=prompt_lengths,
+               workload_kind=("controlled_length_scaling" if prompt_lengths else "compatibility_trace"),
                warmup_runs=cfg["warmup_runs"], measured_runs=cfg["measured_runs"])
     experiment_id = f"m8-{uuid.uuid4().hex[:12]}"
     gpu_name = env.get("gpu_name")
@@ -92,13 +121,17 @@ def main():
     rows = []
     expected_identity = {}
     for mode in MODES:
-        for scheduled in repetition_schedule(cfg["warmup_runs"], cfg["measured_runs"]):
+        schedule = repetition_schedule(cfg["warmup_runs"], cfg["measured_runs"])
+        for trace_spec, scheduled in ((trace, item) for trace in trace_specs for item in schedule):
             repeat, phase = scheduled["repeat_index"], scheduled["phase"]
             # A new engine reconstructs identical centroids, empty cache, and
             # cache-policy counters for every trace. Previous warmups are discarded.
-            semcache = engine() if mode != "NATIVE_NO_CACHE" else None
-            for trace_position, (condition, user, text) in enumerate(workload):
+            semcache = engine(trace_spec["anchor_vectors"]) if mode != "NATIVE_NO_CACHE" else None
+            for trace_position, item in enumerate(trace_spec["workload"]):
+                condition, user, text = item["condition"], item["user_id"], item["text"]
                 reference = native_request(model, tokenizer, text, user, collect_quality=False)
+                if len(reference["ids"]) != item["actual_prompt_tokens"]:
+                    raise AssertionError("Constructed prompt token count changed")
                 reference_hash = token_ids_sha256(reference["ids"])
                 allocated_before, reserved_before = begin_cuda_memory_measurement(torch, args.device)
                 if mode == "NATIVE_NO_CACHE":
@@ -111,6 +144,8 @@ def main():
                         tokenizer_revision=metadata.get("resolved_tokenizer_revision"), dtype=metadata["dtype"],
                         mode=mode, query_id=condition, user_id=user, adapter_name=user,
                         prompt_tokens=len(measured["ids"]), reused_tokens=0,
+                        requested_prompt_tokens=item["requested_prompt_tokens"],
+                        actual_prompt_tokens=len(measured["ids"]),
                         recomputed_tokens=len(measured["ids"]), token_reuse_ratio=0.0,
                         block_hits=0, candidate_blocks=0, physical_reuse_used=False,
                         projection_skip_used=False, warmup_runs=cfg["warmup_runs"],
@@ -151,6 +186,8 @@ def main():
                         bandwidth_bytes_per_s=bandwidth)
                 row.update(finish_cuda_memory_measurement(torch, args.device,
                     allocated_before, reserved_before))
+                row["requested_prompt_tokens"] = item["requested_prompt_tokens"]
+                row["actual_prompt_tokens"] = len(reference["ids"])
                 row["correctness_reference_ms"] = reference["request_wall_ms"]
                 row.update(repetition_state_semantics=("stateless" if mode == "NATIVE_NO_CACHE"
                            else "reconstructed_precondition"),
@@ -160,13 +197,15 @@ def main():
                 identity = mode_identity(row["model_revision"], row["tokenizer_revision"],
                     row["dtype"], row["prompt_token_ids_sha256"], row["adapter_name"],
                     row["seed"], row["attention_implementation"])
-                if condition in expected_identity and identity != expected_identity[condition]:
+                identity_key = (item["requested_prompt_tokens"], condition)
+                if identity_key in expected_identity and identity != expected_identity[identity_key]:
                     raise AssertionError(f"Mode execution identity differs for {condition}")
-                expected_identity.setdefault(condition, identity)
+                expected_identity.setdefault(identity_key, identity)
                 if phase == "measured":
                     rows.append(row)
     write_jsonl(args.output_dir / "inference_raw.jsonl", rows)
     write_csv(args.output_dir / "inference_summary.csv", aggregate_raw(rows))
+    write_csv(args.output_dir / "inference_reuse_deltas.csv", reuse_delta_summary(rows))
     write_json(args.output_dir / "inference_environment.json", env)
     print(f"Saved {len(rows)} raw records to {args.output_dir}; safe_reuse_claimed=false")
 
