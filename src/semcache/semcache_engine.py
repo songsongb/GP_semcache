@@ -104,17 +104,24 @@ class SemCacheEngine:
             baseline = (external_baseline if external_baseline is not None else
                         (self.model(**inputs).logits.detach().cpu() if compare_baseline else None))
             cuda_measure = collect_timing and inputs['input_ids'].is_cuda
+            prefill_wall_timer = CPUWallTimer()
+            prefill_wall_timer.__enter__()
             if cuda_measure:
-                with timings.cuda('prefill_gpu_ms', parent=None, inclusive='inclusive'):
+                with timings.cuda('prefill_gpu_ms', parent='prefill_wall_ms', inclusive='inclusive'):
                     with mixed_projection_path(self.adapter, user_id, execution_hits, len(ids), measure_cuda=True) as audit:
                         output = self.model(**inputs, output_attentions=True)
             else:
                 with mixed_projection_path(self.adapter, user_id, execution_hits, len(ids)) as audit:
                     output = self.model(**inputs, output_attentions=True)
-        if cuda_measure:
-            # Resolve the enclosing event once before any host materialization;
-            # all per-projection event pairs are now complete as well.
-            timings.values['prefill_gpu_ms'].resolve(synchronize=True)
+            if cuda_measure:
+                # Resolve inside the enclosing wall region so wall minus CUDA
+                # approximates launch/Python/hook/synchronization overhead.
+                timings.values['prefill_gpu_ms'].resolve(synchronize=True)
+            prefill_wall_timer.__exit__(None, None, None)
+        timings.values['prefill_wall_ms'] = prefill_wall_timer.elapsed_ms
+        timings.scopes['prefill_wall_ms'] = dict(timing_scope='model forward plus CUDA timing resolution',
+            timing_parent='request_wall_ms', inclusive_or_exclusive='exclusive_top_level',
+            clock='cpu_perf_counter_ns')
         for record in audit.records.values():
             self.emit('MIXED_PROJECT', **record)
         attention_impact_timer = CPUWallTimer()
@@ -255,6 +262,13 @@ class SemCacheEngine:
                 timing_parent='prefill_gpu_ms', inclusive_or_exclusive='exclusive', clock='cuda_event')
             timing_scopes['qkv_execution_ms'] = dict(timing_scope='alias of mixed_qkv_execution_ms',
                 timing_parent='prefill_gpu_ms', inclusive_or_exclusive='exclusive', clock='cuda_event')
+            timing_values['prefill_host_overhead_ms'] = (
+                timing_values['prefill_wall_ms'] - timing_values['prefill_gpu_ms']
+                if timing_values.get('prefill_gpu_ms') is not None else None)
+            timing_scopes['prefill_host_overhead_ms'] = dict(
+                timing_scope='prefill_wall_ms minus prefill_gpu_ms diagnostic approximation',
+                timing_parent='prefill_wall_ms', inclusive_or_exclusive='derived_do_not_sum',
+                clock='derived_cpu_wall_minus_cuda_event')
         projection_skip_used = any(record['reused_projection_rows'] > 0 for record in audit.records.values())
         row = dict(query_id=query_id, user_id=user_id, adapter_name=user_id, query_text=query_text,
             token_ids=ids,

@@ -49,6 +49,8 @@ def native_request(model, tokenizer, text, user_id, *, collect_quality=True):
         inputs = dict(input_ids=torch.tensor([ids], device=next(model.parameters()).device),
                       use_cache=False, output_attentions=True)
         cuda_timer = CUDATimer(inputs["input_ids"].device) if inputs["input_ids"].is_cuda else None
+        prefill_wall = CPUWallTimer()
+        prefill_wall.__enter__()
         with torch.inference_mode():
             if cuda_timer:
                 with cuda_timer:
@@ -57,12 +59,16 @@ def native_request(model, tokenizer, text, user_id, *, collect_quality=True):
                 output = model(**inputs)
         if cuda_timer:
             _ = cuda_timer.elapsed_ms
+        prefill_wall.__exit__(None, None, None)
     quality_timer = CPUWallTimer()
     with quality_timer:
         logits = output.logits.detach().cpu()
         quality = compare_logits(logits, logits, 0) if collect_quality else {}
     return dict(ids=ids, logits=logits, tokenization_ms=token_timer.elapsed_ms,
+                prefill_wall_ms=prefill_wall.elapsed_ms,
                 prefill_gpu_ms=cuda_timer.elapsed_ms if cuda_timer else None,
+                prefill_host_overhead_ms=(prefill_wall.elapsed_ms - cuda_timer.elapsed_ms
+                                          if cuda_timer else None),
                 request_wall_ms=wall.elapsed_ms, quality_diagnostics_ms=quality_timer.elapsed_ms,
                 quality=quality)
 

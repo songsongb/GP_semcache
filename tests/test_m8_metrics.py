@@ -90,7 +90,7 @@ def test_attention_impact_schema_and_residual_accounting_are_nonoverlapping():
     row = raw_record(experiment_id="x", model_id="m", mode=MODES[2], query_id="q",
         request_wall_ms=100., tokenization_ms=1., semantic_encode_ms=10.,
         cluster_assign_update_ms=1., subsequence_extract_ms=1., cache_lookup_ms=1.,
-        hit_selection_ms=1., prefill_gpu_ms=50., attention_impact_ms=20.,
+        hit_selection_ms=1., prefill_wall_ms=50., prefill_gpu_ms=500., attention_impact_ms=20.,
         chu_update_ms=1., cache_policy_ms=5., cache_materialization_ms=500.,
         pbr_update_ms=1., mixed_qkv_execution_ms=500.,
         correctness_reference_ms=800., quality_diagnostics_ms=900.,
@@ -98,8 +98,21 @@ def test_attention_impact_schema_and_residual_accounting_are_nonoverlapping():
     assert row["timing_accounted_ms"] == 92.
     assert row["unaccounted_request_ms"] == 8.
     assert row["timing_coverage_ratio"] == .92
+    assert row["attention_impact_ms_per_block"] == pytest.approx(20/9)
+    assert row["prefill_host_overhead_ms"] == -450.
     # Inclusive children and outside-request correctness work are not subtracted.
     assert request_timing_accounting(row)["timing_accounted_ms"] == 92.
+
+
+def test_derived_timing_fields_null_and_populated_rules():
+    populated = raw_record(request_wall_ms=20., prefill_wall_ms=12., prefill_gpu_ms=10.,
+        attention_impact_ms=9., attention_impact_block_count=3)
+    assert populated["attention_impact_ms_per_block"] == 3.
+    assert populated["prefill_host_overhead_ms"] == 2.
+    assert populated["timing_accounted_ms"] == 21.  # top-level wall + impact only
+    empty = raw_record(request_wall_ms=1., attention_impact_ms=9., attention_impact_block_count=0)
+    assert empty["attention_impact_ms_per_block"] is None
+    assert empty["prefill_host_overhead_ms"] is None
 
 
 def test_raw_memory_and_training_schemas_are_complete():
@@ -208,6 +221,8 @@ def test_engine_mode_separation_and_physical_skip():
     assert physical["timing"]["quality_diagnostics_ms"] is not None
     assert physical["timing"]["attention_impact_ms"] is not None
     assert physical["timing"]["attention_impact_ms_per_block"] is not None
+    assert physical["timing"]["prefill_wall_ms"] is not None
+    assert physical["timing"]["prefill_host_overhead_ms"] is None  # CPU fixture has no CUDA event.
     scope = physical["timing_scopes"]["attention_impact_ms"]
     assert scope["timing_parent"] == "request_wall_ms"
     assert scope["inclusive_or_exclusive"] == "exclusive"

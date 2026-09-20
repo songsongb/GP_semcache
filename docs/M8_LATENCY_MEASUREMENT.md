@@ -94,6 +94,9 @@ one result per Transformer layer. Multiple candidate blocks still require their
 own impact reductions as genuine M7 control-plane work. `attention_impact_ms`
 uses CPU wall time, not CUDA Events, because its scope deliberately includes the
 host wait caused by each block's GPU-to-CPU norm-vector materialization.
+`attention_impact_ms_per_block` is derived as total impact wall time divided by
+`attention_impact_block_count`; it is null when the block count is zero and is
+never included in request accounting.
 
 Scopes are stored per raw record in `timing_scopes`:
 
@@ -112,13 +115,19 @@ Scopes are stored per raw record in `timing_scopes`:
 | `cache_policy_ms` | CPU wall | admission scoring, insertion, and eviction for misses | inclusive child |
 | `cache_materialization_ms` | CPU wall | tensor-to-cache-entry copies during admitted insertions | exclusive child of cache policy |
 | `pbr_update_ms` | CPU wall | configured interval check and any triggered PBR update | exclusive child |
-| `prefill_gpu_ms` | CUDA event | one eager OPT forward including all transformer work and mixed QKV | inclusive root GPU region |
+| `prefill_wall_ms` | CPU wall | model forward plus final CUDA-event resolution | exclusive top-level request region |
+| `prefill_gpu_ms` | CUDA event | one eager OPT forward including all transformer work and mixed QKV | inclusive child of prefill wall |
+| `prefill_host_overhead_ms` | derived | prefill wall minus prefill GPU | child diagnostic; do not sum |
 | `mixed_qkv_execution_ms` | CUDA events | sum of disjoint patched Q/K/V calls: native PEFT projection for fresh rows plus cached retrieval/merge | exclusive child of prefill |
 | `correctness_reference_ms` | CPU wall plus synchronized GPU forward | separate native reference request | outside `request_wall_ms` |
 | `quality_diagnostics_ms` | CPU wall | logit host materialization and error/KL/argmax reductions | outside `request_wall_ms` |
 
 `qkv_execution_ms` is a schema-compatible alias of
 `mixed_qkv_execution_ms`; never sum the two.
+
+`prefill_host_overhead_ms = prefill_wall_ms - prefill_gpu_ms` is a diagnostic
+approximation of Python, hook, kernel-launch, and final synchronization overhead
+associated with the forward. It is not a measurement of pure CPU compute.
 
 `request_wall_ms` closes after the selected execution mode and its SemCache
 control/cache-policy path complete, before logits are materialized for benchmark
@@ -142,7 +151,7 @@ Raw rows include `timing_accounted_ms`, `unaccounted_request_ms`, and
 top-level request regions:
 
 `tokenization_ms + semantic_encode_ms + cluster_assign_update_ms +`
-`subsequence_extract_ms + cache_lookup_ms + hit_selection_ms + prefill_gpu_ms +`
+`subsequence_extract_ms + cache_lookup_ms + hit_selection_ms + prefill_wall_ms +`
 `attention_impact_ms + chu_update_ms + cache_policy_ms + pbr_update_ms`.
 
 Then:
@@ -153,7 +162,8 @@ Then:
 
 The residual is intentionally signed and is not forced to zero. The calculation
 does not add `cache_materialization_ms` because it is inside `cache_policy_ms`,
-does not add mixed/QKV timing because it is inside `prefill_gpu_ms`, and does not
+does not add `prefill_gpu_ms` because it is inside `prefill_wall_ms`, does not add
+mixed/QKV timing because it is inside `prefill_gpu_ms`, and does not
 add `correctness_reference_ms` or `quality_diagnostics_ms` because both are
 outside the request.
 

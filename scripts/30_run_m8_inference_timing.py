@@ -115,7 +115,10 @@ def main():
                         block_hits=0, candidate_blocks=0, physical_reuse_used=False,
                         projection_skip_used=False, warmup_runs=cfg["warmup_runs"],
                         measured_runs=cfg["measured_runs"], repeat_index=repeat,
-                        tokenization_ms=measured["tokenization_ms"], prefill_gpu_ms=measured["prefill_gpu_ms"],
+                        tokenization_ms=measured["tokenization_ms"],
+                        prefill_wall_ms=measured["prefill_wall_ms"],
+                        prefill_gpu_ms=measured["prefill_gpu_ms"],
+                        prefill_host_overhead_ms=measured["prefill_host_overhead_ms"],
                         request_wall_ms=measured["request_wall_ms"], model_weight_memory_bytes=weights,
                         correctness_reference_ms=reference["request_wall_ms"],
                         quality_diagnostics_ms=measured["quality_diagnostics_ms"],
@@ -128,8 +131,14 @@ def main():
                         controlled_exact_parity=True,
                         timing_scopes={"request_wall_ms": {"timing_scope": "complete native request",
                             "timing_parent": None, "inclusive_or_exclusive": "inclusive", "clock": "cpu_perf_counter_ns"},
-                            "prefill_gpu_ms": {"timing_scope": "one OPT prefill forward", "timing_parent": "request_wall_ms",
-                            "inclusive_or_exclusive": "inclusive", "clock": "cuda_event"}})
+                            "prefill_wall_ms": {"timing_scope": "model forward plus CUDA timing resolution",
+                            "timing_parent": "request_wall_ms", "inclusive_or_exclusive": "exclusive_top_level",
+                            "clock": "cpu_perf_counter_ns"},
+                            "prefill_gpu_ms": {"timing_scope": "one OPT prefill forward", "timing_parent": "prefill_wall_ms",
+                            "inclusive_or_exclusive": "inclusive", "clock": "cuda_event"},
+                            "prefill_host_overhead_ms": {"timing_scope": "prefill wall minus GPU diagnostic approximation",
+                            "timing_parent": "prefill_wall_ms", "inclusive_or_exclusive": "derived_do_not_sum",
+                            "clock": "derived_cpu_wall_minus_cuda_event"}})
                 else:
                     result = semcache.query(text, user, condition, execution_mode=mode,
                         collect_timing=True, baseline_logits=reference["logits"])

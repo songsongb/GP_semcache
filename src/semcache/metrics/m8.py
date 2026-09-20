@@ -22,7 +22,8 @@ TIMING_FIELDS = (
     "attention_impact_ms", "attention_impact_ms_per_block",
     "cache_materialization_ms", "base_qkv_projection_ms",
     "lora_qkv_projection_ms", "qkv_execution_ms", "mixed_qkv_execution_ms", "attention_ms",
-    "remaining_transformer_ms", "prefill_gpu_ms", "request_wall_ms",
+    "remaining_transformer_ms", "prefill_wall_ms", "prefill_gpu_ms",
+    "prefill_host_overhead_ms", "request_wall_ms",
     "correctness_reference_ms", "quality_diagnostics_ms",
 )
 
@@ -129,7 +130,7 @@ def mode_identity(model_revision, tokenizer_revision, dtype, token_hash, adapter
 REQUEST_ACCOUNTING_FIELDS = (
     "tokenization_ms", "semantic_encode_ms", "cluster_assign_update_ms",
     "subsequence_extract_ms", "cache_lookup_ms", "hit_selection_ms",
-    "prefill_gpu_ms", "attention_impact_ms", "chu_update_ms",
+    "prefill_wall_ms", "attention_impact_ms", "chu_update_ms",
     "cache_policy_ms", "pbr_update_ms",
 )
 
@@ -181,6 +182,12 @@ def raw_record(**values):
     row["timestamp"] = row["timestamp"] or datetime.now(timezone.utc).isoformat()
     row["hostname"] = row["hostname"] or socket.gethostname()
     row["safe_reuse_claimed"] = False
+    blocks, impact_ms = row.get("attention_impact_block_count"), row.get("attention_impact_ms")
+    row["attention_impact_ms_per_block"] = (
+        impact_ms / blocks if impact_ms is not None and blocks is not None and blocks > 0 else None)
+    wall, gpu = row.get("prefill_wall_ms"), row.get("prefill_gpu_ms")
+    row["prefill_host_overhead_ms"] = (
+        wall - gpu if wall is not None and gpu is not None else None)
     row.update(request_timing_accounting(row))
     return row
 
