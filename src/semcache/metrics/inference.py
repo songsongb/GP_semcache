@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from semcache.metrics.alignment import artifact_alignment
+from semcache.models.tokenizer_provenance import tokenizer_artifact_fields
 from semcache.evaluation.logit_metrics import compare_logits
 from semcache.metrics.m8 import (cache_transfer_path, incremental_memory,
                                  raw_record, token_ids_sha256)
@@ -87,7 +88,7 @@ def record_from_engine(result, *, experiment_id, repeat_index, warmup_runs,
         communication_metric_source="ANALYTICAL / SIMULATED")
     return raw_record(**artifact_alignment(s), experiment_id=experiment_id, gpu_name=gpu_name,
         model_id=model_metadata["model"], model_revision=model_metadata.get("resolved_model_revision"),
-        tokenizer_revision=model_metadata.get("resolved_tokenizer_revision"), dtype=s["dtype"],
+        **tokenizer_artifact_fields(model_metadata), dtype=s["dtype"],
         mode=s["mode"], query_id=s["query_id"], user_id=s["user_id"], adapter_name=s["adapter_name"],
         prompt_tokens=s["query_token_count"], reused_tokens=s["reused_unique_token_count"],
         recomputed_tokens=s["recomputed_tokens"], token_reuse_ratio=s["token_reuse_ratio"],

@@ -1,6 +1,7 @@
 """Opt-in ES latency profiling runtime. No torch/model work at import time."""
 from contextlib import nullcontext
 import platform
+from semcache.models.tokenizer_provenance import compare_snapshot_provenance, tokenizer_artifact_fields
 from .es_base_profile import assert_no_lora, validate_fresh_m85, MEASUREMENT_LABEL
 from .profiles import pair_key
 
@@ -98,8 +99,7 @@ def profile_pairs(model, tokenizer, adapter, metadata, pairs, source_env, fresh_
     device = str(next(model.parameters()).device)
     for _, _, physical in pairs:
         validate_fresh_m85(physical)
-        if physical['model_revision'] != metadata['resolved_model_revision'] or physical['tokenizer_revision'] != metadata['resolved_tokenizer_revision']:
-            raise ValueError('Base model revision differs from freshly measured M8 model/tokenizer')
+        compare_snapshot_provenance(physical, metadata)
         if physical['dtype'] != str(next(model.parameters()).dtype):
             raise ValueError('Base dtype differs from M8')
         if (physical.get('hostname') != platform.node()
@@ -144,7 +144,9 @@ def profile_pairs(model, tokenizer, adapter, metadata, pairs, source_env, fresh_
                         mode=mode, provenance='MEASURED', measurement_label=MEASUREMENT_LABEL,
                         fresh_m85_profile_id=fresh_id, source_pair_key=list(pair_key(row)),
                         source_m8_sha256=source_hashes['m8'], source_environment_sha256=source_hashes['environment'],
-                        model_revision=metadata['resolved_model_revision'], tokenizer_revision=metadata['resolved_tokenizer_revision'],
+                        model_id=metadata['model'], model_revision=metadata['resolved_model_revision'],
+                        **tokenizer_artifact_fields(metadata),
+                        snapshot_comparison=compare_snapshot_provenance(row, metadata),
                         dtype=metadata['dtype'], device=device, attention_implementation='eager',
                         prompt_token_ids=token_ids, prompt_token_ids_sha256=token_ids_sha256(token_ids),
                         warmup_runs=warmups, measured_runs=count,

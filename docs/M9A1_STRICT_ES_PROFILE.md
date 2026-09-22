@@ -209,3 +209,72 @@ reported **9 passed, 2 tensor-only skips** because PyTorch is unavailable locall
 Syntax compilation, CLI help and diff checks passed. Neither profiler nor any
 model was run, and nothing was downloaded. Actual CUDA/base-profile measurements
 remain pending the SERAPH smoke command above.
+
+## Tokenizer snapshot provenance fix
+
+The earlier loader read only `tokenizer.init_kwargs['_commit_hash']`. A tokenizer
+need not retain that internal loading value, even when its assets came from the
+model repository. The model's config commit was available separately, so historical
+artifacts could contain a model commit and a null tokenizer commit. Null means
+missing evidence; it does not establish a tokenizer mismatch.
+
+M8 loads AutoTokenizer from the same repository ID as the model. Script 30 forwards
+its tokenizer revision override, or its model revision when supplied. Previously,
+the common loader omitted `revision` when unset, relying on Hugging Face's `main`
+default. It now explicitly passes `main` in that case. Revision selection, token
+IDs, forward execution, dtype, device and cache behavior are otherwise unchanged.
+A pinned model with an unspecified tokenizer revision in the common loader still
+requests `main` for the tokenizer; it is not silently repinned.
+
+Resolution uses, in order:
+
+1. `tokenizer.init_kwargs['_commit_hash']`.
+2. `tokenizer._commit_hash`, or a retained asset path containing the declared HF
+   repository's `snapshots/<commit>` directory. Conflicting asset commits fail.
+3. Only matching source repositories and explicitly passed, identical requested
+   revisions permit inheriting the resolved model snapshot. Its source is exactly
+   `same_repo_same_revision_inherited_from_model_snapshot`.
+
+All accepted commits are full 40-character hexadecimal snapshot IDs. No network
+lookup or model load is performed by the provenance resolver itself. Availability
+of tokenizer attributes depends on Transformers; the resolver checks rather than
+assumes their presence.
+
+Artifacts record `tokenizer_revision`, `tokenizer_revision_source`,
+`tokenizer_source_id`, `model_revision_requested`, `tokenizer_revision_requested`,
+and `tokenizer_revision_evidence`. Evidence contains either the independent commit
+(and paths when used), or both repositories, explicit-request flags, requested
+revisions and the inherited model commit. `model_revision` remains separate in
+M8 rows; loader metadata retains `resolved_model_revision` and the compatibility
+alias `resolved_tokenizer_revision`. Raw inference/training rows, summaries,
+environment metadata and strict profiles preserve these fields.
+
+Strict validation rejects null commits, missing source labels/evidence, and
+unsupported or inconsistent inheritance. Another tokenizer repository cannot
+inherit the model commit; it needs independent resolution. Historical artifacts
+are not upgraded by guessing. Rerun to obtain recorded provenance.
+
+The base-only driver loads the recorded tokenizer repository at its resolved
+snapshot and compares both repository IDs and both commits for every fresh input
+row before timing. `profile_manifest.json` records `snapshot_comparisons`, including
+fresh/base identities, evidence and individual match flags. A mismatch writes
+`SNAPSHOT_MISMATCH` and aborts; successful runs retain comparisons in the COMPLETE
+manifest. Resolution source labels may differ between loads if the actual
+repository and snapshot identity agree.
+
+Rerun the failed smoke into a new directory (existing assets only):
+
+```bash
+CUBLAS_WORKSPACE_CONFIG=:4096:8 python3 scripts/35_profile_m9a1_es_base.py \
+  --model facebook/opt-125m --dtype float32 --device cuda \
+  --prompt-length 32 --warmup-runs 1 --measured-runs 2 \
+  --output-dir results/m9a1/opt125m_strict_smoke_tokenizer_fix
+```
+
+Fix validation in the local environment: 12 tokenizer provenance tests and 25 M9
+unit tests passed; M8.5 had 9 passes and 2 tensor-only skips. Loader tests use fake
+Torch/Transformers objects and verify unchanged revision selection and inference
+arguments without executing a model. Provenance round-trips through raw/summary
+artifacts. Existing `test_m8_metrics.py` and `test_m7_semantics.py` could not import
+because pytest is unavailable; these checks remain for SERAPH. No dependencies
+were installed. Syntax compilation and `git diff --check` passed.

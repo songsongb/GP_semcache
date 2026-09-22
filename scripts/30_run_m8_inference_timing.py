@@ -18,6 +18,7 @@ from semcache.metrics.m8 import (MODES, aggregate_raw, environment_record, model
 from semcache.metrics.scaling_workload import (controlled_length_trace, parse_prompt_lengths,
                                                subsequence_occurrence_report)
 from semcache.models.loader import load_model
+from semcache.models.tokenizer_provenance import tokenizer_artifact_fields
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
 from semcache.semantic.encoder import TinyBERTSemanticEncoder
@@ -161,7 +162,7 @@ def main():
                     q = measured["quality"]
                     row = raw_record(experiment_id=experiment_id, gpu_name=gpu_name,
                         model_id=args.model, model_revision=metadata.get("resolved_model_revision"),
-                        tokenizer_revision=metadata.get("resolved_tokenizer_revision"), dtype=metadata["dtype"],
+                        **tokenizer_artifact_fields(metadata), dtype=metadata["dtype"],
                         mode=mode, query_id=condition, user_id=user, adapter_name=user,
                         prompt_tokens=len(measured["ids"]), reused_tokens=0,
                         requested_prompt_tokens=item["requested_prompt_tokens"],

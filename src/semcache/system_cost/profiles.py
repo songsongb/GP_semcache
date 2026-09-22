@@ -75,7 +75,7 @@ def reuse_gate(row, allow_invalid_reuse=False):
 def pair_key(row):
     fields = ('experiment_id', 'model_id', 'query_id', 'user_id', 'adapter_name',
               'prompt_token_ids_sha256', 'prompt_tokens', 'repeat_index', 'dtype',
-              'model_revision', 'tokenizer_revision', 'seed', 'attention_implementation',
+              'model_revision', 'tokenizer_revision', 'tokenizer_source_id', 'seed', 'attention_implementation',
               'hostname', 'gpu_name', 'requested_prompt_tokens', 'actual_prompt_tokens')
     for key in ('experiment_id', 'query_id', 'user_id', 'adapter_name', 'prompt_token_ids_sha256', 'dtype'):
         if not row.get(key):

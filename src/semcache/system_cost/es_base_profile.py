@@ -1,5 +1,6 @@
 """Strict ES profile contracts and control-plane extraction; no model imports."""
 import copy
+from semcache.models.tokenizer_provenance import validate_tokenizer_snapshot, is_snapshot_commit
 from .common import integer, nonnegative
 from .profiles import pair_key, reuse_gate
 
@@ -46,8 +47,9 @@ def validate_fresh_m85(row):
         raise ValueError('Fresh M8.5 eager attention required')
     if row.get('model_id') == 'facebook/opt-2.7b' and row.get('dtype') != 'torch.float16':
         raise ValueError('Primary OPT-2.7B profile requires float16')
-    if not row.get('model_revision') or not row.get('tokenizer_revision'):
-        raise ValueError('Resolved model/tokenizer revisions are required')
+    if not is_snapshot_commit(row.get('model_revision')):
+        raise ValueError('Resolved model snapshot commit is required')
+    validate_tokenizer_snapshot(row)
     if row.get('warmup_state_semantics') != 'fresh_discarded_trace':
         raise ValueError('Fresh/discarded warmup state required')
     integer(row.get('warmup_runs'), 'warmup_runs', 1)
@@ -92,7 +94,8 @@ def validate_base_profile(row, expected_mode):
     for field in ('warmup_runs', 'measured_runs', 'dtype', 'attention_implementation'):
         if profile.get(field) != row.get(field):
             raise ValueError(f'Base profile mismatched {field}')
-    for field in ('model_revision', 'tokenizer_revision'):
+    validate_tokenizer_snapshot(profile)
+    for field in ('model_revision', 'tokenizer_revision', 'tokenizer_source_id'):
         if profile.get(field) != row.get(field):
             raise ValueError(f'Base profile mismatched {field}')
     expected_rows = row['reused_tokens'] if expected_mode == 'ES_BASE_SEMCACHE_REUSE' else 0

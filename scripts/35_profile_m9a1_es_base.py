@@ -9,6 +9,7 @@ import sys
 import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
+from semcache.models.tokenizer_provenance import compare_snapshot_provenance
 from semcache.system_cost.common import MODELS, write_json, file_sha256
 from semcache.system_cost.profiles import load_rows, pair_rows
 from semcache.system_cost.es_base_profile import attach_profile, validate_fresh_m85
@@ -65,9 +66,19 @@ def main(argv=None):
     from semcache.utils.seed import seed_everything
     seed_everything(42)
     first = pairs[0][0]
-    model, tokenizer, metadata = load_model(dict(name=args.model, tokenizer=args.model,
+    model, tokenizer, metadata = load_model(dict(name=args.model, tokenizer=first['tokenizer_source_id'],
         revision=first['model_revision'], tokenizer_revision=first['tokenizer_revision'],
         dtype=args.dtype, device=args.device, attention_implementation='eager', local_files_only=True))
+    comparisons = [dict(repeat_index=row['repeat_index'], mode=row['mode'],
+        **compare_snapshot_provenance(row, metadata, require_match=False))
+        for triplet in pairs for row in triplet]
+    snapshots_match = all(c['matched'] for c in comparisons)
+    write_json(args.output_dir/'profile_manifest.json', dict(fresh_m85_profile_id=fresh_id,
+        state='SNAPSHOTS_VERIFIED' if snapshots_match else 'SNAPSHOT_MISMATCH', command=cmd,
+        snapshot_comparisons=comparisons, model=metadata,
+        personalized_output_quality_source='fresh M8.5 only', base_logits_quality_evidence=False))
+    if not snapshots_match:
+        raise ValueError('Fresh M8.5 and base-only snapshots differ; see profile_manifest.json')
     hashes = dict(m8=file_sha256(path), environment=file_sha256(env_path))
     profiles = profile_pairs(model, tokenizer, OPTModelAdapter(model), metadata, pairs, env, fresh_id, hashes)
     combined = []
@@ -84,6 +95,7 @@ def main(argv=None):
     write_json(args.output_dir/'profile_manifest.json', dict(fresh_m85_profile_id=fresh_id,
         state='COMPLETE', completed_at=datetime.now(timezone.utc).isoformat(), command=cmd,
         source_hashes=hashes, strict_input_sha256=file_sha256(output), model=metadata,
+        snapshot_comparisons=comparisons,
         base_lora_absent=True, personalized_output_quality_source='fresh M8.5 only',
         base_logits_quality_evidence=False))
     print(f'Saved strict base-only profiles to {output}; no personalized output claim from base logits')

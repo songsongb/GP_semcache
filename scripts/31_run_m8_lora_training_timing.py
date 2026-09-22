@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from semcache.metrics.m8 import (environment_record, model_config,
                                  training_record, training_timing_summary)
 from semcache.models.loader import load_model
+from semcache.models.tokenizer_provenance import tokenizer_artifact_fields
 from semcache.utils.io import write_json
 from semcache.utils.seed import seed_everything
 
@@ -101,7 +102,7 @@ def main():
     env = environment_record(torch)
     row = training_record(experiment_id=f"m8-train-{uuid.uuid4().hex[:12]}", gpu_name=env.get("gpu_name"),
         model_id=args.model, model_revision=metadata.get("resolved_model_revision"),
-        tokenizer_revision=metadata.get("resolved_tokenizer_revision"), dtype=metadata["dtype"], rank=8,
+        **tokenizer_artifact_fields(metadata), dtype=metadata["dtype"], rank=8,
         target_modules=["q_proj", "k_proj", "v_proj"], sample_count=args.samples, epochs=args.epochs,
         sequence_length=args.sequence_length, batch_size=args.batch_size,
         gradient_checkpointing=args.gradient_checkpointing, mixed_precision=args.mixed_precision,

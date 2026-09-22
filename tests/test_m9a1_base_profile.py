@@ -22,6 +22,9 @@ def strict_profiles():
     ids = list(range(32))
     for row in rows:
         row.update(PAPER_SETTINGS, requested_prompt_tokens=32, actual_prompt_tokens=32,
+            model_revision='a'*40, tokenizer_revision='b'*40,
+            tokenizer_source_id=DIMS.model_id, tokenizer_revision_source='tokenizer.init_kwargs._commit_hash',
+            tokenizer_revision_evidence={'resolved_commit': 'b'*40},
             warmup_runs=1, measured_runs=1, warmup_state_semantics='fresh_discarded_trace',
             physical_cache_storage_device='cpu', cache_transfer_path='cpu_to_cuda_on_reuse',
             prompt_token_ids_sha256=token_ids_sha256(ids), semantic_encode_ms=.1,
@@ -43,6 +46,9 @@ def strict_profiles():
             cache_storage_device='cpu', cache_transfer_path='cpu_to_cuda_on_reuse', prefill_wall_ms=cost,
             cache_dtype=row['dtype'], control_plane_inside_es_compute=False,
             hidden_size=DIMS.hidden_size, layers=DIMS.layers)
+        profile.update(model_id=DIMS.model_id, tokenizer_source_id=row['tokenizer_source_id'],
+            tokenizer_revision_source=row['tokenizer_revision_source'],
+            tokenizer_revision_evidence=row['tokenizer_revision_evidence'])
         attached.append(attach_profile(row, profile, 'fresh-fixture'))
     return attached[0], rows[1], attached[1]
 
