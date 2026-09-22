@@ -547,3 +547,8 @@ The CPU logical/analytical runner now supports UD_ONLY, ES_ONLY, FBC_V1, FBC_V2 
 on identical prepared workloads. See [semantics, limitations and SERAPH smoke
 commands](docs/milestone6b1_status.md). This is baseline infrastructure; M6B and
 Table-II/BLEU reproduction are not complete.
+
+M9-B adds a model-free logical multi-user simulator with paired cache traces,
+three separate reuse metrics, and isolated M9 fixture latency diagnostics. See
+[the M9-B guide](docs/m9b_multi_user.md) for input contracts, commands, provenance,
+and the distinction between synthetic smoke outputs and pending dataset runs.
