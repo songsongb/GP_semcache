@@ -74,9 +74,33 @@ def execute_reuse(safe, reuse_ms, recompute_ms):
     return bool(safe and reuse_ms < recompute_ms)
 
 
-def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None):
+def logical_user_assignment(rows, users, seed, dataset):
+    """Assignment-only views preserve semantic rows and group every non-null conversation."""
+    if dataset not in ('snips', 'multiwoz'):
+        raise ValueError('Unsupported assignment dataset')
+    if any(r.get('dataset', dataset) != dataset for r in rows):
+        raise ValueError('Assignment dataset mismatch')
+    if dataset == 'snips':
+        return assign_users(rows, users, seed, 'seeded_round_robin')
+    # Reuse the existing seeded greedy group balancer. Namespace only by
+    # conversation ID (not source split). Null IDs are independent query groups.
+    # Tagged hashes keep empty/zero IDs nonempty and avoid collisions with nulls.
+    groups = [dict(dataset=dataset, source_split='m9b_assignment_only',
+        conversation_id=digest(('conversation', row['conversation_id'])
+            if row.get('conversation_id') is not None else ('ungrouped_query', i)))
+        for i, row in enumerate(rows)]
+    return assign_users(groups, users, seed, 'seeded_group_balanced')
+
+
+def unavailable_candidate_cost():
+    return dict(candidate_cost_effective_if_safe=None,
+        candidate_cost_effective_if_safe_reason='UNAVAILABLE: no exact workload/candidate cost-artifact mapping; normalized fixture is diagnostic only')
+
+
+def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None, dataset=None):
     dims = dims or Dimensions('facebook/opt-2.7b', 2560, 32)
-    assignment = assign_users(rows, users, seed, 'seeded_round_robin')
+    dataset = dataset or (rows[0].get('dataset', 'snips') if rows else 'snips')
+    assignment = logical_user_assignment(rows, users, seed, dataset)
     cache = GlobalCache(capacity)
     manager = CacheMetricManager(cache, rho=.8, history_lambda=100, frequency_window=100)
     extractor = SubsequenceExtractor(3)
@@ -87,11 +111,15 @@ def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None):
         manager.arrive(keys)
         target = dict(user_id=user, adapter_id=row.get('adapter_id'), prompt_hash=digest(row['token_ids']))
         events, hit_windows, safe_windows, candidate_tokens = [], [], [], set()
+        cross_user_windows, source_owners = [], []
         # All lookups precede admission: no within-query self-hits.
         for w, key in zip(windows, keys):
             entry = cache.lookup(key, record_reuse=False)
             hit = entry is not None
             safe = hit and safety_eligible(entry.qkv_metadata, target, w.start, set())
+            owner = entry.qkv_metadata['user_id'] if hit else None
+            source_owners.append(owner)
+            cross_user_windows.append(hit and owner != user)
             hit_windows.append(hit)
             safe_windows.append(bool(safe))
             if hit:
@@ -121,6 +149,11 @@ def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None):
         trace.append(dict(query_index=index, source_id=row['source_id'], user_id=user,
             prompt_tokens=n, candidate_window_count=len(windows), lookup_count=len(windows),
             candidate_hit_count=sum(hit_windows), safe_candidate_count=sum(safe_windows),
+            same_user_candidate_hit_count=sum(hit_windows)-sum(cross_user_windows),
+            cross_user_candidate_hit_count=sum(cross_user_windows),
+            cross_user_candidate_hit_fraction=sum(cross_user_windows)/sum(hit_windows) if any(hit_windows) else 0.,
+            cross_user_candidate_hit_mask=cross_user_windows, source_cache_owner_user_ids=source_owners,
+            safe_reuse_claimed=False, **unavailable_candidate_cost(),
             candidate_hit_mask=hit_windows, safety_eligible_mask=safe_windows,
             cost_effective_reuse_count=0, reused_token_count=0, fresh_token_count=n,
             admission_count=admissions, rejection_count=rejections, eviction_count=evictions,
@@ -132,10 +165,12 @@ def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None):
             selected_action='RECOMPUTE'))
     return dict(trace=trace, query_order_hash=digest(rows), user_assignment_hash=digest(assignment),
         cache_trace_hash=digest(trace), user_count=users, seed=seed, cache_capacity_bytes=capacity,
+        user_assignment_policy='seeded_group_balanced' if dataset == 'multiwoz' else 'seeded_round_robin',
         cache_peak_bytes=cache.peak_logical_cache_bytes, cache_final_bytes=cache.logical_cache_bytes)
 
 
 COUNTERS = ('candidate_window_count', 'lookup_count', 'candidate_hit_count', 'safe_candidate_count',
+    'same_user_candidate_hit_count', 'cross_user_candidate_hit_count',
     'cost_effective_reuse_count', 'reused_token_count', 'fresh_token_count', 'admission_count',
     'rejection_count', 'eviction_count', 'communication_baseline_bytes', 'communication_reuse_bytes',
     'communication_saved_bytes', 'candidate_potential_saved_bytes')
@@ -144,6 +179,9 @@ COUNTERS = ('candidate_window_count', 'lookup_count', 'candidate_hit_count', 'sa
 def aggregate(trace):
     result = {key: sum(row[key] for row in trace) for key in COUNTERS}
     result['query_count'] = len(trace)
+    result['cross_user_candidate_hit_fraction'] = (result['cross_user_candidate_hit_count']/result['candidate_hit_count']
+                                                  if result['candidate_hit_count'] else 0.)
+    result.update(unavailable_candidate_cost())
     for name, count in (('candidate_hit_rate', 'candidate_hit_count'),
                         ('safety_eligible_hit_rate', 'safe_candidate_count'),
                         ('cost_effective_reuse_rate', 'cost_effective_reuse_count')):
@@ -218,10 +256,10 @@ def run_matrix(workloads, output, seed=42, costs=None, input_paths=(), smoke=Fal
     summaries, per_user, traces, raw = [], [], [], []
     for dataset, rows in workloads.items():
         for users in (10, 25, 50):
-            simulation = simulate(rows, users, seed)
+            simulation = simulate(rows, users, seed, dataset=dataset)
             common = dict(dataset=dataset, user_count=users, seed=seed,
                 query_order_hash=simulation['query_order_hash'], user_assignment_hash=simulation['user_assignment_hash'],
-                cache_trace_hash=simulation['cache_trace_hash'])
+                cache_trace_hash=simulation['cache_trace_hash'], user_assignment_policy=simulation['user_assignment_policy'])
             traces.extend(dict(common, **r) for r in simulation['trace'])
             for bandwidth in (200, 500, 1000):
                 for scenario in SCENARIOS:
@@ -265,7 +303,11 @@ def run_matrix(workloads, output, seed=42, costs=None, input_paths=(), smoke=Fal
         eviction_frequency_policy='Actual reuse F stays zero; candidate lookups do not mutate reuse frequency',
         latency_policy='Separate normalized measured fixture only; never transfer latency to workload lengths',
         safety_policy='No CLI evidence importer: all unvalidated workload candidates fail closed',
-        workload_policy='Fixed source order/corpus for all user counts; seeded round robin logical users',
+        workload_policy='Fixed source order/corpus; SNIPS seeded round robin; MultiWOZ seeded group-balanced by non-null conversation_id; null IDs singleton groups',
+        assignment_policy_version='m9b_integrity_v1',
+        cross_user_hit_policy='Resident cache owner at insertion differs from current logical user; opportunity only, not correctness or executed reuse',
+        cross_user_candidate_hit_fraction_denominator='candidate_hit_count; zero when no candidates',
+        candidate_cost_policy=unavailable_candidate_cost(),
         byte_policy='OPT-2.7B d=2560 L=32; QKV FP16 logical storage; h0/hL retained; no protocol bytes',
         input_sha256={str(p): hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in input_paths},
         output_sha256={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(output.iterdir()) if p.suffix in ('.csv','.jsonl')})

@@ -552,3 +552,7 @@ M9-B adds a model-free logical multi-user simulator with paired cache traces,
 three separate reuse metrics, and isolated M9 fixture latency diagnostics. See
 [the M9-B guide](docs/m9b_multi_user.md) for input contracts, commands, provenance,
 and the distinction between synthetic smoke outputs and pending dataset runs.
+
+For existing raw SNIPS/MultiWOZ workload JSONL, use the separate
+[M9-B.1 semantic preparation stage](docs/m9b_semantic_preparation.md) to produce
+pinned-tokenizer/TinyBERT inputs offline before running the model-free simulator.
