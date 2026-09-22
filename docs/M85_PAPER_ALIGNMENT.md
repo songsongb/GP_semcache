@@ -1,5 +1,9 @@
 # M8.5 prefill paper-alignment cleanup
 
+**Closed — user-reported SERAPH regression:** alignment 11/11 passed; focused
+M8/M8.5 36 passed; full suite 225 passed, 9 skipped, 1 warning. These supersede
+local skipped-test limitations below without claiming a new local execution.
+
 This document supersedes M7/M8 descriptions of reducer defaults, CHU gating and
 CLI schedules. Scope remains **prefill only**. No latency optimization, new model
 support, model execution or downloads are part of this cleanup. Existing guarded

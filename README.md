@@ -1,5 +1,9 @@
 # SemCache reproduction — Milestones 1–7
 
+**M9-A:** [Single-user UD–ES cost model](docs/M9A_SINGLE_USER_COST_MODEL.md)
+consumes M8 artifacts and CPU calibration with explicit provenance; inference
+behavior is unchanged. M8.5 is closed on user-reported SERAPH regression evidence.
+
 **M8.5 update:** See [prefill paper alignment](docs/M85_PAPER_ALIGNMENT.md) for the current
 reducer default, lookup-only state fix, configurable schedules and scope limits.
 Earlier milestone defaults below are historical where they conflict.
