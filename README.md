@@ -1,5 +1,9 @@
 # SemCache reproduction — Milestones 1–7
 
+**M9-A.2:** [Semantic Impact overhead audit](docs/M9A2_SEMANTIC_IMPACT_AUDIT.md)
+adds opt-in blockwise/token-precompute/prefix diagnostics and separate strict-cost
+recomposition. Normal inference is unchanged; measured speedups await SERAPH.
+
 **M9-A.1:** [Strict ES base-only profiling](docs/M9A1_STRICT_ES_PROFILE.md) is now the primary
 comparison path. PEFT-prefill proxy commands below are historical/exploratory only;
 proxy totals are labelled `SIMULATED_PROXY_DOUBLE_COUNTS_LORA`.
