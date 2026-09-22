@@ -230,9 +230,9 @@ class SystemModelTest(unittest.TestCase):
         for row in (rows[0], rows[2]):
             row.update(es_base_compute_ms=3., es_base_compute_provenance='MEASURED',
                        es_base_compute_scope='prefill_base_only_excluding_lora_control')
-        measured = compare_request(*rows, calibration(), DIMS)
-        self.assertEqual(measured['row']['es_compute_ms_provenance'], 'MEASURED')
-        self.assertEqual(measured['row']['edge_lora_total_ms_provenance'], 'SIMULATED')
+        # M9-A.1 rejects legacy self-declared fields without strict profile evidence.
+        with self.assertRaisesRegex(ValueError, 'strict-base-only'):
+            compare_request(*rows, calibration(), DIMS)
 
     def test_every_latency_is_tagged_and_timers_not_double_counted(self):
         result = self.cost()

@@ -1,4 +1,5 @@
 """Additive single-user system model, not paper Eq.18 overlap or measured E2E."""
+from .es_base_profile import control_plane, PROXY_LABEL
 from .calibration import calibration_latency
 from .common import tagged_ms
 from .memory import ud_memory
@@ -8,7 +9,7 @@ from .profiles import es_components, reuse_gate, validate_row, pair_key, validat
 
 def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mbps=200,
                     hidden_element_bytes=None, delta_element_bytes=None,
-                    boundary_transfers=True, es_compute_policy='require-base-only',
+                    boundary_transfers=True, es_compute_policy='strict-base-only',
                     allow_invalid_reuse=False):
     for row in (native, lookup, physical):
         validate_row(row)
@@ -41,11 +42,22 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
         raise ValueError('M8 saved_communication_bytes disagrees with tensor byte accounting; '
                          'check config dimensions and --hidden-element-bytes/--delta-element-bytes')
     edge_es, reuse_es = es_components(native, physical, es_compute_policy)
+    strict = es_compute_policy in ('strict-base-only', 'require-base-only')
+    if strict:
+        for row in (native, physical):
+            if (row['es_base_profile'].get('hidden_size') != dims.hidden_size
+                    or row['es_base_profile'].get('layers') != dims.layers):
+                raise ValueError('Base cache dimensions differ from system-model dimensions')
     edge_ud = calibration_latency(calibration, dims, n)
     reuse_ud = calibration_latency(calibration, dims, n-reused)
     # Use a measured exclusive residual, not a sum of overlapping M8 timers.
     # Tokenization is excluded symmetrically from both paths; prefill is retained.
-    control = max(0., physical['request_wall_ms'] - physical['prefill_wall_ms'] - physical['tokenization_ms'])
+    control_profile = control_plane(physical) if strict else None
+    if strict and physical.get('semcache_control_profile') != control_profile:
+        raise ValueError('Missing/inconsistent separately measured M8.5 control-plane profile')
+    control = (control_profile['total_control_ms'] if strict else
+               max(0., physical['request_wall_ms'] - physical['prefill_wall_ms'] - physical['tokenization_ms']))
+    result_label = 'STRICT_BASE_ONLY_SYSTEM_MODEL' if strict else PROXY_LABEL
     components = dict(es_compute_ms=edge_es, ud_lora_ms=edge_ud,
         network_ms=tagged_ms(edge_net['request']['total_network_ms'], 'SIMULATED', 'serialized tensor transfer model'),
         semcache_control_ms=tagged_ms(control, 'MEASURED', 'M8 request_wall - prefill_wall - tokenization'),
@@ -61,6 +73,7 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
                        ('communication_saved_ms', network_saved)]:
         components[key] = tagged_ms(value, 'SIMULATED', 'M9-A additive model arithmetic',
                                     signed=True, dependencies=dependencies)
+        components[key]['interpretation_label'] = result_label
     components['reuse_overhead_ms'] = tagged_ms(control, 'MEASURED',
         'exclusive SemCache control residual; GPU transfer/merge stays inside semcache_es_ms')
     # Preserve M8 source timings as measurements, including unused lookup baseline
@@ -77,7 +90,11 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
         query_id=native['query_id'], user_id=native['user_id'], repeat_index=native['repeat_index'],
         source_prompt_hash=native['prompt_token_ids_sha256'], bandwidth_mbps=bandwidth_mbps,
         hidden_element_bytes=hidden_element_bytes, delta_element_bytes=delta_element_bytes,
-        es_compute_policy=es_compute_policy,
+        es_compute_policy=es_compute_policy, result_label=result_label,
+        profile_role='PRIMARY_LENGTH32' if strict and dims.model_id == 'facebook/opt-2.7b' else
+                     'DEVELOPMENT_SMOKE' if strict else 'EXPLORATORY_PROXY',
+        primary_comparison_eligible=strict and dims.model_id == 'facebook/opt-2.7b' and gate['correctness_gate_passed'],
+        edge_lora_total_ms_label=result_label, semcache_total_ms_label=result_label,
         es_profile_gpu=native.get('gpu_name'), es_profile_hostname=native.get('hostname'),
         es_profile_hardware_provenance='MEASURED',
         selected_action='REUSE' if reuse < edge else 'RECOMPUTE',
@@ -87,6 +104,13 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
     for key, component in components.items():
         flat[key] = component['value_ms']
         flat[key + '_provenance'] = component['provenance']
+        if component.get('measurement_label'):
+            flat[key + '_measurement_label'] = component['measurement_label']
+    if control_profile:
+        for key, value in control_profile.items():
+            if key.endswith('_ms'):
+                flat[key] = value
+                flat[key+'_provenance'] = 'MEASURED'
     for prefix, net in [('edge', edge_net), ('semcache', reuse_net)]:
         for key, value in net['request'].items():
             if key.endswith('_bytes') or key.endswith('_ms'):
@@ -98,6 +122,8 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
                 ud_memory_capacity_bytes=memory['ud_memory_capacity_bytes'], ud_memory_fits=memory['fits'],
                 ud_memory_provenance='SIMULATED')
     return dict(row=flat, components=components, es_source_timings=sources,
+        semcache_control_profile=control_profile,
+        base_profiles=[native.get("es_base_profile"), physical.get("es_base_profile")],
         communication=dict(edge_lora=edge_net, semcache=reuse_net), ud_memory=memory,
         scope='single_user_additive_prefill_model_not_measured_end_to_end',
         reproduction_choices=[
@@ -105,7 +131,7 @@ def compare_request(native, lookup, physical, calibration, dims, *, bandwidth_mb
             'One-layer CPU calibration extrapolated to all layers at exact fresh-token count',
             'CPU FP32 LoRA; explicit wire precision; conversion cost not modeled',
             'Input embedding, output logits, tokenization and OS/runtime costs on UD excluded',
-            'M8 local input/output computations remain in ES prefill proxy; placement is not emulated',
+            'Local embedding/logit work remains in full base prefill; physical UD placement is not emulated',
             'No protocol latency, queueing, contention, network serialization or Cloud',
             'Measured cache transfer/merge work remains in ES prefill, not counted twice in control',
             'PEFT proxy retains ES GPU LoRA while adding calibrated UD LoRA; not a base-only measurement'

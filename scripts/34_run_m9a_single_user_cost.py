@@ -27,7 +27,7 @@ def main(argv=None):
     p.add_argument('--hidden-element-bytes', type=int, help='Default: M8 activation dtype width')
     p.add_argument('--delta-element-bytes', type=int, help='Default: hidden width; explicit wire precision choice')
     p.add_argument('--projection-exchange-only', action='store_true', help='Omit h0/hL boundary transfers; labelled choice')
-    p.add_argument('--es-compute-policy', choices=('require-base-only', 'peft-prefill-proxy'), default='require-base-only')
+    p.add_argument('--es-compute-policy', choices=('strict-base-only', 'require-base-only', 'peft-prefill-proxy'), default='strict-base-only')
     p.add_argument('--allow-invalid-reuse', action='store_true', help='Unsafe exploration only; never labelled safe reuse')
     p.add_argument('--output-dir', type=Path, default=ROOT / 'results/m9a')
     args = p.parse_args(argv)
@@ -60,7 +60,10 @@ def main(argv=None):
             writer.writerows(result['row'] for result in results)
         write_json(args.output_dir / 'm9a_environment.json', env)
         write_json(args.output_dir / 'm9a_summary.json', dict(schema='m9a_single_user_v1',
-            total_provenance='SIMULATED', safe_reuse_claimed=False,
+            total_provenance='SIMULATED',
+            result_label=results[0]['row']['result_label'],
+            primary_comparison_eligible=all(r['row']['primary_comparison_eligible'] for r in results),
+            safe_reuse_claimed=False,
             decision_provenance='RESEARCH_EXTENSION', decisions_applied=False,
             comparison_count=len(results), comparisons=results,
             missing_components=['full autoregressive decode', 'real UD-ES networking',

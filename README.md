@@ -1,5 +1,9 @@
 # SemCache reproduction — Milestones 1–7
 
+**M9-A.1:** [Strict ES base-only profiling](docs/M9A1_STRICT_ES_PROFILE.md) is now the primary
+comparison path. PEFT-prefill proxy commands below are historical/exploratory only;
+proxy totals are labelled `SIMULATED_PROXY_DOUBLE_COUNTS_LORA`.
+
 **M9-A:** [Single-user UD–ES cost model](docs/M9A_SINGLE_USER_COST_MODEL.md)
 consumes M8 artifacts and CPU calibration with explicit provenance; inference
 behavior is unchanged. M8.5 is closed on user-reported SERAPH regression evidence.

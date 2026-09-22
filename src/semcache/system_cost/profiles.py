@@ -118,23 +118,19 @@ def pair_rows(rows, model_id, query_id='same_user_exact', reuse_mode='SEMCACHE_P
     return pairs
 
 
-def es_components(native, physical, policy='require-base-only'):
-    """No FLOP-ratio subtraction or invented GPU LoRA timing.
-
-    Base-only profile extension fields must be separately supplied measurements
-    with explicit scope/provenance. Existing M8 cannot populate those fields.
-    """
-    if policy == 'require-base-only':
-        terms = []
-        for row in (native, physical):
-            if (row.get('es_base_compute_provenance') != 'MEASURED'
-                    or row.get('es_base_compute_scope') != 'prefill_base_only_excluding_lora_control'):
-                raise ValueError('M8 PEFT timing is not base-only: provide explicit base-only measured fields '
-                                 'or opt into --es-compute-policy peft-prefill-proxy')
-            terms.append(tagged_ms(row.get('es_base_compute_ms'), 'MEASURED', 'explicit_base_only_profile'))
-        return terms
+def es_components(native, physical, policy='strict-base-only'):
+    """Only the profiling-only bare OPT mode qualifies for primary ES timing."""
+    from .es_base_profile import validate_base_profile, BASE_MODES, MEASUREMENT_LABEL
+    if policy in ('strict-base-only', 'require-base-only'):
+        profiles = [validate_base_profile(row, mode) for row, mode in zip((native, physical), BASE_MODES)]
+        if (native['fresh_m85_profile_id'] != physical['fresh_m85_profile_id']
+                or profiles[0]['source_m8_sha256'] != profiles[1]['source_m8_sha256']
+                or profiles[0]['source_environment_sha256'] != profiles[1]['source_environment_sha256']):
+            raise ValueError('Base profiles originate from different fresh runs')
+        return [dict(tagged_ms(profile['prefill_wall_ms'], 'MEASURED', profile['mode']),
+                     measurement_label=MEASUREMENT_LABEL) for profile in profiles]
     if policy != 'peft-prefill-proxy':
         raise ValueError('Unknown ES compute policy')
     return [tagged_ms(row['prefill_wall_ms'], 'SIMULATED',
-            'REPRODUCTION_CHOICE: measured PEFT prefill proxy; includes GPU LoRA and device-local work',
+            'REPRODUCTION_CHOICE: PEFT proxy retains GPU LoRA and adds calibrated UD LoRA',
             dependencies=('MEASURED',)) for row in (native, physical)]

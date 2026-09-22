@@ -1,5 +1,9 @@
 # M9-A single-user UD–ES cost model
 
+**M9-A.1:** [Strict ES base-only profiling](M9A1_STRICT_ES_PROFILE.md) is now the primary
+comparison path. PEFT-prefill proxy commands below are historical/exploratory only;
+proxy totals are labelled `SIMULATED_PROXY_DOUBLE_COUNTS_LORA`.
+
 M9-A composes existing M8 prefill measurements, a CPU-only synthetic LoRA
 calibration, and analytical communication. It is an **additive, single-request
 system model**, not measured end-to-end distributed latency. M7/M8 inference,
