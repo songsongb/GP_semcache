@@ -33,7 +33,7 @@ semantic_impact:
   pbr_interval_queries: 100
   mode: chu+pbr
   provider: actual_attention_probabilities
-  reducer: mean_layer_head_frobenius_v1  # REPRODUCTION_CHOICE.
+  reducer: paper_row_l2_sum  # Paper row sum; head mean/full-row interpretation are choices.
   history_lambda: 100
 semantic_encoder:
   backend: tinybert_huggingface

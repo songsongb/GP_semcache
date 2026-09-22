@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+import json
+from .alignment import ALIGNMENT_FIELDS, artifact_alignment
 import platform
 import socket
 import hashlib
@@ -28,6 +30,7 @@ TIMING_FIELDS = (
 )
 
 RAW_FIELDS = (
+    *ALIGNMENT_FIELDS,
     "experiment_id", "timestamp", "hostname", "gpu_name", "model_id",
     "model_revision", "tokenizer_revision", "dtype", "mode", "query_id",
     "user_id", "adapter_name", "prompt_tokens", "reused_tokens",
@@ -54,6 +57,7 @@ RAW_FIELDS = (
     "reuse_block_provenance", "admission_audit", "deduplication_audit", "admission_candidate_count",
     "admitted_block_count", "rejected_block_count", "deduplicated_window_count",
     "prompt_subsequence_audit",
+    "executed_nonoverlap_hits", "chu_update_count", "pbr_updates_this_query",
 )
 
 TRAINING_FIELDS = (
@@ -182,13 +186,14 @@ def aggregate_raw(rows):
     groups = {}
     for row in rows:
         key = (row["experiment_id"], row["model_id"], row["mode"], row["query_id"],
-               row.get("requested_prompt_tokens"), row.get("actual_prompt_tokens"))
+               row.get("requested_prompt_tokens"), row.get("actual_prompt_tokens"),
+               json.dumps(artifact_alignment(row), sort_keys=True))
         groups.setdefault(key, []).append(row)
     output = []
     for key, items in sorted(groups.items(), key=lambda item: tuple(str(v) for v in item[0])):
         for field in TIMING_FIELDS:
             values = [r.get(field) for r in items if r.get(field) is not None]
-            output.append(dict(experiment_id=key[0], model_id=key[1], mode=key[2],
+            output.append(dict(**artifact_alignment(items[0]), experiment_id=key[0], model_id=key[1], mode=key[2],
                 query_id=key[3], requested_prompt_tokens=key[4], actual_prompt_tokens=key[5],
                 metric=field, count=len(values), mean=mean(values) if values else None,
                 p50=median(values) if values else None, p95=percentile(values, .95),
@@ -209,7 +214,8 @@ def reuse_delta_summary(rows):
         if row.get("query_id") not in ("same_user_exact", "cross_user_exact"):
             continue
         key = (row["experiment_id"], row["model_id"], row.get("requested_prompt_tokens"),
-               row.get("actual_prompt_tokens"), row["query_id"])
+               row.get("actual_prompt_tokens"), row["query_id"],
+               json.dumps(artifact_alignment(row), sort_keys=True))
         groups.setdefault(key, {}).setdefault(row["mode"], []).append(row)
     output = []
     for key, modes in sorted(groups.items(), key=lambda item: tuple(str(v) for v in item[0])):
@@ -217,7 +223,7 @@ def reuse_delta_summary(rows):
         physical = modes.get("SEMCACHE_PHYSICAL_REUSE", [])
         if not lookup or not physical:
             continue
-        result = dict(experiment_id=key[0], model_id=key[1], requested_prompt_tokens=key[2],
+        result = dict(**artifact_alignment(physical[0]), experiment_id=key[0], model_id=key[1], requested_prompt_tokens=key[2],
             actual_prompt_tokens=key[3], query_id=key[4],
             candidate_blocks=mean(r["candidate_blocks"] for r in physical),
             physical_reused_tokens=mean(r["reused_tokens"] for r in physical),

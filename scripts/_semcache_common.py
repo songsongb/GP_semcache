@@ -40,9 +40,9 @@ def engine_for(config, model, tokenizer, metadata, adapter, capacity=None):
             or config['cache']['normalization'] != 'current_pool_plus_candidate'
             or config['cache']['zero_max'] != 0 or config['cache']['age_unit'] != 'query'
             or config['clustering']['update_rule'] != 'incremental_mean_after_every_assignment'
-            or config['clustering']['update_mode'] != 'immediate_eq9'
+            or config['clustering']['update_mode'] not in ('immediate_eq9', 'buffered')
             or c['overlap_policy'] != 'earliest_start_then_impact_then_key'
-            or c['pbr_trigger'] != 'manual'):
+            or c['pbr_trigger'] not in ('manual', 'interval')):
         raise ValueError('Unsupported M5 reproduction policy')
     if c['encoder_kind'] == 'fixture':
         encoder = ControlledEncoder({q: v for _, _, q, v in TRACE})
@@ -63,4 +63,7 @@ def engine_for(config, model, tokenizer, metadata, adapter, capacity=None):
     return SemCacheEngine(model, tokenizer, adapter, encoder,
         clusterer, cache, window_size=config['subsequence_window'], storage_device=c['physical_storage_device'],
         rho=config['semantic_impact']['rho'], history_lambda=config['semantic_impact']['history_lambda'],
-        frequency_window=config['cache']['admission_frequency_window_queries'], metadata=metadata, seed=config['seed'])
+        frequency_window=config['cache']['admission_frequency_window_queries'], metadata=metadata, seed=config['seed'],
+        impact_reducer=config['semantic_impact'].get('reducer', 'paper_row_l2_sum'),
+        pbr_interval_queries=(config['semantic_impact']['pbr_interval_queries']
+                              if c['pbr_trigger'] == 'interval' else None))

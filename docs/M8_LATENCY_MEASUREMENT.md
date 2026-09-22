@@ -1,5 +1,9 @@
 # M8 latency and memory measurement
 
+**M8.5 update:** See [prefill paper alignment](M85_PAPER_ALIGNMENT.md) for the current
+reducer default, lookup-only state fix, configurable schedules and scope limits.
+Earlier milestone defaults below are historical where they conflict.
+
 M8 adds measurement around the validated M7 path; it does not change matching,
 admission, CHU, PBR, eviction, or reuse authorization. Reuse remains exact,
 cluster-scoped, non-overlapping `w=3` token matching. Every result sets

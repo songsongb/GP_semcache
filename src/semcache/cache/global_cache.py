@@ -41,6 +41,11 @@ class GlobalCache:
         return sum(storages.values())
 
     def lookup(self, key, record_reuse=True):
+        """hits/misses count index lookups. Physical engine always passes False.
+
+        Legacy logical callers may simulate reuse with record_reuse=True; these
+        counters do not establish any physically executed projection saving.
+        """
         e = self.entries.get(key)
         if e is None:
             self.misses += 1

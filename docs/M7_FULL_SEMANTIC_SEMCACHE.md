@@ -1,5 +1,9 @@
 # M7: full semantic SemCache path
 
+**M8.5 update:** See [prefill paper alignment](M85_PAPER_ALIGNMENT.md) for the current
+reducer default, lookup-only state fix, configurable schedules and scope limits.
+Earlier milestone defaults below are historical where they conflict.
+
 M7 completes the structural semantic path without claiming paper-scale numerical
 reproduction. M1–M6 already supplied OPT Q/K/V capture, EdgeLoRA-style rank-8
 base/user decomposition, physical projection injection and skipping, exact

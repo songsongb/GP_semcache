@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from semcache.metrics.alignment import add_alignment_arguments, validate_alignment_arguments
 from semcache.models.loader import load_model
 from semcache.models.lora_fixtures import create_controlled_users
 from semcache.models.model_adapter import OPTModelAdapter
@@ -24,9 +25,13 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "results/m7/m7_semcache_integration.json")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--allow-download", action="store_true")
-    parser.add_argument("--pbr-history-lambda", type=int, default=4,
-                        help="Smoke-only REPRODUCTION_CHOICE; paper default is 100")
+    add_alignment_arguments(parser)
+    parser.add_argument("--pbr-history-lambda", type=int, default=None,
+                        help="Legacy alias for --history-lambda; explicit override")
     args = parser.parse_args()
+    if args.pbr_history_lambda is not None:
+        args.history_lambda = args.pbr_history_lambda
+    validate_alignment_arguments(args)
     seed_everything(42)
     revision = "27dcfa74d334bc871f3234de431e71c6eeba5dd6"
     model, tokenizer, model_metadata = load_model(dict(
@@ -41,13 +46,15 @@ def main():
         "Book an Italian restaurant in central London tonight.",
     ]
     warmup = encoder.encode(texts)
-    clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
+    clusterer = IntentClusterer(2, initialization="first_k",
+        update_mode=args.cluster_update_mode, update_interval=args.cluster_update_interval)
     # first_k means each warmup embedding is already incorporated once: N_c=1.
     clusterer.initialize(warmup)
     cache = GlobalCache(256 * 1024 * 1024)
     engine = SemCacheEngine(model, tokenizer, OPTModelAdapter(model), encoder, clusterer, cache,
-                            rho=.8, history_lambda=args.pbr_history_lambda,
-                            metadata=model_metadata, pbr_interval_queries=None)
+                            rho=args.rho, history_lambda=args.history_lambda, impact_reducer=args.impact_reducer,
+                            metadata=model_metadata,
+                            pbr_interval_queries=args.pbr_interval if args.pbr_mode == "interval" else None)
     control = validate_mixed_control(model, tokenizer, OPTModelAdapter(model), texts[0])
     trace = [("miss", "user_a", texts[0]), ("hit_one", "user_b", texts[0]),
              ("unrelated", "user_a", texts[1]), ("hit_two", "user_b", texts[0])]
@@ -58,12 +65,14 @@ def main():
     chu = [event for event in events if event["event_type"] == "CHU"]
     admissions = [event for event in events if event["event_type"] == "INSERT"]
     result = {
+        **engine.alignment_metadata(),
         "environment": {**model_metadata, "attention_implementation": "eager"},
         "semantic_encoder": encoder.metadata,
         "clustering": {"cluster_count": 2, "distance_metric": "euclidean_l2",
             "initialization": "first_k_REPRODUCTION_CHOICE",
-            "update_mode": "immediate_eq9",
-            "centroid_update_rule": "Eq.9 incremental mean after every assignment",
+            "update_mode": args.cluster_update_mode,
+            "update_interval_queries": args.cluster_update_interval,
+            "centroid_update_rule": "Eq.9 incremental mean; immediate or buffered flush per configured mode",
             "assignments": [{"query_id": row["query_id"], "cluster_id": row["cluster_id"],
                              "nearest_centroid_distance_pre_update": row["nearest_centroid_distance_pre_update"],
                              "centroid_update_applied": row["centroid_update_applied"],
@@ -77,15 +86,15 @@ def main():
             "physical_reuse_used": any(r["reused_unique_token_count"] for r in rows),
             "projection_skip_used": any(r["reused_projection_rows"] for r in rows)},
         "semantic_impact": {"provider": "actual_attention_probabilities",
-            "reducer": engine.impact_reducer.metadata, "rho": .8,
-            "lambda": args.pbr_history_lambda,
-            "lambda_note": "smoke override; paper default=100; REPRODUCTION_CHOICE",
+            "reducer": engine.impact_reducer.metadata, "rho": args.rho,
+            "lambda": args.history_lambda,
+            "lambda_note": "paper default=100; any override is REPRODUCTION_CHOICE",
             "PBR_trigger_policy": "forced_smoke_REPRODUCTION_CHOICE",
             "initial_impact_examples": [event["I"] for event in admissions[:3]],
             "CHU_event_count": len(chu), "PBR_event_count": len(pbr),
             "example_CHU": chu[:1], "example_PBR": pbr[:1],
             "provenance": {"rho_and_lambda_defaults": "PAPER_DEFINED",
-                           "reducer_and_trigger": "REPRODUCTION_CHOICE"}},
+                           "head_aggregation_full_row_interpretation_and_trigger": "REPRODUCTION_CHOICE"}},
         "cache": {"admission_count": len(admissions),
             "eviction_count": sum(e["event_type"] == "EVICT" for e in events),
             "final_logical_bytes": cache.logical_cache_bytes,

@@ -1,6 +1,7 @@
 """Reusable M8 inference measurement helpers."""
 from __future__ import annotations
 
+from semcache.metrics.alignment import artifact_alignment
 from semcache.evaluation.logit_metrics import compare_logits
 from semcache.metrics.m8 import (cache_transfer_path, incremental_memory,
                                  raw_record, token_ids_sha256)
@@ -84,7 +85,7 @@ def record_from_engine(result, *, experiment_id, repeat_index, warmup_runs,
         estimated_communication_ms=(saved_bytes / bandwidth_bytes_per_s * 1000
                                     if bandwidth_bytes_per_s else None),
         communication_metric_source="ANALYTICAL / SIMULATED")
-    return raw_record(experiment_id=experiment_id, gpu_name=gpu_name,
+    return raw_record(**artifact_alignment(s), experiment_id=experiment_id, gpu_name=gpu_name,
         model_id=model_metadata["model"], model_revision=model_metadata.get("resolved_model_revision"),
         tokenizer_revision=model_metadata.get("resolved_tokenizer_revision"), dtype=s["dtype"],
         mode=s["mode"], query_id=s["query_id"], user_id=s["user_id"], adapter_name=s["adapter_name"],
@@ -93,6 +94,9 @@ def record_from_engine(result, *, experiment_id, repeat_index, warmup_runs,
         block_hits=s["block_hit_count"], candidate_blocks=s["candidate_windows"],
         physical_reuse_used=s["physical_reuse_used"], projection_skip_used=s["projection_skip_used"],
         attention_impact_block_count=s["attention_impact_block_count"],
+        executed_nonoverlap_hits=s.get("executed_nonoverlap_hits"),
+        chu_update_count=s.get("chu_update_count"),
+        pbr_updates_this_query=s.get("pbr_updates_this_query"),
         warmup_runs=warmup_runs, measured_runs=measured_runs, repeat_index=repeat_index,
         peak_cuda_allocated_bytes=peak_allocated, peak_cuda_reserved_bytes=peak_reserved,
         model_weight_memory_bytes=weight_bytes, max_abs_logit_diff=s["max_abs_logit_diff"],

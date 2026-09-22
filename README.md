@@ -1,5 +1,9 @@
 # SemCache reproduction — Milestones 1–7
 
+**M8.5 update:** See [prefill paper alignment](docs/M85_PAPER_ALIGNMENT.md) for the current
+reducer default, lookup-only state fix, configurable schedules and scope limits.
+Earlier milestone defaults below are historical where they conflict.
+
 This repository implements the foundation of **SemCache: Semantic-Aware Cache
 Sharing for Efficient Multi-User LoRA-Adapted LLM Inference at the Edge**, IEEE
 INFOCOM 2026, DOI 10.1109/INFOCOM59046.2026.11571717. The local PDF at the repository

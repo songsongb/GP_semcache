@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from semcache.cache.global_cache import GlobalCache
+from semcache.metrics.alignment import add_alignment_arguments, validate_alignment_arguments
 from semcache.metrics.inference import (begin_cuda_memory_measurement,
     finish_cuda_memory_measurement, model_weight_bytes, native_request, record_from_engine)
 from semcache.metrics.m8 import (MODES, aggregate_raw, environment_record, model_config,
@@ -50,11 +51,13 @@ def parse_args():
     p.add_argument("--position-aligned-diagnostic", action="store_true",
                    help="Add the strict same-user/same-position mechanism-isolation mode")
     p.add_argument("--output-dir", type=Path, default=ROOT / "results/m8")
+    add_alignment_arguments(p)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    validate_alignment_arguments(args)
     try:
         prompt_lengths = parse_prompt_lengths(args.prompt_lengths)
     except ValueError as exc:
@@ -104,19 +107,25 @@ def main():
                 **(item.get("subsequence_audit") or subsequence_occurrence_report(item["token_ids"]))))
 
     def engine(anchor_vectors):
-        clusterer = IntentClusterer(2, initialization="first_k", update_mode="immediate_eq9")
+        clusterer = IntentClusterer(2, initialization="first_k",
+            update_mode=args.cluster_update_mode, update_interval=args.cluster_update_interval)
         clusterer.initialize(anchor_vectors)
         return SemCacheEngine(model, tokenizer, adapter, encoder, clusterer,
             GlobalCache(256 * 1024 * 1024), metadata=metadata,
-            storage_device=configured_cache_storage_device)
+            storage_device=configured_cache_storage_device, impact_reducer=args.impact_reducer,
+            rho=args.rho, history_lambda=args.history_lambda,
+            pbr_interval_queries=args.pbr_interval if args.pbr_mode == "interval" else None)
 
     import torch
     # Output provenance is read back from the runtime engine rather than copied
     # from a reporting constant.
     cache_storage_device = str(engine(trace_specs[0]["anchor_vectors"]).storage_device)
+    alignment = engine(trace_specs[0]["anchor_vectors"]).alignment_metadata()
+    for prompt_audit in prompt_audits:
+        prompt_audit.update(alignment, impact_reducer_applied=False)
     transfer_path = cache_transfer_path(cache_storage_device, execution_device)
     env = environment_record(torch)
-    env.update(model=metadata, semantic_encoder=encoder.metadata, lora=lora_metadata,
+    env.update(**alignment, model=metadata, semantic_encoder=encoder.metadata, lora=lora_metadata,
                benchmark_kind="microbenchmark", safe_reuse_claimed=False,
                physical_cache_storage_device=cache_storage_device,
                cache_transfer_path=transfer_path,
@@ -196,6 +205,7 @@ def main():
                         model_metadata=metadata, gpu_name=gpu_name, condition=condition,
                         weight_bytes=weights,
                         bandwidth_bytes_per_s=bandwidth)
+                row.update(alignment, impact_reducer_applied=mode != "NATIVE_NO_CACHE")
                 row.update(finish_cuda_memory_measurement(torch, args.device,
                     allocated_before, reserved_before))
                 row["requested_prompt_tokens"] = item["requested_prompt_tokens"]

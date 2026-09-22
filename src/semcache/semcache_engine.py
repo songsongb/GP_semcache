@@ -7,7 +7,7 @@ from .semantic.hit_selection import (CacheHit, select_nonoverlapping,
                                      select_position_aligned_diagnostic)
 from .cache.cache_entry import CacheEntry
 from .cache.metric_manager import CacheMetricManager, actual_attention_impact
-from .cache.attention_impact import MeanLayerHeadFrobeniusReducer
+from .cache.attention_impact import make_impact_reducer
 from .cache.cache_metrics import normalize
 from .edgelora.mixed_projection import mixed_projection_path
 from .evaluation.logit_metrics import compare_logits
@@ -26,7 +26,8 @@ class SemCacheEngine:
         self.extractor, self.matcher = SubsequenceExtractor(window_size), ExactTokenMatcher()
         self.storage_device, self.metadata, self.seed = storage_device, metadata or {}, seed
         self.metrics = CacheMetricManager(cache, rho, history_lambda, frequency_window)
-        self.impact_reducer = impact_reducer or MeanLayerHeadFrobeniusReducer()
+        self.impact_reducer = (make_impact_reducer(impact_reducer) if isinstance(impact_reducer, str)
+                               else impact_reducer or make_impact_reducer())
         if pbr_interval_queries is not None and pbr_interval_queries < 1:
             raise ValueError('PBR interval must be positive or None')
         self.pbr_interval_queries = pbr_interval_queries
@@ -36,9 +37,24 @@ class SemCacheEngine:
         self._admission_candidate_order = 0
         self._admission_order = 0
 
+    def alignment_metadata(self, *, logical=False):
+        return dict(impact_reducer_type=self.impact_reducer.name,
+            impact_reducer_metadata=self.impact_reducer.metadata,
+            cluster_update_interval_queries=self.clusterer.update_interval,
+            cluster_schedule_mode=self.clusterer.update_mode,
+            rho=self.metrics.updater.rho, history_lambda=self.metrics.history.history_lambda,
+            pbr_interval_queries=self.pbr_interval_queries,
+            pbr_schedule_provenance="REPRODUCTION_CHOICE",
+            admission_frequency_semantics="all_window_occurrences_in_recent_queries",
+            eviction_frequency_semantics=("simulated_reuse_occurrences" if logical
+                                         else "actual_physical_reuse_occurrences"),
+            admission_frequency_window_queries=self.metrics.appearances.maxlen,
+            cache_addressing_mode="cluster_exact_token_ids_REPRODUCTION_CHOICE",
+            execution_scope="prefill_only")
+
     def emit(self, event_type, **details):
         event = dict(query_id=self.query_id, step=len(self.events)+1, event_type=event_type,
-                     safe_reuse_claimed=False, **details)
+                     safe_reuse_claimed=False, impact_reducer_type=self.impact_reducer.name, **details)
         self.events.append(event)
 
     def entry_fields(self, entry):
@@ -121,11 +137,12 @@ class SemCacheEngine:
             admission_order=hit.entry.qkv_metadata.get('admission_order'),
             existing_key_overwritten=hit.entry.qkv_metadata.get('existing_key_overwritten', False),
             source_duplicate_deduplicated=hit.entry.qkv_metadata.get('source_occurrence_count', 1) > 1)
-            for hit in selected]
+            for hit in execution_hits]
         for provenance in reuse_block_provenance:
             self.emit('REUSE_PROVENANCE', **provenance)
-        self.emit('NON_OVERLAP_RESOLVE', hit_count=len(hits), accepted_nonoverlap_hits=len(selected), reused_mask=mask)
-        for hit in selected:
+        self.emit('NON_OVERLAP_RESOLVE', hit_count=len(hits), accepted_nonoverlap_hits=len(selected), candidate_reusable_mask=mask,
+                  executed_nonoverlap_hits=len(execution_hits))
+        for hit in execution_hits:
             self.emit('FETCH', **self.entry_fields(hit.entry), target_start=hit.window.start, target_end=hit.window.end)
         inputs = dict(input_ids=torch.tensor([ids], device=next(self.model.parameters()).device), use_cache=False)
         with torch.inference_mode():
@@ -178,7 +195,7 @@ class SemCacheEngine:
             clock='derived_from_cpu_perf_counter_ns')
         chu_timer = CPUWallTimer()
         chu_timer.__enter__()
-        for hit in selected:
+        for hit in execution_hits:
             old = hit.entry.impact
             self.metrics.reused(hit.entry, span_impacts[hit.window.start])
             self.emit('CHU', **self.entry_fields(hit.entry), old_I=old,
@@ -272,14 +289,16 @@ class SemCacheEngine:
         pbr_timer = CPUWallTimer()
         pbr_timer.__enter__()
         if self.pbr_interval_queries and self.clusterer.queries % self.pbr_interval_queries == 0:
-            pbr_updates = self.recalculate_cluster(cluster, trigger='fixed_query_interval')
+            # Global request interval; visit all resident clusters, not only the last query's.
+            for resident_cluster in sorted({entry.cluster_id for entry in self.cache.entries.values()}):
+                pbr_updates.extend(self.recalculate_cluster(
+                    resident_cluster, trigger='fixed_query_interval_REPRODUCTION_CHOICE'))
         pbr_timer.__exit__(None, None, None)
         timings.values['pbr_update_ms'] = pbr_timer.elapsed_ms
         timings.scopes['pbr_update_ms'] = dict(timing_scope='pbr_update_ms', timing_parent='request_wall_ms',
             inclusive_or_exclusive='exclusive', clock='cpu_perf_counter_ns')
         logical_reused = sum(mask)
-        reused = logical_reused if execution_mode in (
-            'SEMCACHE_PHYSICAL_REUSE', 'SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC') else 0
+        reused = sum(hit.window.end - hit.window.start for hit in execution_hits)
         recomputed = len(ids)-reused
         assert reused + recomputed == len(ids)
         # The measured request ends after execution and cache-policy work.
@@ -289,7 +308,7 @@ class SemCacheEngine:
         quality_timer = CPUWallTimer()
         quality_timer.__enter__()
         logits = output.logits.detach().cpu()
-        quality = compare_logits(baseline, logits, selected[0].window.start if selected else 0) if baseline is not None else dict.fromkeys([
+        quality = compare_logits(baseline, logits, execution_hits[0].window.start if execution_hits else 0) if baseline is not None else dict.fromkeys([
             'max_abs_logit_diff', 'mean_abs_logit_diff', 'relative_l2_logit_diff', 'logit_cosine_similarity',
             'last_position_kl_baseline_to_injected', 'affected_suffix_mean_kl', 'baseline_last_argmax_token_id',
             'injected_last_argmax_token_id', 'last_argmax_agreement', 'prefix_max_abs_logit_diff'])
@@ -324,7 +343,9 @@ class SemCacheEngine:
                 timing_parent='prefill_wall_ms', inclusive_or_exclusive='derived_do_not_sum',
                 clock='derived_cpu_wall_minus_cuda_event')
         projection_skip_used = any(record['reused_projection_rows'] > 0 for record in audit.records.values())
-        row = dict(query_id=query_id, user_id=user_id, adapter_name=user_id, query_text=query_text,
+        row = dict(**self.alignment_metadata(), impact_reducer_applied=True,
+            executed_nonoverlap_hits=len(execution_hits), chu_update_count=len(execution_hits),
+            query_id=query_id, user_id=user_id, adapter_name=user_id, query_text=query_text,
             token_ids=ids,
             model_id=self.metadata.get('model'), resolved_model_revision=self.metadata.get('resolved_model_revision'),
             dtype=str(next(self.model.parameters()).dtype), seed=self.seed,
@@ -418,7 +439,8 @@ class SemCacheEngine:
             allowed = self.cache.admission.admit(normalized) and logical_block_bytes <= self.cache.capacity_bytes
             self.emit('ADMIT' if allowed else 'DENY', admission_score=self.cache.admission.score(normalized), **self.entry_fields(entry))
             self.cache.insert(entry, self.metrics.frequencies[key], self.metrics.frequencies, on_event=cache_event)
-        return dict(summary=dict(query_id=query_id, user_id=user_id, cluster_id=cluster,
+        return dict(summary=dict(**self.alignment_metadata(logical=True),
+            impact_reducer_applied=False, query_id=query_id, user_id=user_id, cluster_id=cluster,
             nearest_centroid_distance_pre_update=cluster_update['nearest_centroid_distance_pre_update'],
             centroid_update_applied=cluster_update['centroid_update_applied'],
             cluster_count_before=cluster_update['cluster_count_before'],
@@ -429,7 +451,7 @@ class SemCacheEngine:
             admission_count=admissions, admission_candidate_count=candidates, eviction_count=evictions,
             logical_global_cache_bytes=self.cache.logical_cache_bytes, physical_cache_tensor_bytes=0,
             impact_available=False, chu_pbr_status='unavailable_without_attention_provider',
-            execution_scope='prefill_only', metric_source='SIMULATED', safe_reuse_claimed=False),
+            metric_source='SIMULATED', safe_reuse_claimed=False),
             events=self.events[start:])
 
     def pbr(self, cluster):

@@ -67,6 +67,7 @@ class IntentClusterer:
             self.pending.append((c, list(embedding)))
             if self.queries % self.update_interval == 0:
                 self.flush()
+                applied = True
         shift = math.dist(before_centroid, self.centroids[c])
         return dict(cluster_id=c, nearest_centroid_distance_pre_update=distance,
                     centroid_update_applied=applied,

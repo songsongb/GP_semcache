@@ -1,7 +1,7 @@
 """Query clock, appearance history, actual-reuse updates and manual PBR."""
 from collections import Counter, defaultdict, deque
 from .impact_updater import AttentionImpactProvider, SemanticImpactUpdater
-from .attention_impact import MeanLayerHeadFrobeniusReducer
+from .attention_impact import make_impact_reducer
 
 
 def attention_impact(attentions, start, end):
@@ -26,7 +26,7 @@ def attention_impact(attentions, start, end):
 
 def actual_attention_impact(attentions, start, end, valid_attention_mask=None, reducer=None):
     """M7 reducer entry point; old ``attention_impact`` remains M5-compatible."""
-    return (reducer or MeanLayerHeadFrobeniusReducer()).reduce(
+    return (reducer or make_impact_reducer()).reduce(
         attentions, start, end, valid_attention_mask)
 
 
@@ -62,11 +62,13 @@ class CacheMetricManager:
         self.frequencies = Counter()
 
     def arrive(self, keys):
+        """Admission counts every window occurrence, including repeats and misses."""
         self.cache.advance(self.cache.now + 1)
         self.appearances.append(Counter(keys))
         self.frequencies = sum(self.appearances, Counter())
 
     def reused(self, entry, impact):
+        """Physical engine calls only after executed reuse, never candidate lookup."""
         self.cache.record_reuse(entry)
         self.updater.on_hit(entry, impact)
 
