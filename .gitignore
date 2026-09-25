@@ -26,3 +26,7 @@ results/workloads/*
 results/manifests/*
 !results/workloads/.gitkeep
 !results/manifests/.gitkeep
+
+# Offline CacheGen tensor interchange and opaque codec payloads
+results/cachegen/**/*.pt
+results/cachegen/**/*.bin
