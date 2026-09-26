@@ -74,7 +74,8 @@ def failure_report(root, item, block, saved, expected):
         original_fixture_sha256=block.get('sha256'), reconstruction_sha256=item['sha256'],
         saved_container_type=type(saved).__name__, saved_key_order=keys,
         expected_key_set=['k', 'v'], components=components,
-        comparison='A=saved C1 UNIFORM_INT8; B=fresh CPU C1.5 Baseline reconstruction',
+        comparison='A=saved C1 UNIFORM_INT8; B=fresh C1.5 reconstruction; '
+                   'device_contract records primary device, standalone diagnose-uniform probes historical CPU path',
         symbols_scales_persisted=False,
         intermediate_comparison='Unavailable in C1 reconstruction: benchmark persisted K/V only; '
                                 'replay below is current C1 source, not recovered historical intermediates')
@@ -121,7 +122,7 @@ def enrich_report(report, root, qkv, current_encoded, current_reconstructed):
                                      for n, (symbols, scales) in zip('kv', current_encoded)},
                   static_path_checks=dict(
                       C1_layout='load_fixture validates FP16 [32,T,2560]; K/V .to(args.device); no layout transforms',
-                      C15_layout='same load_fixture; direct CPU Baseline.encode before entropy flattening',
+                      C15_layout='same load_fixture; Baseline.encode on explicit device before CPU symbol transfer/entropy flattening',
                       component_order='explicit K then V; saved dictionary accessed by key, never insertion order',
                       quantization_axis='Baseline.encode: amax(-1, keepdim=True), over hidden_dim',
                       scale_dtype='input.float(), FP32 scale; no FP16 cast before decode multiplication',

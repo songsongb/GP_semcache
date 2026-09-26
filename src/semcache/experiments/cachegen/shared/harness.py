@@ -13,11 +13,12 @@ from ..codecs import Baseline
 from .core import (CONFIG, MODES, Profile, cdf_from_counts, decode, encode, fit_profiles,
                    inspect_block, partition_ids, pool_accounting)
 from .source_audit import audit
-from .tensors import check_roundtrip, histograms, prepare, quantize
+from .tensors import check_roundtrip, histograms, prepare, quantize, reconstruct
 from .compatibility import UniformCompatibilityError, failure_report, enrich_report
+from .device_contract import resolve_contract, verify_contract
 
 C1_FILES = ('capture_manifest.json', 'reconstruction_manifest.json', 'c1_block_raw.csv',
-            'c1_summary.csv', 'c1_quality.csv')
+            'c1_summary.csv', 'c1_quality.csv', 'environment.json')
 PROFILE_FILES = dict(zip(MODES, ('shared_cdf_global.bin', 'shared_cdf_layergroup.bin')))
 TIMING = dict(timing_device='cpu', timing_method='synchronous perf_counter_ns wall time; no CUDA work',
               warmup=5, measured_repetitions=20,
@@ -66,9 +67,10 @@ def snapshot(c1_root):
 
 def implementation_hashes():
     import inspect
-    from . import core, tensors
+    from . import core, tensors, device_contract
     return {name: file_hash(inspect.getfile(obj)) for name, obj in
-            (('c1_baseline', Baseline), ('arithmetic_codec', core), ('tensor_boundary', tensors))}
+            (('c1_baseline', Baseline), ('arithmetic_codec', core), ('tensor_boundary', tensors),
+             ('device_contract', device_contract))}
 
 
 def quality_selection(c1_root, blocks):
@@ -134,15 +136,67 @@ def record_environment(out, stage):
     write_json(path, env)
 
 
+def correction_evidence(out):
+    path = out/'uniform_compatibility_diagnostic.json'
+    return dict(provenance='USER_PROVIDED_SERAPH_DIAGNOSTIC',
+        block_id='19874b2e7181f079f989acbf', dataset='snips', token_group_size=3,
+        cause='C1 CUDA vs C1.5 CPU FP32 scale/division/rounding boundaries; same Baseline source',
+        devices_reproducing_saved_tensors_exactly=['cuda'],
+        k=dict(scales_differ=7, symbols_differ=3, first_symbol_index=[4, 2, 1626],
+               cuda_symbol=-64, cpu_symbol=-63, reconstruction_max_abs_diff=0.1015625),
+        v=dict(scales_differ=2, symbols_differ=0, reconstruction_exact=True),
+        diagnostic_file=str(path.resolve()) if path.exists() else None,
+        diagnostic_sha256=file_hash(path) if path.exists() else None,
+        fitting_use='provenance only; no evaluation tensors/counts used to fit profiles')
+
+
+def archive_incompatible_profiles(out, contract):
+    """Explicit migration only; preserve bytes, evidence and old results as non-primary."""
+    import shutil
+    import uuid
+    pm_path = out/'profile_manifest.json'
+    if pm_path.exists():
+        pm = read_json(pm_path)
+        try:
+            verify_contract(pm.get('device_contract'), contract)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('Existing profiles already have the reference device contract; refusing refit')
+    names = ['manifest.json', 'profile_manifest.json', *PROFILE_FILES.values(), 'environment.json',
+             'benchmark_manifest.json', 'c15_block_raw.csv', 'c15_summary.csv', 'c15_quality.csv',
+             'timing_repeats.json', 'bitstreams']
+    paths = [out/name for name in names if (out/name).exists()]
+    if not paths:
+        raise ValueError('No existing C1.5 profile artifacts to archive')
+    archive = out/'obsolete_profiles'/uuid.uuid4().hex
+    archive.mkdir(parents=True)
+    new_json(archive/'obsolete_manifest.json', dict(status='OBSOLETE_INCOMPATIBLE_DEVICE_CONTRACT',
+        primary_result_eligible=False, provenance='DIAGNOSTIC_ONLY',
+        original_profile_files_sha256={p.name: file_hash(p) for p in paths if p.is_file()},
+        replacement_device_contract=contract, reason='Unproven/CPU calibration symbol generation',
+        diagnostic_evidence=correction_evidence(out)))
+    evidence = out/'uniform_compatibility_diagnostic.json'
+    if evidence.exists():
+        shutil.copy2(evidence, archive/evidence.name)  # Original remains in place.
+    for path in paths:
+        path.rename(archive/path.name)
+    return str(archive.resolve())
+
+
 def profile(args):
     with inputs(args) as (root, out, capture, rec, ids, selected, hashes):
+        contract = resolve_contract(root)  # Fail before archiving if CUDA is unavailable.
+        source = audit(args.cachegen_repo)
+        archive = None
+        if getattr(args, 'replace_incompatible', False):
+            archive = archive_incompatible_profiles(out, contract)
         if (out/'manifest.json').exists() or (out/'profile_manifest.json').exists():
             raise ValueError('Profile already exists; frozen profiles cannot be refit in place')
-        source = audit(args.cachegen_repo)
         def load(block):
             assert block['partition'] == 'calibration'
             qkv = load_fixture(root, block)
-            return histograms(quantize(qkv['k'], qkv['v']))
+            return histograms(quantize(qkv['k'], qkv['v'], device=contract['quantization_device_resolved']))
         profiles, fitted, counts = fit_profiles(capture['blocks'], load)
         if fitted != ids['calibration'] or set(fitted) & set(ids['evaluation']):
             raise ValueError('Calibration-only fitting invariant failed')
@@ -153,7 +207,10 @@ def profile(args):
                 logical_shared_profile_tensor_bytes=model.logical_bytes,
                 serialized_shared_profile_bytes=len(model.to_bytes()),
                 calibration_counts=counts[mode], calibration_counts_sha256=digest(counts[mode]))
-        result = dict(schema_version=1, status='FROZEN_BEFORE_EVALUATION', config=CONFIG,
+        result = dict(schema_version=2, status='FROZEN_BEFORE_EVALUATION', config=CONFIG,
+            primary_result_eligible=True,
+            device_contract=contract, device_contract_sha256=digest(contract),
+            diagnostic_evidence=correction_evidence(out), obsolete_profiles_archive=archive,
             implementation_sha256=implementation_hashes(),
             c1_file_sha256=hashes, capture_manifest_sha256=hashes['capture_manifest.json'],
             capture_manifest_canonical_sha256=digest(capture),
@@ -166,15 +223,19 @@ def profile(args):
                            'overlapping tokens across T are counted per captured block; no evaluation reads')
         new_json(out/'profile_manifest.json', result)
         update_state(out, profile_status='FROZEN', benchmark_status='NOT_RUN', quality_status='NOT_RUN',
+                     device_contract=contract, primary_result_eligible=True,
                      profile_manifest_sha256=file_hash(out/'profile_manifest.json'))
         record_environment(out, 'profile')
 
 
-def load_profiles(out, hashes, ids):
+def load_profiles(out, hashes, ids, contract):
     state = read_json(out/'manifest.json')
     if file_hash(out/'profile_manifest.json') != state['profile_manifest_sha256']:
         raise ValueError('Profile manifest SHA256 mismatch')
     pm = read_json(out/'profile_manifest.json')
+    verify_contract(pm.get('device_contract'), contract)
+    if pm.get('schema_version') != 2 or pm.get('device_contract_sha256') != digest(contract):
+        raise ValueError('Obsolete/unbound profile device contract; regenerate C1.5 profiles')
     if (pm['config'] != CONFIG or pm['status'] != 'FROZEN_BEFORE_EVALUATION' or pm['c1_file_sha256'] != hashes
             or pm['implementation_sha256'] != implementation_hashes()):
         raise ValueError('Frozen profile configuration/C1 provenance mismatch')
@@ -260,7 +321,7 @@ def diagnose_uniform(args):
         checked = []
         for block in benchmark_selection(capture['blocks'], smoke=True):
             qkv = load_fixture(root, block)
-            encoded = quantize(qkv['k'], qkv['v'])
+            encoded = quantize(qkv['k'], qkv['v'], device='cpu')  # Historical CPU diagnostic only.
             reconstructed = Baseline('UNIFORM_INT8').decode(encoded)
             checked.append(block['block_id'])
             try:
@@ -328,18 +389,20 @@ def _benchmark(args, run):
             new_json(out/'run_status.json', dict(status='INCOMPLETE', provenance='DIAGNOSTIC_ONLY',
                 primary_result_eligible=False, result_classification='DIAGNOSTIC_ONLY'))
             run['out'] = out
-        profiles, pm = load_profiles(profile_out, hashes, ids)
+        contract = resolve_contract(root)
+        profiles, pm = load_profiles(profile_out, hashes, ids, contract)
         frozen = {mode: model.to_bytes() for mode, model in profiles.items()}
         rows, entries, repeats = [], [], []
         for block in selected:
             assert block['block_id'] in ids['evaluation'] and block['block_id'] not in ids['calibration']
             qkv = load_fixture(root, block)
-            quantized = quantize(qkv['k'], qkv['v'])
-            baseline = Baseline('UNIFORM_INT8').decode(quantized)
+            quantized = quantize(qkv['k'], qkv['v'], device=contract['quantization_device_resolved'])
+            baseline = reconstruct(quantized, device=contract['reconstruction_device'])
             try:
-                existing_uniform(root, rec, block, baseline)
+                saved = existing_uniform(root, rec, block, baseline)
             except UniformCompatibilityError as exc:
                 if diagnostic:
+                    exc.report['device_contract'] = contract
                     # Arithmetic coding has not run for this block. Keep the
                     # saved-vs-fresh evidence even if recorded-device replay fails.
                     new_json(out/'uniform_compatibility_failure.json', exc.report)
@@ -373,7 +436,8 @@ def _benchmark(args, run):
                     model = profiles[mode]
                     prepared = prepare(model, quantized)
                     blob = encode(model, *prepared)
-                    check_roundtrip(model, quantized, blob)
+                    check_roundtrip(model, quantized, blob,
+                                    reconstruction_device=contract['reconstruction_device'], reference=saved)
                     row.update(inspect_block(blob, model)[3])
                     measured_blob, et, er = measure(lambda: encode(model, *prepared),
                                                   warmup_runs=warmup, measured_runs=measured)
@@ -402,11 +466,13 @@ def _benchmark(args, run):
                 **pool_accounting(group, size),
                 logical_shared_profile_tensor_bytes=profiles[mode].logical_bytes if mode in MODES else 0,
                 provenance=group[0]['provenance'], **labels))
-        load_profiles(profile_out, hashes, ids)  # Recheck on-disk freeze after evaluation.
+        verify_contract(contract, resolve_contract(root))
+        load_profiles(profile_out, hashes, ids, contract)  # Recheck on-disk freeze after evaluation.
         new_csv(out/'c15_block_raw.csv', rows)
         new_csv(out/'c15_summary.csv', summary)
         new_json(out/'timing_repeats.json', dict(**timing, repeats=repeats, provenance=provenance, **labels))
         new_json(out/'benchmark_manifest.json', dict(profile_manifest_sha256=file_hash(profile_out/'profile_manifest.json'),
+            device_contract=contract,
             profile_directory=str(profile_out.resolve()), smoke=smoke, max_blocks_per_group=limit,
             selection_rule='first evaluation blocks per dataset/T in capture-manifest order',
             selected_block_ids=[b['block_id'] for b in selected],
@@ -415,7 +481,7 @@ def _benchmark(args, run):
             **timing, all_symbol_roundtrips_exact=True, all_uniform_reconstructions_exact=True,
             profile_unchanged_after_evaluation=True, provenance=provenance, **labels))
         update_state(out, benchmark_status='MEASURED', benchmark_manifest_sha256=file_hash(out/'benchmark_manifest.json'),
-                     provenance=provenance, **labels)
+                     device_contract=contract, provenance=provenance, **labels)
         if diagnostic:
             new_json(out/'environment.json', dict(benchmark=environment(), provenance=provenance, **labels))
         else:
@@ -439,11 +505,13 @@ def quality(args):
     with inputs(args) as (root, out, capture, rec, ids, selected, hashes):
         if (out/'c15_quality.csv').exists():
             raise ValueError('Quality output already exists')
-        profiles, pm = load_profiles(out, hashes, ids)
+        contract = resolve_contract(root)
+        profiles, pm = load_profiles(out, hashes, ids, contract)
         state = read_json(out/'manifest.json')
         if file_hash(out/'benchmark_manifest.json') != state.get('benchmark_manifest_sha256'):
             raise ValueError('Benchmark manifest SHA256 mismatch')
         bm = read_json(out/'benchmark_manifest.json')
+        verify_contract(bm.get('device_contract'), contract)
         if bm['profile_manifest_sha256'] != file_hash(out/'profile_manifest.json'):
             raise ValueError('Benchmark used different profiles')
         if [b['block_id'] for b in selected] != pm['quality_fixture_ids']:
@@ -460,8 +528,9 @@ def quality(args):
         rows = []
         for block in selected:
             original = load_fixture(root, block)
-            quantized = quantize(original['k'], original['v'])
-            uniform = existing_uniform(root, rec, block, Baseline('UNIFORM_INT8').decode(quantized))
+            quantized = quantize(original['k'], original['v'], device=contract['quantization_device_resolved'])
+            uniform = existing_uniform(root, rec, block,
+                                       reconstruct(quantized, device=contract['reconstruction_device']))
             inputs_tensor = torch.tensor([block['query_token_ids']], device=args.device)
             length, t = len(block['query_token_ids']), block['token_group_size']
             def forward(qkv=None):
@@ -485,7 +554,8 @@ def quality(args):
                 path = out/items[0]['file']
                 if not contained(path, out) or file_hash(path) != items[0]['sha256']:
                     raise ValueError('Quality bitstream SHA256 mismatch')
-                k, v = check_roundtrip(profile_model, quantized, path.read_bytes())
+                k, v = check_roundtrip(profile_model, quantized, path.read_bytes(),
+                                      reconstruction_device=contract['reconstruction_device'], reference=uniform)
                 candidate = forward(dict(q=original['q'], k=k, v=v))
                 if not torch.equal(candidate, uniform_logits):
                     raise ValueError('Shared-CDF logits differ from UNIFORM_INT8; fail closed')
@@ -499,9 +569,11 @@ def quality(args):
                     max_logit_difference_vs_uniform_int8=(logits.double()-uniform_logits.double()).abs().max().item(),
                     status='MEASURED', provenance='MEASURED_RESEARCH_EXTENSION' if mode in MODES else
                     'MEASURED; REPRODUCTION_CHOICE' if mode == 'UNIFORM_INT8' else 'MEASURED'))
-        load_profiles(out, hashes, ids)
+        verify_contract(contract, resolve_contract(root))
+        load_profiles(out, hashes, ids, contract)
         new_csv(out/'c15_quality.csv', rows)
         update_state(out, quality_status='MEASURED', quality_fixture_ids=pm['quality_fixture_ids'],
+                     device_contract=contract,
                      shared_logits_exactly_equal_uniform=True, kl_direction='native || candidate; affected suffix mean',
                      argmax_scope='all query positions')
         record_environment(out, 'quality')
@@ -517,6 +589,9 @@ def main(argv=None):
         p.add_argument('--output-dir', type=Path, default=Path('results/cachegen/c1_5'))
         if name == 'profile':
             p.add_argument('--cachegen-repo', type=Path, default=Path('/data/khuss/repos/CacheGen'))
+            p.add_argument('--replace-incompatible', action='store_true',
+                           help='Archive obsolete C1.5 profiles/results as non-primary, preserving diagnostic JSON; '
+                                'refit only calibration on recorded C1 device')
         if name == 'quality':
             p.add_argument('--device', choices=('cpu', 'cuda', 'cuda:0'), default='cuda')
         if name == 'benchmark':

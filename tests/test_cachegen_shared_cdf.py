@@ -16,6 +16,9 @@ from semcache.experiments.cachegen.shared.core import (
 from semcache.experiments.cachegen.shared.harness import (
     benchmark, benchmark_selection, load_profiles, main, measure, profile, protect_output, quality_selection)
 from semcache.experiments.cachegen.shared.source_audit import audit, REVISION
+from semcache.experiments.cachegen.shared.device_contract import make_contract, verify_contract, resolve_contract
+
+CONTRACT = make_contract("cuda", cuda_available=True, cuda_device_count=1)
 from semcache.experiments.cachegen.common import read_json
 
 
@@ -172,6 +175,91 @@ class ArithmeticTests(unittest.TestCase):
         self.assertEqual(list(inspect.signature(encode).parameters), ['profile', 'streams', 'scales', 'shape'])
 
 
+class DeviceContractTests(unittest.TestCase):
+    def test_cpu_cuda_contract_metadata_and_no_fallback(self):
+        cpu = make_contract('cpu')
+        self.assertEqual(cpu['quantization_device_resolved'], 'cpu')
+        self.assertEqual(CONTRACT['reference_c1_device'], 'cuda')
+        self.assertEqual(CONTRACT['quantization_device_requested'], 'cuda')
+        for key in ('quantization_device_resolved', 'reconstruction_device', 'profile_symbol_generation_device'):
+            self.assertEqual(CONTRACT[key], 'cuda:0')
+        self.assertEqual(CONTRACT['entropy_coder_device'], 'cpu')
+        self.assertEqual(CONTRACT['quantization_device_provenance'], 'MEASURED_C1_REFERENCE_DEVICE')
+        verify_contract(CONTRACT, CONTRACT)
+        for old in (None, {}, cpu, dict(CONTRACT, profile_symbol_generation_device='cpu')):
+            with self.assertRaises(ValueError):
+                verify_contract(old, CONTRACT)
+        with self.assertRaisesRegex(ValueError, 'no CPU fallback'):
+            make_contract('cuda', cuda_available=False)
+        with self.assertRaisesRegex(ValueError, 'no CPU fallback'):
+            make_contract('cuda', 'cpu', cuda_available=True, cuda_device_count=1)
+
+    def test_cuda_quantization_precedes_cpu_transfer_and_cuda_reconstruction(self):
+        from types import SimpleNamespace
+        import sys
+        from semcache.experiments.cachegen.shared.tensors import quantize, reconstruct, check_roundtrip
+        events = []
+        class Tensor:
+            def __init__(self, dtype, device='cpu', value=1):
+                self.dtype, self.device, self.value = dtype, SimpleNamespace(type=device.split(':')[0]), value
+            def to(self, device):
+                events.append(('to', self.dtype, device))
+                return Tensor(self.dtype, device, self.value)
+            def cpu(self):
+                events.append(('cpu', self.dtype, self.device.type))
+                return Tensor(self.dtype, 'cpu', self.value)
+        def enc(codec, k, v):
+            self.assertEqual(k.device.type, 'cuda')
+            self.assertEqual(v.device.type, 'cuda')
+            events.append(('encode',))
+            return tuple((Tensor('int8', 'cuda'), Tensor('float32', 'cuda')) for _ in 'kv')
+        def dec(codec, encoded):
+            for symbols, scales in encoded:
+                self.assertEqual(symbols.device.type, 'cuda')
+                self.assertEqual(scales.device.type, 'cuda')
+                self.assertEqual((symbols.dtype, scales.dtype), ('int8', 'float32'))
+            events.append(('decode',))
+            return (Tensor('float16', 'cuda'), Tensor('float16', 'cuda'))
+        torch_stub = SimpleNamespace(float16='float16', equal=lambda a, b: a.value == b.value and a.dtype == b.dtype)
+        with patch.dict(sys.modules, {'torch': torch_stub}), \
+             patch('semcache.experiments.cachegen.shared.tensors.Baseline.encode', enc), \
+             patch('semcache.experiments.cachegen.shared.tensors.Baseline.decode', dec):
+            encoded = quantize(Tensor('float16'), Tensor('float16'), device='cuda:0')
+            self.assertEqual(events[:3], [('to', 'float16', 'cuda:0'), ('to', 'float16', 'cuda:0'), ('encode',)])
+            self.assertTrue(all(s.device.type == scale.device.type == 'cpu' for s, scale in encoded))
+            reference = dict(zip('kv', reconstruct(encoded, device='cuda:0')))
+            with patch('semcache.experiments.cachegen.shared.tensors.decode', return_value=((), b'', (32, 3, 4))), \
+                 patch('semcache.experiments.cachegen.shared.tensors.restore', return_value=encoded):
+                result = check_roundtrip(None, encoded, b'coded', reconstruction_device='cuda:0', reference=reference)
+                self.assertTrue(all(x.device.type == 'cpu' for x in result))
+                reference['k'].value = 2
+                with self.assertRaisesRegex(ValueError, 'saved C1'):
+                    check_roundtrip(None, encoded, b'coded', reconstruction_device='cuda:0', reference=reference)
+
+    def test_archive_preserves_old_profiles_c1_and_diagnostic_evidence(self):
+        from semcache.experiments.cachegen.shared.harness import archive_incompatible_profiles
+        from semcache.experiments.cachegen.common import write_json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            c1, out = root/'c1', root/'c15'
+            c1.mkdir()
+            out.mkdir()
+            (c1/'capture_manifest.json').write_bytes(b'C1 immutable')
+            write_json(out/'profile_manifest.json', dict(schema_version=1))
+            (out/'shared_cdf_global.bin').write_bytes(b'old CPU profile')
+            (out/'uniform_compatibility_diagnostic.json').write_bytes(b'proven diagnostic evidence')
+            archive = Path(archive_incompatible_profiles(out, CONTRACT))
+            self.assertEqual((archive/'shared_cdf_global.bin').read_bytes(), b'old CPU profile')
+            self.assertFalse((out/'shared_cdf_global.bin').exists())
+            self.assertEqual((out/'uniform_compatibility_diagnostic.json').read_bytes(), b'proven diagnostic evidence')
+            self.assertEqual((archive/'uniform_compatibility_diagnostic.json').read_bytes(), b'proven diagnostic evidence')
+            self.assertFalse(read_json(archive/'obsolete_manifest.json')['primary_result_eligible'])
+            self.assertEqual((c1/'capture_manifest.json').read_bytes(), b'C1 immutable')
+            write_json(out/'profile_manifest.json', dict(device_contract=CONTRACT))
+            with self.assertRaisesRegex(ValueError, 'refusing refit'):
+                archive_incompatible_profiles(out, CONTRACT)
+
+
 class HarnessTests(unittest.TestCase):
     def test_failed_smoke_status_and_finalization_failure_are_not_completed(self):
         from types import SimpleNamespace
@@ -289,15 +377,17 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(block['partition'], 'evaluation')
                 loaded.append(block['block_id'])
                 return dict(q='untouched', k=block['token_group_size'], v=None)
-            def check(model, quantized, blob):
+            def check(model, quantized, blob, **kw):
+                self.assertEqual(kw["reconstruction_device"], "cuda:0")
                 self.assertEqual(decode(blob, model), prepared(model, quantized))
             args = SimpleNamespace(smoke=True, warmup_runs=1, measured_runs=2, max_blocks_per_group=None)
             with patch('semcache.experiments.cachegen.shared.harness.inputs', input_stub), \
+                 patch('semcache.experiments.cachegen.shared.harness.resolve_contract', return_value=CONTRACT), \
                  patch('semcache.experiments.cachegen.shared.harness.load_profiles', return_value=(models, {})) as load, \
                  patch('semcache.experiments.cachegen.shared.harness.fit_profiles', side_effect=AssertionError('No refitting')), \
                  patch('semcache.experiments.cachegen.shared.harness.load_fixture', fixture_loader), \
-                 patch('semcache.experiments.cachegen.shared.harness.quantize', side_effect=lambda k, v: k), \
-                 patch('semcache.experiments.cachegen.shared.harness.Baseline.decode', return_value=('k', 'v')), \
+                 patch('semcache.experiments.cachegen.shared.harness.quantize', side_effect=lambda k, v, **kw: k), \
+                 patch('semcache.experiments.cachegen.shared.harness.reconstruct', return_value=('k', 'v')), \
                  patch('semcache.experiments.cachegen.shared.harness.Baseline.sizes', return_value=(491520, 768)), \
                  patch('semcache.experiments.cachegen.shared.harness.existing_uniform') as existing, \
                  patch('semcache.experiments.cachegen.shared.harness.prepare', side_effect=lambda m, q: prepared(m, q)), \
@@ -411,18 +501,35 @@ class HarnessTests(unittest.TestCase):
                 loaded.append(block['block_id'])
                 self.assertEqual(block['partition'], 'calibration')
                 return dict(k=histograms(block), v=None)
+            quantization_devices = []
+            def quantizer(k, v, *, device):
+                quantization_devices.append(device)
+                return k
             with patch('semcache.experiments.cachegen.shared.harness.inputs', input_stub), \
+                 patch('semcache.experiments.cachegen.shared.harness.resolve_contract', return_value=CONTRACT), \
                  patch('semcache.experiments.cachegen.shared.harness.load_fixture', fixture_loader), \
-                 patch('semcache.experiments.cachegen.shared.harness.quantize', lambda k, v: k), \
+                 patch('semcache.experiments.cachegen.shared.harness.quantize', quantizer), \
                  patch('semcache.experiments.cachegen.shared.harness.histograms', lambda x: x):
                 args = SimpleNamespace(cachegen_repo=Path(tmp)/'missing')
                 profile(args)
                 self.assertEqual(loaded, ['c1', 'c2'])
-                models, pm = load_profiles(out, hashes, ids)
+                models, pm = load_profiles(out, hashes, ids, CONTRACT)
                 self.assertEqual(pm['fitted_block_ids'], ids['calibration'])
                 self.assertEqual(pm['evaluation_block_ids'], ids['evaluation'])
+                self.assertEqual(quantization_devices, ['cuda:0', 'cuda:0'])
+                self.assertEqual(pm['device_contract'], CONTRACT)
+                with self.assertRaisesRegex(ValueError, 'device contract'):
+                    load_profiles(out, hashes, ids, make_contract('cpu'))
                 with self.assertRaisesRegex(ValueError, 'already exists'):
                     profile(args)
+            # The actual benchmark must reject incompatible device contracts
+            # before reading any evaluation fixture, not merely at decode time.
+            with patch('semcache.experiments.cachegen.shared.harness.inputs', input_stub), \
+                 patch('semcache.experiments.cachegen.shared.harness.resolve_contract', return_value=make_contract('cpu')), \
+                 patch('semcache.experiments.cachegen.shared.harness.load_fixture',
+                       side_effect=AssertionError('No evaluation before contract validation')):
+                with self.assertRaisesRegex(ValueError, 'device contract'):
+                    benchmark(args)
             # Execute the real benchmark orchestration with literal byte streams.
             # Tensor-only boundaries are mocked; entropy/timing/persistence run.
             evaluated = []
@@ -430,12 +537,14 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(block['partition'], 'evaluation')
                 evaluated.append(block['block_id'])
                 return dict(q='untouched', k='k', v='v')
-            def check(model, encoded, blob):
+            def check(model, encoded, blob, **kw):
+                self.assertEqual(kw["reconstruction_device"], "cuda:0")
                 self.assertEqual(decode(blob, model), prepared(model, 3))
             with patch('semcache.experiments.cachegen.shared.harness.inputs', input_stub), \
+                 patch('semcache.experiments.cachegen.shared.harness.resolve_contract', return_value=CONTRACT), \
                  patch('semcache.experiments.cachegen.shared.harness.load_fixture', evaluation_loader), \
-                 patch('semcache.experiments.cachegen.shared.harness.quantize', return_value='quantized'), \
-                 patch('semcache.experiments.cachegen.shared.harness.Baseline.decode', return_value=('k', 'v')), \
+                 patch('semcache.experiments.cachegen.shared.harness.quantize', side_effect=quantizer), \
+                 patch('semcache.experiments.cachegen.shared.harness.reconstruct', return_value=('k', 'v')), \
                  patch('semcache.experiments.cachegen.shared.harness.Baseline.sizes', return_value=(491520, 768)), \
                  patch('semcache.experiments.cachegen.shared.harness.existing_uniform') as existing, \
                  patch('semcache.experiments.cachegen.shared.harness.prepare', side_effect=lambda m, q: prepared(m, 3)), \
@@ -443,12 +552,13 @@ class HarnessTests(unittest.TestCase):
                  patch('builtins.print'):
                 benchmark(args)
                 existing.assert_called_once()
+            self.assertEqual(quantization_devices, ['cuda:0']*3)
             self.assertEqual(evaluated, ['e1'])
             bm = read_json(out/'benchmark_manifest.json')
             self.assertEqual(len(bm['bitstreams']), 2)
             self.assertEqual({b['block_id'] for b in bm['bitstreams']}, {'e1'})
             self.assertTrue(bm['profile_unchanged_after_evaluation'])
-            self.assertEqual(load_profiles(out, hashes, ids)[0], models)
+            self.assertEqual(load_profiles(out, hashes, ids, CONTRACT)[0], models)
             timings = read_json(out/'timing_repeats.json')
             self.assertEqual(len(timings['repeats']), 2)
             for repeat in timings['repeats']:
@@ -461,7 +571,7 @@ class HarnessTests(unittest.TestCase):
                 target = out/pm['profiles'][MODES[0]]['file']
                 target.write_bytes(target.read_bytes()+b'x')
                 with self.assertRaisesRegex(ValueError, 'Profile SHA256'):
-                    load_profiles(out, hashes, ids)
+                    load_profiles(out, hashes, ids, CONTRACT)
 
 
 @unittest.skipUnless(importlib.util.find_spec('torch'), 'PyTorch unavailable; no installation/download')
@@ -493,7 +603,7 @@ class TensorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             qkv = {n: torch.ones(32, 3, 4, dtype=torch.float16) for n in 'qkv'}
-            encoded = quantize(qkv['k'], qkv['v'])
+            encoded = quantize(qkv['k'], qkv['v'], device='cpu')
             expected = Baseline('UNIFORM_INT8').decode(encoded)
             saved = dict(k=expected[0].clone(), v=expected[1].clone())
             saved['v'][0, 1, 2] = 0
@@ -519,7 +629,7 @@ class TensorTests(unittest.TestCase):
         from semcache.experiments.cachegen.codecs import Baseline
         from semcache.experiments.cachegen.common import load_fixture, digest
         from semcache.experiments.cachegen.shared.harness import existing_uniform
-        from semcache.experiments.cachegen.shared.tensors import quantize
+        from semcache.experiments.cachegen.shared.tensors import quantize, reconstruct
         root = Path(__file__).resolve().parents[1]/'results/cachegen/c1'
         if not all((root/n).is_file() for n in ('capture_manifest.json', 'reconstruction_manifest.json')):
             self.skipTest('Completed real C1 artifacts absent')
@@ -536,21 +646,46 @@ class TensorTests(unittest.TestCase):
         self.assertEqual(len(entries), 1, 'Expected one matching C1 reconstruction entry')
         if not (root/block['file']).is_file() or not (root/entries[0]['file']).is_file():
             self.skipTest('Real C1 fixture/reconstruction tensor files are not mounted locally')
-        qkv = load_fixture(root, block)
-        direct = Baseline('UNIFORM_INT8').encode(qkv['k'], qkv['v'])
-        shared = quantize(qkv['k'], qkv['v'])
         import torch
+        recorded = (read_json(root/'environment.json').get('benchmark') or {}).get('device', '')
+        if recorded.startswith('cuda') and not torch.cuda.is_available():
+            self.skipTest('Real C1 requires CUDA; no CPU fallback for compatibility test')
+        contract = resolve_contract(root)
+        device = contract['quantization_device_resolved']
+        qkv = load_fixture(root, block)
+        direct = Baseline('UNIFORM_INT8').encode(qkv['k'].to(device), qkv['v'].to(device))
+        shared = quantize(qkv['k'], qkv['v'], device=device)
         for a, b in zip(direct, shared):
-            self.assertTrue(all(torch.equal(x, y) for x, y in zip(a, b)))
+            self.assertTrue(all(torch.equal(x.cpu(), y) for x, y in zip(a, b)))
         # Uses the exact runtime lookup, SHA and equality gate. Any mismatch is
         # a regression failure with block/component/index evidence, not a skip.
-        existing_uniform(root, rec, block, Baseline('UNIFORM_INT8').decode(shared))
+        existing_uniform(root, rec, block, tuple(x.cpu() for x in Baseline('UNIFORM_INT8').decode(direct)))
+        existing_uniform(root, rec, block, reconstruct(shared, device=contract['reconstruction_device']))
 
     def test_real_artifact_t3_uniform_compatibility(self):
         self._real_artifact_compatibility(3)
 
     def test_real_artifact_t10_uniform_compatibility(self):
         self._real_artifact_compatibility(10)
+
+    def test_cuda_roundtrip_reconstructs_on_cuda_exactly(self):
+        import torch
+        from semcache.experiments.cachegen.codecs import Baseline
+        from semcache.experiments.cachegen.shared.tensors import quantize, prepare, check_roundtrip
+        if not torch.cuda.is_available():
+            self.skipTest('CUDA unavailable')
+        torch.manual_seed(42)
+        for t in (3, 10):
+            k, v = (torch.randn(32, t, 8).half() for _ in 'kv')
+            direct = Baseline('UNIFORM_INT8').encode(k.cuda(), v.cuda())
+            reference = dict(zip('kv', (x.cpu() for x in Baseline('UNIFORM_INT8').decode(direct))))
+            encoded = quantize(k, v, device='cuda:0')
+            for model in profiles().values():
+                data = prepare(model, encoded)
+                self.assertTrue(all(isinstance(s, bytes) for s in data[0]))
+                blob = encode(model, *data)
+                self.assertEqual(decode(blob, model), data)
+                check_roundtrip(model, encoded, blob, reconstruction_device='cuda:0', reference=reference)
 
     def test_exact_existing_uniform_reconstruction_q_untouched(self):
         import torch
@@ -561,11 +696,11 @@ class TensorTests(unittest.TestCase):
             q, k, v = (torch.randn(32, t, 8).half() for _ in 'qkv')
             k[:, 0] = 0  # zero-vector scale fallback stays exactly one
             saved_q = q.clone()
-            encoded = quantize(k, v)
+            encoded = quantize(k, v, device='cpu')
             baseline = Baseline('UNIFORM_INT8').decode(encoded)
             for model in profiles().values():
                 blob = encode(model, *prepare(model, encoded))
-                actual = check_roundtrip(model, encoded, blob)
+                actual = check_roundtrip(model, encoded, blob, reconstruction_device='cpu')
                 self.assertTrue(all(torch.equal(a, b) for a, b in zip(actual, baseline)))
                 self.assertTrue(torch.equal(q, saved_q))
                 self.assertEqual(q.dtype, torch.float16)

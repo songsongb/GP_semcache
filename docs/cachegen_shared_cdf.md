@@ -77,6 +77,19 @@ remainders in descending fractional-remainder order (ties by symbol index).
 CDFs are strictly increasing; even unseen symbols have nonzero probability.
 No smoothing or grouping parameter is exposed for evaluation-time tuning.
 
+Quantization **and reconstruction** now use the device recorded in immutable
+`results/cachegen/c1/environment.json` under `benchmark.device`. For the SERAPH
+C1 artifacts this is CUDA (`cuda` resolves explicitly to `cuda:0`). FP16 K/V
+move to CUDA before the unchanged `Baseline.encode`; only the resulting int8
+symbols and FP32 scales move to CPU. Histograms and arithmetic coding stay on
+CPU. Decoded symbols and unchanged scales move back to CUDA for `Baseline.decode`,
+then final FP16 K/V move to CPU for exact saved-C1 comparison. Device transfers
+and quantization/reconstruction remain outside entropy latency timing.
+
+There is no primary CPU fallback when the recorded device is CUDA. Fitting,
+benchmark, and quality all use the same resolver and fail if that device is
+unavailable. The standalone historical CPU diagnostic is non-primary only.
+
 `fit_profiles` checks nonempty disjoint partitions and invokes the histogram
 loader only for `partition == 'calibration'`. The profile stage loads no evaluation
 fixture tensors. The model-free loader-spy test proves this control flow.
@@ -84,19 +97,31 @@ fixture tensors. The model-free loader-spy test proves this control flow.
 
 * Exact calibration/evaluation ID lists and canonical hashes of the sorted lists;
   exact fitted IDs must equal calibration IDs, with empty intersection with evaluation.
-* Actual SHA256 of all five immutable C1 inputs, including the literal capture
+* Actual SHA256 of the five immutable C1 data/quality inputs **and C1 environment**,
+  including the literal capture
   manifest file; a separately named canonical JSON hash binds the existing C1
   reconstruction convention.
 * Original model/tokenizer metadata, full fixed configuration, calibration
   histogram counts and hashes, profile filenames/binary SHA256, logical/actual
   bytes, and the four C1 quality fixture IDs.
 * Source audit, quantizer/codec implementation hashes, frozen-before-evaluation status.
+* Schema version 2 `device_contract` and its SHA256: `reference_c1_device`,
+  `quantization_device_requested`, `quantization_device_resolved`,
+  `reconstruction_device`, `entropy_coder_device`,
+  `quantization_device_provenance=MEASURED_C1_REFERENCE_DEVICE`,
+  `profile_symbol_generation_device`, and the C1 environment SHA256.
+  The same contract is recorded in benchmark/quality stage manifests.
+* The proven SERAPH diagnostic summary and diagnostic JSON hash (when present),
+  plus the obsolete-profile archive location when replacing old CPU profiles.
 
 The stage manifest binds the profile manifest SHA256. Loading revalidates all
 bindings and regenerates CDFs from the recorded calibration counts. CDF tuples
 are immutable. Encode/decode have no histogram update API. Benchmark reloads
 profile hashes after evaluation and checks each in-memory profile remains byte
-identical. Refitting/overwriting an existing profile is refused. Runtime C1
+identical. Profiles without the device contract are rejected, as are mismatches
+between the profile, evaluation, and recorded C1 device. The profile manifest
+binds Baseline source hash, capture SHA256, calibration ID hash and device
+contract. Refitting a compatible existing profile is refused. Runtime C1
 input snapshots are checked before and after each stage.
 
 ## Per-block representation and storage accounting
@@ -168,7 +193,7 @@ number mixes CUDA events with CPU wall time.
 
 ## Diagnostic runtime smoke
 
-Use the already frozen profiles to estimate CPU runtime before launching the
+Use the corrected CUDA-symbol-derived frozen profiles to estimate CPU runtime before launching the
 full benchmark. Do **not** rerun `profile` for this diagnostic:
 
 ```bash
@@ -246,7 +271,7 @@ python scripts/40_cachegen_shared_cdf.py diagnose-uniform \
   --output-dir results/cachegen/c1_5
 ```
 
-This scans only the four deterministic smoke candidates and stops at the first
+This historical CPU-path diagnostic scans only the four deterministic smoke candidates and stops at the first
 incompatible block. It writes `c1_5/uniform_compatibility_diagnostic.json` before
 raising the mismatch. No arithmetic coding, profile fitting, or model inference
 runs. The report identifies block/dataset/T, the exact selected reconstruction
@@ -270,11 +295,17 @@ report; preserve that file before a repeat.
 Local source audit: `codecs.py` is unchanged from its original C1 commit
 `6dc63ff`. Both paths directly call the same `Baseline` with K then V in
 `[L,T,D]`; reduction is over hidden dimension, scales are FP32, and reconstruction
-is FP16. C1 uses `args.device`, whereas C1.5 currently uses CPU. Device execution
-is a **candidate difference**, not a proven numerical cause. C1 did not record a
-baseline source hash, so local history cannot prove the source used on SERAPH.
-The real-artifact tests for the first evaluation T=3 and T=10 blocks fail on any
-incompatibility and skip only when artifacts/PyTorch are unavailable.
+is FP16. The SERAPH diagnostic proved the cause on block
+`19874b2e7181f079f989acbf` (SNIPS T=3): old C1.5 CPU execution differed from C1
+CUDA near FP32 quantization boundaries. CUDA replay exactly reproduced saved
+C1 K/V. Seven K scales and three K symbols differed; the first symbol was at
+`[4,2,1626]` (CUDA −64, CPU −63), causing maximum reconstructed difference
+0.1015625. Two V scales differed, but V symbols/reconstruction were exact.
+This evidence is supplied by the SERAPH diagnostic, not measured locally.
+The corrected primary path uses CUDA for both encode and reconstruct. The
+real-artifact T=3/T=10 regressions now compare CUDA replay and the corrected
+C1.5 path to saved C1 exactly; they skip when artifacts, PyTorch, or required
+CUDA are unavailable. No tolerance is introduced.
 
 Smoke now writes `run_status.json` as `INCOMPLETE` before work, `FAILED` on an
 exception (also marking `manifest.json` and any benchmark manifest `FAILED`),
@@ -283,11 +314,33 @@ Partial CSVs must not be consumed unless this status is `COMPLETED`. An abrupt
 termination leaves `INCOMPLETE`. Existing partial directories are refused.
 On a mismatch, smoke also saves `smoke/uniform_compatibility_failure.json`.
 
-After preserving diagnostic evidence, remove **only** stale smoke outputs and
-rerun the diagnostic smoke using the unchanged frozen profiles:
+## Migrate obsolete CPU profiles and rerun only smoke
+
+Old profiles must be rebuilt from calibration symbols generated on C1's device.
+`--replace-incompatible` first resolves/validates that device, then archives old
+C1.5 profile binaries, manifests, and any dependent primary result files under
+`obsolete_profiles/<unique-id>/`. An `obsolete_manifest.json` marks them
+`OBSOLETE_INCOMPATIBLE_DEVICE_CONTRACT`, `DIAGNOSTIC_ONLY`, and
+`primary_result_eligible=false`, preserving original file hashes and bytes.
+The original `uniform_compatibility_diagnostic.json` stays in place and is also
+copied into the archive. Old smoke directories are preserved until the explicit
+cleanup below. Compatible new profiles cannot be replaced by this flag.
+
+Run these commands on SERAPH. Only C1.5 calibration profiles are regenerated;
+no C0, C1 capture/benchmark/reconstruction, full benchmark, or inference runs:
 
 ```bash
+conda activate semcache
 cd "$SEMCACHE_REPO"
+cp -pn -- results/cachegen/c1_5/uniform_compatibility_diagnostic.json \
+  results/cachegen/c1_5/uniform_compatibility_diagnostic.before_cuda_profiles.json
+
+python scripts/40_cachegen_shared_cdf.py profile \
+  --capture-manifest results/cachegen/c1/capture_manifest.json \
+  --output-dir results/cachegen/c1_5 \
+  --cachegen-repo /data/khuss/repos/CacheGen \
+  --replace-incompatible
+
 rm -rf -- results/cachegen/c1_5/smoke
 python scripts/40_cachegen_shared_cdf.py benchmark \
   --capture-manifest results/cachegen/c1/capture_manifest.json \
@@ -295,9 +348,11 @@ python scripts/40_cachegen_shared_cdf.py benchmark \
   --smoke --warmup-runs 1 --measured-runs 2
 ```
 
-Cleanup does not fix a tensor mismatch: until the diagnostic proves its cause
-and a compatible path is verified, this rerun is expected to stop at the same
-exact gate. Neither command touches C1 or the frozen profile files.
+The rebuilt profiles require CUDA-generated calibration symbols and no
+evaluation histogram updates. The smoke still fails closed on any exact-symbol,
+scale, or saved-C1 reconstruction mismatch. C1 artifacts are read-only throughout.
+The six shared CDF definitions, smoothing, arithmetic coder, and byte accounting
+are unchanged; only device-correct calibration symbols change their fitted values.
 
 ## SERAPH execution
 
