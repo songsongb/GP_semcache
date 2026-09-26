@@ -1,0 +1,1131 @@
+{
+  "active_call_path": [
+    "run_cachegen.py -> CacheGenSerializer (also cachegen.py/run_adaptation.py)",
+    "CacheGenSerializer.to_bytes -> optional huggingface permutation -> encode_function",
+    "_split_kv -> torch_quant_vectorized(key_bins,K) and torch_quant_vectorized(value_bins,V)",
+    "calculate_cdf(K symbols,max(key_bins)) and calculate_cdf(V symbols,max(value_bins))",
+    "concatenate K/V on layer axis -> encode_ntokens -> torchac_cuda.encode_fast_new -> encode_cuda_new",
+    "CacheGenGPUEncoderOutput.to_bytes (pickle data chunks, CDF and reconstruction metadata)",
+    "CacheGenDeserializer.from_bytes -> decode_function_gpu -> decode_chunk -> decode_fast_prefsum",
+    "do_dequantize separately for K and V -> reshape/permute -> float16 for huggingface"
+  ],
+  "cdf": {
+    "B": "max of component layer bins (same K/V maximum in supplied model schedules)",
+    "alphabet": "Global component support 0..B-1; lower-bin layers use smaller subsets. For b=B even, code B-1 is nominally unused.",
+    "classification": "OFFICIAL_SOURCE_IMPLEMENTED",
+    "formula": "cdf[i] = floor((65535-B)*cumulative_count(symbol<i)/T) + i; histogram/cumulative counts stored uint16",
+    "granularity": "K/V component x layer x flattened channel; histogram axis = tokens",
+    "limits": [
+      "uint16 counters bound safe histogram lengths; long-object behavior not tested here",
+      "calculate_cdf max_bins < 64",
+      "encoder MAX_LP=48",
+      "decoder MAX_LP=64",
+      "C1.5-A Lp=256 is incompatible with these pinned CUDA kernels"
+    ],
+    "metadata_policy": "CDF serialized once per encoded object, not a frozen calibration profile shared across objects.",
+    "model_specific_probability_tables_found": false,
+    "model_specific_quantization_table": true,
+    "offline_frozen": false,
+    "origin": "Runtime histogram of all tokens in the object supplied to encode_function, before <=256-token stream subdivision.",
+    "representation": "CUDA int16 container interpreted as uint16; length B+1 per component/layer/channel",
+    "separate_K_V": true,
+    "separate_anchor_delta": false,
+    "terminal": "calculate_cdf stores cdf[B]=65535; arithmetic kernel uses implicit upper bound 65536 for its last symbol (B-1)."
+  },
+  "compatibility": {
+    "existing_coder_direct_signed_residual_support": false,
+    "lossless_alternative": "Quantize original K/V with exact C1 CUDA semantics first; then reversibly transform symbols and retain every original FP32 scale. This isolates storage while preserving C1 reconstruction.",
+    "modular_alternative": {
+      "anchor": "a=s[:,0,:]",
+      "arithmetic": "Compute subtraction/modulo in wide integer type, not int8; centered representatives remain [-127,127].",
+      "decode_symbol": "s_i=((a+d_i+127) mod 255)-127",
+      "encode_delta": "d_i=((s_i-a+127) mod 255)-127 for i=1..9",
+      "limitation": "Cyclic symbol residual, not paper floating KV delta. Per-token scales differ, so symbol locality and physical-value locality are different questions.",
+      "profile": "Existing CPU arithmetic primitive and alphabet can be reused; transform identifier/framing and any new B profiles require a separate B format/contract, never relabel A bitstreams.",
+      "provenance": "REPRODUCTION_CHOICE_REQUIRED"
+    },
+    "option_1": "Coherent transform-domain lossy codec; same C1 quantizer algorithm/axis/device can be used, but symbols, scales, reconstruction and distortion change. It is not lossless relative to C1.",
+    "option_1_extra_choices": [
+      "delta sign",
+      "delta computation dtype",
+      "residual rounding to FP16 versus new FP32 input contract",
+      "original versus reconstructed anchor predictor",
+      "addition dtype and final FP16 rounding",
+      "overflow/nonfinite handling"
+    ],
+    "option_1_quality": "Requires separate distortion/quality study before quality-equivalent claims, even without new layer-wise bins.",
+    "option_2": "Coherent paper-inspired system after unresolved choices are specified; cannot be instantiated as an official anchor/delta path from this commit. Changes transform, quantization and probability model together.",
+    "signed_residual_alphabet_size": 509,
+    "signed_residual_range": [
+      -254,
+      254
+    ]
+  },
+  "created_date": "2026-09-27",
+  "experiment_run": false,
+  "negative_search": {
+    "anchor_code_matches": [],
+    "delta_code_matches": [
+      "LMCache/examples/openai_chat_completion_client.py:101 (unrelated streaming API delta.content)"
+    ],
+    "inactive_alternatives": "CacheGenEncoderImpl uses direct raw quantization and runtime CDFs; no anchors. Legacy kernels are commented out in CUDAExtension build list. src/utils.py is a direct-quantization baseline.",
+    "limits": "No claim about other commits, branches, private code or installed binaries.",
+    "scope": "All 76 upstream tracked blobs; recursive source search plus manual caller/encoder/decoder/kernel review",
+    "terms": [
+      "anchor",
+      "delta",
+      "diff(",
+      "cumsum",
+      "token slices",
+      "0.5",
+      "1.5",
+      "pad("
+    ]
+  },
+  "no_execution": {
+    "B_experiment_run": false,
+    "c1_or_c15a_outputs_modified": false,
+    "extension_built": false,
+    "full_benchmark_run": false,
+    "inference_run": false,
+    "model_downloaded": false,
+    "profiles_fit": false,
+    "source_imported": false
+  },
+  "official_checkout": {
+    "clean_dirty_status": "UNKNOWN_NOT_MOUNTED",
+    "exact_revision": null,
+    "exists": false,
+    "modified": false,
+    "remote": null,
+    "requested_path": "/data/khuss/repos/CacheGen",
+    "verification_attempts": [
+      {
+        "command": "git -C /data/khuss/repos/CacheGen remote -v",
+        "exit_code": 128,
+        "reason": "No such file or directory"
+      },
+      {
+        "command": "git -C /data/khuss/repos/CacheGen rev-parse HEAD",
+        "exit_code": 128,
+        "reason": "No such file or directory"
+      },
+      {
+        "command": "git -C /data/khuss/repos/CacheGen status --porcelain=v1",
+        "exit_code": 128,
+        "reason": "No such file or directory"
+      }
+    ]
+  },
+  "paper": {
+    "claims": {
+      "P1": "Ten contiguous tokens per group; first token is the independently compressed anchor.",
+      "P2": "Other tokens reference that same anchor, not their predecessor; transform precedes quantization.",
+      "P3": "Anchor: 8-bit. Deltas: vectorwise quantization, progressively coarser early/middle/late thirds.",
+      "P4": "Appendix C defaults: 0.5, 1, 1.5 quantization bins.",
+      "P5": "Offline reusable model-level distributions for each layer/channel, separating anchors and deltas."
+    },
+    "classification": "PAPER_DEFINED",
+    "doi": "10.1145/3651890.3672274",
+    "locations": [
+      "Section 5.2, PDF pages 5-6 (1-based), Figure 6",
+      "Appendix C, PDF page 19 (1-based)"
+    ],
+    "pdf_sha256": "bff4b9d4f9bfdf0bb04d4f94677d009263d4e79b046515327354e961c6dc2e6d",
+    "title": "CacheGen: KV Cache Compression and Streaming for Fast Large Language Model Serving",
+    "unspecified": [
+      "Subtraction sign",
+      "Exact normalization/units/equation for 0.5/1/1.5",
+      "Tail-group treatment and padding",
+      "Original versus reconstructed anchor used for residual formation",
+      "Numerical dtype/rounding of delta arithmetic",
+      "Exact K/V probability-model separation"
+    ],
+    "url": "https://cs.stanford.edu/~keithw/sigcomm2024/sigcomm24-final1571-acmpaginated.pdf",
+    "venue": "ACM SIGCOMM 2024"
+  },
+  "paper_source_behavior_matrix": [
+    {
+      "behavior": "ten_token_groups",
+      "classification": "PAPER_ONLY_NOT_FOUND_IN_SOURCE",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:279-292"
+      ],
+      "finding": "No transform groups. Serializer accepts actual T; arithmetic streams are sliced at <=256 tokens.",
+      "paper_claim_id": "P1"
+    },
+    {
+      "behavior": "first_token_anchor",
+      "classification": "PAPER_ONLY_NOT_FOUND_IN_SOURCE",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:255-300",
+        "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py:149-173"
+      ],
+      "finding": "No special token 0 path in active encoder or decoder.",
+      "paper_claim_id": "P1"
+    },
+    {
+      "behavior": "same_anchor_delta",
+      "classification": "PAPER_ONLY_NOT_FOUND_IN_SOURCE",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:261-266",
+        "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py:159-160"
+      ],
+      "finding": "No K/V inter-token subtraction or decoder anchor addition.",
+      "paper_claim_id": "P2"
+    },
+    {
+      "behavior": "anchor_8bit",
+      "classification": "OFFICIAL_SOURCE_DIFFERENT",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:42-59"
+      ],
+      "finding": "All token positions use layer-selected small-alphabet quantization; int8 storage is not 8-bit anchor precision.",
+      "paper_claim_id": "P3"
+    },
+    {
+      "behavior": "layer_quantization",
+      "classification": "OFFICIAL_SOURCE_DIFFERENT",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_basics.py:27-96"
+      ],
+      "finding": "Quantization acts on raw K/V. K has three configured ranges; V has two, with different boundaries.",
+      "paper_claim_id": "P3"
+    },
+    {
+      "behavior": "paper_bin_numbers",
+      "classification": "PAPER_ONLY_NOT_FOUND_IN_SOURCE",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:54-59",
+        "LMCache/lmcache/storage_backend/serde/cachegen_basics.py:27-96"
+      ],
+      "finding": "No 0.5/1/1.5 quantizer rule or translation to the integer bins found.",
+      "paper_claim_id": "P4"
+    },
+    {
+      "behavior": "integer_bins",
+      "classification": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:54-59"
+      ],
+      "finding": "For bin parameter b: C=floor(b/2)-1; q=round(x*C/maxabs(x)+C).",
+      "paper_claim_id": null
+    },
+    {
+      "behavior": "layer_channel_cdf",
+      "classification": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "evidence": [
+        "LMCache/third_party/torchac_cuda/cal_cdf.cu:26-58",
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:265-267"
+      ],
+      "finding": "Separate histograms over tokens for each K/V component, layer and flattened channel.",
+      "paper_claim_id": "P5"
+    },
+    {
+      "behavior": "anchor_delta_cdf",
+      "classification": "PAPER_ONLY_NOT_FOUND_IN_SOURCE",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:261-267"
+      ],
+      "finding": "No token-role partition of histograms or streams.",
+      "paper_claim_id": "P5"
+    },
+    {
+      "behavior": "offline_frozen_distributions",
+      "classification": "OFFICIAL_SOURCE_DIFFERENT",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py:265-267",
+        "LMCache/lmcache/storage_backend/serde/cachegen_basics.py:134-156"
+      ],
+      "finding": "CDFs fitted during each serialization from the supplied object; serialized in that object.",
+      "paper_claim_id": "P5"
+    },
+    {
+      "behavior": "model_support",
+      "classification": "MODEL_SPECIFIC",
+      "evidence": [
+        "LMCache/lmcache/storage_backend/serde/cachegen_basics.py:27-96"
+      ],
+      "finding": "Model-name table defines bin schedules; OPT-2.7B unsupported. It contains no pretrained CDF table.",
+      "paper_claim_id": null
+    },
+    {
+      "behavior": "delta_sign",
+      "classification": "REPRODUCTION_CHOICE_REQUIRED",
+      "evidence": [],
+      "finding": "Source has no delta; paper prose/figure reviewed do not fix subtraction sign.",
+      "paper_claim_id": null
+    },
+    {
+      "behavior": "short_transform_group",
+      "classification": "REPRODUCTION_CHOICE_REQUIRED",
+      "evidence": [],
+      "finding": "No paper-tail algorithm established and no source anchor group. Do not infer padding from stream buffer allocation.",
+      "paper_claim_id": null
+    },
+    {
+      "behavior": "opt_layer_rounding",
+      "classification": "REPRODUCTION_CHOICE_REQUIRED",
+      "evidence": [],
+      "finding": "No official OPT 32-layer split or bin schedule. A uses [0,11),[11,22),[22,32), a local choice.",
+      "paper_claim_id": null
+    }
+  ],
+  "primary_result_eligible": false,
+  "provenance": [
+    "PAPER_DEFINED",
+    "OFFICIAL_SOURCE_IMPLEMENTED",
+    "REPRODUCTION_CHOICE_REQUIRED"
+  ],
+  "quantization": {
+    "applies_to": "raw K/V, all token positions",
+    "axis": "max absolute value over flattened channel dimension, independently per layer/token and K/V",
+    "bin_meaning": "Integer nominal bin-count/range parameter; effective step m/C, affine zero point C. For even b, nominal produced codes 0..b-2 (b-1 values), not b bits.",
+    "clamp": "No explicit clamp",
+    "classification": "OFFICIAL_SOURCE_IMPLEMENTED",
+    "dtype": "maxabs inherits input dtype (e.g. FP16); bins constructed with torch.zeros default floating dtype, normally FP32. No explicit .float() of input in active vectorized path.",
+    "examples": [
+      {
+        "C": 5,
+        "b": 12,
+        "nominal_number_of_symbols": 11,
+        "nominal_symbol_max": 10,
+        "nominal_symbol_min": 0
+      },
+      {
+        "C": 7,
+        "b": 16,
+        "nominal_number_of_symbols": 15,
+        "nominal_symbol_max": 14,
+        "nominal_symbol_min": 0
+      },
+      {
+        "C": 15,
+        "b": 32,
+        "nominal_number_of_symbols": 31,
+        "nominal_symbol_max": 30,
+        "nominal_symbol_min": 0
+      }
+    ],
+    "external_decoder_contract": [
+      "matching model-name bin table",
+      "matching QUANT_LEVEL for Mistral-7B branch",
+      "output fmt",
+      "adequate configured output buffer capacity"
+    ],
+    "formulas": {
+      "C": "floor(b_l/2)-1",
+      "inverse": "(float(q)-C)/C*m",
+      "m": "max_c abs(x_ltc)",
+      "q": "int8(torch.round(x * (C / m) + C))"
+    },
+    "metadata": [
+      "max_tensors_key [L,T,1]",
+      "max_tensors_value [L,T,1]",
+      "num_heads",
+      "head_size",
+      "per-stream byte lengths",
+      "actual ntokens per subchunk",
+      "CDF tensor",
+      "serialized object envelope"
+    ],
+    "model_schedules": [
+      {
+        "K_bins": [
+          16,
+          16,
+          12
+        ],
+        "K_boundaries": [
+          0,
+          10,
+          20,
+          32
+        ],
+        "V_bins": [
+          16,
+          12
+        ],
+        "V_boundaries": [
+          0,
+          2,
+          32
+        ],
+        "model_branch": "Mistral-7B substring, QUANT_LEVEL=1"
+      },
+      {
+        "K_bins": [
+          32,
+          16,
+          16
+        ],
+        "K_boundaries": [
+          0,
+          10,
+          20,
+          32
+        ],
+        "V_bins": [
+          32,
+          16
+        ],
+        "V_boundaries": [
+          0,
+          2,
+          32
+        ],
+        "model_branch": "Mistral-7B substring, QUANT_LEVEL=2"
+      },
+      {
+        "K_bins": [
+          32,
+          32,
+          32
+        ],
+        "K_boundaries": [
+          0,
+          10,
+          20,
+          32
+        ],
+        "V_bins": [
+          32,
+          32
+        ],
+        "V_boundaries": [
+          0,
+          2,
+          32
+        ],
+        "model_branch": "Mistral-7B substring, QUANT_LEVEL=3"
+      },
+      {
+        "K_bins": [
+          32,
+          16,
+          16
+        ],
+        "K_boundaries": [
+          0,
+          10,
+          20,
+          32
+        ],
+        "V_bins": [
+          32,
+          16
+        ],
+        "V_boundaries": [
+          0,
+          2,
+          32
+        ],
+        "model_branch": "other family_7b exact-name fallback including lmsys/longchat-7b-16k"
+      },
+      {
+        "K_bins": [
+          32,
+          32,
+          16
+        ],
+        "K_boundaries": [
+          0,
+          20,
+          40,
+          80
+        ],
+        "V_bins": [
+          32,
+          16
+        ],
+        "V_boundaries": [
+          0,
+          20,
+          80
+        ],
+        "model_branch": "Yukang/LongAlpaca-70B-16k"
+      }
+    ],
+    "paper_0_5_1_0_1_5": {
+      "established": "Paper calls them quantization bins/bin sizes; no exact unit, multiplicative-factor or absolute-step interpretation is proven.",
+      "forbidden_inferences": [
+        "bits",
+        "plugging fractional values into integer bins",
+        "equating QUANT_LEVEL 1/2/3 with 0.5/1/1.5",
+        "asserting source-verified equivalent schedule"
+      ],
+      "meaning_in_official_source": null,
+      "source_mapping_found": false
+    },
+    "rounding": "Active vectorized path adds C before torch.round; do not substitute legacy signed helper as an exact numerical implementation.",
+    "zero_vector": "No zero-max guard; cannot claim defined finite reconstruction for an all-zero vector from this source."
+  },
+  "relevant_files": [
+    {
+      "functions": [
+        "__main__"
+      ],
+      "line_ranges": [
+        [
+          43,
+          56
+        ],
+        [
+          64,
+          71
+        ]
+      ],
+      "path": "run_cachegen.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "a1c2a08db9d7059cb2ca475a02284785c380602bfac3877dedf9996fda97acae",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/run_cachegen.py"
+    },
+    {
+      "functions": [
+        "__main__"
+      ],
+      "line_ranges": [
+        [
+          51,
+          56
+        ],
+        [
+          63,
+          71
+        ]
+      ],
+      "path": "cachegen.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "1e5fe4b6235a6ac6d13e9069c02155c9f76d09506042bc1945ff9515325bbcfe",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/cachegen.py"
+    },
+    {
+      "functions": [
+        "__main__"
+      ],
+      "line_ranges": [
+        [
+          19,
+          19
+        ],
+        [
+          61,
+          72
+        ]
+      ],
+      "path": "run_adaptation.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "ee2d81b267cfc948ac11b5c0819a4c66ec8e6b437b9f382f1195f6ce3c395d56",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/run_adaptation.py"
+    },
+    {
+      "functions": [
+        "CacheGenEngine.chunk_kv"
+      ],
+      "line_ranges": [
+        [
+          10,
+          22
+        ]
+      ],
+      "path": "src/cachegen_interface.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "18204d54c653c21670a9df442ac2523ab31f1c5bbba910af9a5e8a37646c39b1",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/src/cachegen_interface.py"
+    },
+    {
+      "functions": [
+        "torch_quant",
+        "default_quantization",
+        "torch_dequant"
+      ],
+      "line_ranges": [
+        [
+          177,
+          235
+        ]
+      ],
+      "path": "src/utils.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "554cf0f4c5c191b7015d24f8ca1178183e8ce8ab3c1fd3c025b19388068cb780",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/src/utils.py"
+    },
+    {
+      "functions": [
+        "_chunk_tokens",
+        "_chunk_kv",
+        "_slice_kv_at"
+      ],
+      "line_ranges": [
+        [
+          76,
+          92
+        ],
+        [
+          102,
+          166
+        ]
+      ],
+      "path": "LMCache/lmcache/cache_engine.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "01901fb6ebe741d8a317396b6c68ffc0716cae10f87d86d056ed117c6713352d",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/lmcache/cache_engine.py"
+    },
+    {
+      "functions": [
+        "CreateSerde"
+      ],
+      "line_ranges": [
+        [
+          1,
+          26
+        ]
+      ],
+      "path": "LMCache/lmcache/storage_backend/serde/__init__.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "92922b7ca0ba2ddcaad4628cc7ac84e0c81520dcd6f830839521422fcfb071bb",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/lmcache/storage_backend/serde/__init__.py"
+    },
+    {
+      "functions": [
+        "torch_quant_vectorized",
+        "_split_kv",
+        "CacheGenEncoderImpl.quantize",
+        "CacheGenEncoderImpl.compute_cdf",
+        "encode_ntokens",
+        "encode_function",
+        "CacheGenSerializer.make_key_bins",
+        "CacheGenSerializer.make_value_bins",
+        "CacheGenSerializer.to_bytes"
+      ],
+      "line_ranges": [
+        [
+          42,
+          59
+        ],
+        [
+          72,
+          83
+        ],
+        [
+          119,
+          207
+        ],
+        [
+          224,
+          348
+        ]
+      ],
+      "path": "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "b8a0ec7b4d1c787ac885f03b86d361d2e64e88c0b12486c0ac271e1c9ec71832",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/lmcache/storage_backend/serde/cachegen_encoder.py"
+    },
+    {
+      "functions": [
+        "do_dequantize",
+        "decode_chunk",
+        "decode_function_gpu",
+        "CacheGenDeserializer.from_bytes"
+      ],
+      "line_ranges": [
+        [
+          24,
+          34
+        ],
+        [
+          53,
+          112
+        ],
+        [
+          114,
+          173
+        ]
+      ],
+      "path": "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "fcd529f0c889cd69d15fe9061d2b63b864e691455d964d21896cc327a3b4fc3e",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/lmcache/storage_backend/serde/cachegen_decoder.py"
+    },
+    {
+      "functions": [
+        "CacheGenConfig.from_model_name",
+        "CacheGenGPUBytestream",
+        "CacheGenGPUEncoderOutput"
+      ],
+      "line_ranges": [
+        [
+          8,
+          96
+        ],
+        [
+          125,
+          156
+        ]
+      ],
+      "path": "LMCache/lmcache/storage_backend/serde/cachegen_basics.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "82303500bb5fd44f6c601ff01fec5b7de919d160bb8fe4f429a609c268816ea7",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/lmcache/storage_backend/serde/cachegen_basics.py"
+    },
+    {
+      "functions": [
+        "CUDAExtension source list"
+      ],
+      "line_ranges": [
+        [
+          1,
+          28
+        ]
+      ],
+      "path": "LMCache/third_party/torchac_cuda/setup.py",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "4bb325ff94fc38e5fec36751c5ce831426b83aaf6bf28709cb7eab80f8e022b0",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/third_party/torchac_cuda/setup.py"
+    },
+    {
+      "functions": [
+        "PYBIND11_MODULE"
+      ],
+      "line_ranges": [
+        [
+          11,
+          18
+        ]
+      ],
+      "path": "LMCache/third_party/torchac_cuda/main.cpp",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "0fbb7827efbe7904669264a56304b3c01d5f44cb24b06d8a8c02b40437086767",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/third_party/torchac_cuda/main.cpp"
+    },
+    {
+      "functions": [
+        "normalize_cdf_value",
+        "calculate_cdf_kernel",
+        "calculate_cdf"
+      ],
+      "line_ranges": [
+        [
+          11,
+          58
+        ],
+        [
+          61,
+          128
+        ]
+      ],
+      "path": "LMCache/third_party/torchac_cuda/cal_cdf.cu",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "41186d8c79f20abf9fb22887f26942a59a1e62f7be3d5c6e98595cc779cc6339",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/third_party/torchac_cuda/cal_cdf.cu"
+    },
+    {
+      "functions": [
+        "encode_with_accessor_kernel",
+        "encode_cuda_new"
+      ],
+      "line_ranges": [
+        [
+          6,
+          6
+        ],
+        [
+          224,
+          311
+        ],
+        [
+          338,
+          440
+        ]
+      ],
+      "path": "LMCache/third_party/torchac_cuda/torchac_kernel_enc_new.cu",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "724e59dba0f1921792f7ab60205886a35cac8c369185ebf769c63826c8e39bcd",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/third_party/torchac_cuda/torchac_kernel_enc_new.cu"
+    },
+    {
+      "functions": [
+        "decode_prefix_with_accessor_kernel",
+        "decode_cuda_new",
+        "decode_cuda_prefsum"
+      ],
+      "line_ranges": [
+        [
+          6,
+          6
+        ],
+        [
+          191,
+          308
+        ],
+        [
+          314,
+          345
+        ],
+        [
+          403,
+          431
+        ]
+      ],
+      "path": "LMCache/third_party/torchac_cuda/torchac_kernel_dec_new.cu",
+      "provenance": "OFFICIAL_SOURCE_IMPLEMENTED",
+      "sha256": "a78b1320d3838f6f2028c6401d79b4eef8301ec90025913cc07a41268ca7d9d1",
+      "url": "https://github.com/UChi-JCL/CacheGen/blob/6bed34ca9d495289955ed754cf2ad0c43346ee48/LMCache/third_party/torchac_cuda/torchac_kernel_dec_new.cu"
+    }
+  ],
+  "schema_version": 1,
+  "source_hashes": {
+    "LMCache/.gitignore": {
+      "git_blob_sha1": "35338ed2a9656095e8c2c69098dd2aaafb284439",
+      "sha256": "0b9d6cc8df7aa1d0f68aadecc7e1d776b0b84bec412454587a7df9a819aafac2"
+    },
+    "LMCache/LICENSE": {
+      "git_blob_sha1": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "LMCache/README.md": {
+      "git_blob_sha1": "ac4831aa5ea077a00fa306130b87de8ac9e813b0",
+      "sha256": "44ab83e679525a1a65fa2b8e0d5767e6126d12e279bd22c056288968a89207f1"
+    },
+    "LMCache/TODO": {
+      "git_blob_sha1": "3e8232bd98ef7dd35358f559048ea3c2b186a05e",
+      "sha256": "a012a487cc852efb9fa9df5fb288207f4170399b0bd4e086bf10e0acef0b153d"
+    },
+    "LMCache/examples/example.yaml": {
+      "git_blob_sha1": "190de9b17cd3c548d7a2729d2e63ce81593d9fa4",
+      "sha256": "22ae76da54b8cfe5fe5f0469059e39b8f02185f1fc98241f7209b277f5c6b22b"
+    },
+    "LMCache/examples/f.txt": {
+      "git_blob_sha1": "940b0a8b2f949a070617cf77543127b08318ec3b",
+      "sha256": "129fa02f58a4dbae3faaadf5fb90bb255c758eed74124c53e2032346d2b70472"
+    },
+    "LMCache/examples/openai_chat_completion_client.py": {
+      "git_blob_sha1": "3d4379f81975297c85e8b4d58167aa57984ebe04",
+      "sha256": "6855acba923de02e594cdc17c256c921791f0039f89bc24a7325b3a19b5dabcf"
+    },
+    "LMCache/lmcache/__init__.py": {
+      "git_blob_sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "LMCache/lmcache/cache_engine.py": {
+      "git_blob_sha1": "0a2e2bca58d05dfd8764bc1cd9bf5b064ef5ef90",
+      "sha256": "01901fb6ebe741d8a317396b6c68ffc0716cae10f87d86d056ed117c6713352d"
+    },
+    "LMCache/lmcache/config.py": {
+      "git_blob_sha1": "88e1ef969af7b2a663740a015d8b5b85fd0e122c",
+      "sha256": "b5c7b5732f74d2c9e0f222f438d45b38c296d589fdb949088ac641574d2c0156"
+    },
+    "LMCache/lmcache/logging.py": {
+      "git_blob_sha1": "846ef4d70ef25a48845cc2790c250eeb47182b9f",
+      "sha256": "c54748b7456b369e71ea781ae0947f769cec7729ebdaf24d28f7fe03df0e61e9"
+    },
+    "LMCache/lmcache/protocol.py": {
+      "git_blob_sha1": "410c2ea725ab31882132e5e6bc8de7eb228caabb",
+      "sha256": "b80c1e9007ddfabe20fd6ab16532c378936f0f39a483a6197d7708602e5562d0"
+    },
+    "LMCache/lmcache/storage_backend/__init__.py": {
+      "git_blob_sha1": "ec9d40293888836c42c8411cb7c22649b5813b94",
+      "sha256": "4a998473903c2dac620546e0f232a4a0bde096822aaf5d8e5efba94b846c1696"
+    },
+    "LMCache/lmcache/storage_backend/abstract_backend.py": {
+      "git_blob_sha1": "25c05f7452be9bbaf5d9a3cda9d2dbfa99c946ca",
+      "sha256": "a00af2d59350ea2efc980267354ee2db7cd124e34e6e5b19cc1a0da99127aaa3"
+    },
+    "LMCache/lmcache/storage_backend/connector/__init__.py": {
+      "git_blob_sha1": "fa3084285de08f60b6f7faaf909d682a42caec84",
+      "sha256": "86881d43495e3272e8858adcdec38999ea63db02a9815dc695f09700d066f12e"
+    },
+    "LMCache/lmcache/storage_backend/connector/base_connector.py": {
+      "git_blob_sha1": "a4f2f72eeab1625fb6d88d59a041a857589db0e5",
+      "sha256": "31a44aa9c8f2cafec5a6433d0e50cc88c777d49f32972472af724c9c833c2404"
+    },
+    "LMCache/lmcache/storage_backend/connector/lm_connector.py": {
+      "git_blob_sha1": "367cf7b9b3958919deb58b5a57e3e3ccc00b3797",
+      "sha256": "7ca995662445e1d1cab6ee56afe6ee59897829326808dab76ada24ca1aef3039"
+    },
+    "LMCache/lmcache/storage_backend/connector/redis_connector.py": {
+      "git_blob_sha1": "d2519f1bc4bca5fbc92a53ac1e87799bc8110aed",
+      "sha256": "643d31630d8762fd603bcaed334c7610b9455a8c9ba0ef3b9d5634f69efbee2c"
+    },
+    "LMCache/lmcache/storage_backend/hybrid_backend.py": {
+      "git_blob_sha1": "3b25bec237869bda717f6d7b53e536dc9354f9ca",
+      "sha256": "04e84465064a5cf2231ad28660fed666f6d3896005b087c53e4aa53c69a4ea73"
+    },
+    "LMCache/lmcache/storage_backend/local_backend.py": {
+      "git_blob_sha1": "9a3f47e8d47d1c312091646192b191f243a39b7a",
+      "sha256": "6b4711d26d1fab525691f07a5460c4017ccdf0bbd0d8cd0ea37fa8aa4006ca65"
+    },
+    "LMCache/lmcache/storage_backend/remote_backend.py": {
+      "git_blob_sha1": "bac875821b84a062648af9028d5b2712e71dbf28",
+      "sha256": "016f20d243e503877142864063f46189b68e5d05c795498b3911880124ec5fe4"
+    },
+    "LMCache/lmcache/storage_backend/serde/__init__.py": {
+      "git_blob_sha1": "d84dbd8e7da8aa37da41a8bc32aea74fff135419",
+      "sha256": "92922b7ca0ba2ddcaad4628cc7ac84e0c81520dcd6f830839521422fcfb071bb"
+    },
+    "LMCache/lmcache/storage_backend/serde/cachegen_basics.py": {
+      "git_blob_sha1": "f73103cfb428ee3775d00ca1ca77f54bf89dcb40",
+      "sha256": "82303500bb5fd44f6c601ff01fec5b7de919d160bb8fe4f429a609c268816ea7"
+    },
+    "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py": {
+      "git_blob_sha1": "49accc15ee523725be1fb2c84e67ea6258bb9c21",
+      "sha256": "fcd529f0c889cd69d15fe9061d2b63b864e691455d964d21896cc327a3b4fc3e"
+    },
+    "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py": {
+      "git_blob_sha1": "2495d2d59e457aece12dc47ebb0836d729c0f461",
+      "sha256": "b8a0ec7b4d1c787ac885f03b86d361d2e64e88c0b12486c0ac271e1c9ec71832"
+    },
+    "LMCache/lmcache/storage_backend/serde/serde.py": {
+      "git_blob_sha1": "464b1c5016ba25499f5cd089c85364ca8d415be1",
+      "sha256": "580f6c0196927cb90644731577671528bcf509f339ab8de963cc1485e512be41"
+    },
+    "LMCache/lmcache/storage_backend/serde/torch_serde.py": {
+      "git_blob_sha1": "8d14aabeba7eb9cca8148ae8379e5683d4c198a1",
+      "sha256": "29b7e677bc8cd26eb03742c938a1c9cb44c27de1f4bb8e277c34ce43b05735da"
+    },
+    "LMCache/lmcache/utils.py": {
+      "git_blob_sha1": "872386fd628e347e938d4003f45627a2d01bf4d0",
+      "sha256": "c5d8179c5c52ce250757d72735c60dec67211a53572c7e5e330d958279cd3865"
+    },
+    "LMCache/requirements-test.txt": {
+      "git_blob_sha1": "28d226987e3a443b7a35dccf1f43660752257d2c",
+      "sha256": "ec42bd8db0a61d455487d78914be600ab294a5d0ace27486bc5dac755c5efbf4"
+    },
+    "LMCache/requirements.txt": {
+      "git_blob_sha1": "1d574f9bfab76ba6e060798012925586b378cf4a",
+      "sha256": "0388b35b501db0ca55469dbc7a3fa5ac262b13d128c6b8dadf2cea05e464e229"
+    },
+    "LMCache/setup.py": {
+      "git_blob_sha1": "005bb86cbdcf273d5a1cd79e83e704bde00cef8e",
+      "sha256": "baf19e63e67296e40a1fee8be7093625d832118cbff6b6ca5e131d19b314f30a"
+    },
+    "LMCache/tests/__init__.py": {
+      "git_blob_sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "LMCache/tests/benchmarks/decompress.py": {
+      "git_blob_sha1": "740772dcec5de4059f553d6b3e83b5e016a90c65",
+      "sha256": "6c28360deed9f85bb77ded577bbbde591d7266fa26aee3ff144c6b10f2d9dbb0"
+    },
+    "LMCache/tests/benchmarks/prefetch.py": {
+      "git_blob_sha1": "31e8140f57b9c91be5e1a7db1bfaff903c00546a",
+      "sha256": "4997f85e66a2663beb7064337b857ddf81b1990e8953b836ee45ec2b70019f40"
+    },
+    "LMCache/tests/benchmarks/test_benchmark.py": {
+      "git_blob_sha1": "314f7696029c63d0c85dd13890194d8aa0d4bbec",
+      "sha256": "b1def9668ee2d79483f7610b7e95d69d08df98f4ca0220bf895876279de16091"
+    },
+    "LMCache/tests/benchmarks/transmit.py": {
+      "git_blob_sha1": "2953c2098ae093eb84f3bcdba78abd4e1f4eb7d0",
+      "sha256": "222544606edb2f1391d30ab152603e736984c1053f56cece3fc3b19dfa54636c"
+    },
+    "LMCache/tests/conftest.py": {
+      "git_blob_sha1": "e3d6c34be80e5d4b62096ff56b6dac72426780d5",
+      "sha256": "0604adf97674f51fd56f5ffd7219afc45641d1ba4d445e5db4632b1af4f293e7"
+    },
+    "LMCache/tests/test_backends.py": {
+      "git_blob_sha1": "7af90264c10adb41198481feaa3b2a0a47fc186d",
+      "sha256": "78a366364f5dd253ae3e9f54339a63ba974a34277f0b023698a00167fbf4b788"
+    },
+    "LMCache/tests/test_cache_engine.py": {
+      "git_blob_sha1": "0bf52a0dd963cf50f193a0e9f048b14de60da040",
+      "sha256": "75cce0a099fe228dfc497ff42a0383d447a36df11e758cf74b142732c8b45965"
+    },
+    "LMCache/tests/test_connector.py": {
+      "git_blob_sha1": "7cb22718f78aa473c4a543240db260c429402375",
+      "sha256": "ee958993e2e862cfcd109a4a4aa55ae37c8c5797a82b45cadb2f7dfc7342e840"
+    },
+    "LMCache/tests/test_protocol.py": {
+      "git_blob_sha1": "c745877c4a088d97db4a005d00f0ec1b6f2dbc34",
+      "sha256": "5b3fcb22a61a1baa647e93a59a0af2d0886b950bc14960f73870940c38ee795a"
+    },
+    "LMCache/tests/test_serde.py": {
+      "git_blob_sha1": "9f333b194eb6af4b6a22dd08e686af950c608588",
+      "sha256": "5043355999dfc72e3b648fce49f1d80fc072d309aa0676f93c7a8e8765f9a4fc"
+    },
+    "LMCache/third_party/torchac_cuda/cal_cdf.cu": {
+      "git_blob_sha1": "d1a1f8983be5c00ecd95782244a1c32d2d8e8486",
+      "sha256": "41186d8c79f20abf9fb22887f26942a59a1e62f7be3d5c6e98595cc779cc6339"
+    },
+    "LMCache/third_party/torchac_cuda/include/torchac_kernel_layer.cu": {
+      "git_blob_sha1": "c244f264ad0d785449a71333f172d891340074a0",
+      "sha256": "0e4db96fb8caae54e50514eb871f39e338748915a46727401bed74f28c6cf756"
+    },
+    "LMCache/third_party/torchac_cuda/main.cpp": {
+      "git_blob_sha1": "ca7805239a22f41a5304183b94da49acb2e61bbe",
+      "sha256": "0fbb7827efbe7904669264a56304b3c01d5f44cb24b06d8a8c02b40437086767"
+    },
+    "LMCache/third_party/torchac_cuda/real.py": {
+      "git_blob_sha1": "40d422d7f40f652bc65ec7ecf0f5e22b40fd4543",
+      "sha256": "90fc6d8989dc8fe64894952f05a33a67ce1ea939480ab0e308f8915125977f88"
+    },
+    "LMCache/third_party/torchac_cuda/setup.py": {
+      "git_blob_sha1": "e9d4b06d879abba4e24c8cab1d569f543e061dd0",
+      "sha256": "4bb325ff94fc38e5fec36751c5ce831426b83aaf6bf28709cb7eab80f8e022b0"
+    },
+    "LMCache/third_party/torchac_cuda/torchac_kernel.cuh": {
+      "git_blob_sha1": "80c8d5d7500ca77201bd725eebe302b80104cc35",
+      "sha256": "d1b1c6401c14562295b42e2ebd662429dd1740ab1ea69e9810a2f60ad0c3e80f"
+    },
+    "LMCache/third_party/torchac_cuda/torchac_kernel_dec.cu": {
+      "git_blob_sha1": "a7dc0185029803e942d26262bae1e6f7b7d97075",
+      "sha256": "551670c1c49f24b73e3376635cd95697b8008a97fac69168b9e1b7893fe5d647"
+    },
+    "LMCache/third_party/torchac_cuda/torchac_kernel_dec_new.cu": {
+      "git_blob_sha1": "c22d04655133ca67db5cdca8a3bb8a72e27214eb",
+      "sha256": "a78b1320d3838f6f2028c6401d79b4eef8301ec90025913cc07a41268ca7d9d1"
+    },
+    "LMCache/third_party/torchac_cuda/torchac_kernel_enc.cu": {
+      "git_blob_sha1": "0a6ace8055bc545e13c3811725c60ef1b89c1c59",
+      "sha256": "c0c46b159085210bb37913cde991031b85b8a71e9dcae04d716eb741b0f2a6c6"
+    },
+    "LMCache/third_party/torchac_cuda/torchac_kernel_enc_new.cu": {
+      "git_blob_sha1": "fa7168d2adbcce661b98551c7c2fc8700fd28efd",
+      "sha256": "724e59dba0f1921792f7ab60205886a35cac8c369185ebf769c63826c8e39bcd"
+    },
+    "README.md": {
+      "git_blob_sha1": "6f68b3018f456a3310d5b28ff16e35ecf505861e",
+      "sha256": "55de31b65bc1e2ece9f4913adf3fdd06a3e31018c29c82b5c4fb65dbe15ac408"
+    },
+    "cachegen.py": {
+      "git_blob_sha1": "3e0c4d1103670703cac5ab15d94d70b2376c81ae",
+      "sha256": "1e5fe4b6235a6ac6d13e9069c02155c9f76d09506042bc1945ff9515325bbcfe"
+    },
+    "env.yaml": {
+      "git_blob_sha1": "2d781e87b505ffb9be86f79d8284ca16f0abea3e",
+      "sha256": "889b4aecea9676cb92e44a6ff0781091c7700713a64cb28c32c68cb3b0cbf6e5"
+    },
+    "eval_longchat.py": {
+      "git_blob_sha1": "ca389ecb6b63435da885d178f468dd7f37f2c2b7",
+      "sha256": "18bea3f484fbed5582105457cd5740f602ee1bec06f234a36b737e44e7116262"
+    },
+    "main.py": {
+      "git_blob_sha1": "b609ce53a97868c5ebca1025e792bb4eea60abb9",
+      "sha256": "e63163c7f29b7577d58adee692c40930d6b899f46373cb2c20fa117b9aeca81f"
+    },
+    "run_adaptation.py": {
+      "git_blob_sha1": "bdf18b4d1e63fa0be7e97fd4cc78fcdb8b9147b4",
+      "sha256": "ee2d81b267cfc948ac11b5c0819a4c66ec8e6b437b9f382f1195f6ce3c395d56"
+    },
+    "run_cachegen.py": {
+      "git_blob_sha1": "77044f5630cbe139755aec795c16ee2746facc30",
+      "sha256": "a1c2a08db9d7059cb2ca475a02284785c380602bfac3877dedf9996fda97acae"
+    },
+    "run_quantization_baseline.py": {
+      "git_blob_sha1": "1568777dcbad152bc97a227f359d9072bf4e27cf",
+      "sha256": "eec2d403180c7526662959dd4452a93b596c10b3accb13632015d44172f2dd60"
+    },
+    "run_vanilla.py": {
+      "git_blob_sha1": "a8f8aef1ed174320120285ef8d932acd855884e6",
+      "sha256": "c9954cd6c6db07602457450add698e8231ac0ce76c2e4b37aa6954b67c2277a4"
+    },
+    "scripts/70b.sh": {
+      "git_blob_sha1": "49862573b1b872b63a47c85b2eaa2b9470f523fa",
+      "sha256": "5708c0a558db58b8725fa6614c8c17d7e7ae00dbcfb5ed68ae1e7f2b4081ba02"
+    },
+    "scripts/70b_baseline.sh": {
+      "git_blob_sha1": "9d1aa50919b82b625c712d5b3a06b8a4b5881f7f",
+      "sha256": "9f7895164e95f534af09b60bdedef405e7ed29688c7317a29372cde7dc3d28e6"
+    },
+    "scripts/7b.sh": {
+      "git_blob_sha1": "9fd56c44022aa84bb6adbf19d25410dbce40ebb2",
+      "sha256": "653121fc3fe64801af6d15b86c5e5de4d5989e3e7faaf7bfe39cfe9a98490f41"
+    },
+    "scripts/7b_baseline.sh": {
+      "git_blob_sha1": "d4f2e9d339e980ec46e97264b5351fe964553422",
+      "sha256": "ac81a76acaf3e525c31bb62f800e1cc850af6356ab21a277598bc338020af801"
+    },
+    "scripts/adapt.sh": {
+      "git_blob_sha1": "607d4a43f6bcb6ab2d0873a9f70a86911c0d95b4",
+      "sha256": "ffde989f4a0c3545182b2bb329cb40d1ce7b709ad71e1a558607178e2a93b2b5"
+    },
+    "sigcomm_ae.md": {
+      "git_blob_sha1": "478c39bdf718c5a2146706fb5d8b4461f5c626ff",
+      "sha256": "97991278a99b303f0dc7756d5693c2b7580127c44f92b059e56be12cd75703f2"
+    },
+    "src/attention_monkey_patch.py": {
+      "git_blob_sha1": "7d9110a3d2a993882d05bf9bb3978fbc90bbc16f",
+      "sha256": "e3efc58ba758f1bd8ba729fe5012c43f940c843836b49ca95882a7656e1c57e1"
+    },
+    "src/cachegen_interface.py": {
+      "git_blob_sha1": "0d04e08f120b1263756ff063d1ebabbc826505d4",
+      "sha256": "18204d54c653c21670a9df442ac2523ab31f1c5bbba910af9a5e8a37646c39b1"
+    },
+    "src/utils.py": {
+      "git_blob_sha1": "82c5784e6cb4ea7a3babf9af74cbbf72de6f6b8e",
+      "sha256": "554cf0f4c5c191b7015d24f8ca1178183e8ce8ab3c1fd3c025b19388068cb780"
+    },
+    "test_data/bw.jsonl": {
+      "git_blob_sha1": "2a2750274da0370a5ced62a72be642d099cef84e",
+      "sha256": "260527ab8033aa37439c7f6f2dc341ac567c0ed40f848bf18bf7a4f6fe9285cb"
+    },
+    "test_data/generated_trace.jsonl": {
+      "git_blob_sha1": "565be177dedf93d924e9215da130b14df60cfe81",
+      "sha256": "5e8ae139ea1b4428cf14873a78100a3f7d7efae4502219c134731ad5ce14eab0"
+    },
+    "test_data/longchat.jsonl": {
+      "git_blob_sha1": "45bb0961afa90ff0406016c28633d13cac6ceb5f",
+      "sha256": "00908018c100549f71dbd45d1a7889e1ab9fb8985a3b4cf05426605e5ef89a5f"
+    },
+    "test_data/nqa.jsonl": {
+      "git_blob_sha1": "5cae3927a8a0df2347bde3c152e60b1c0bc1ed62",
+      "sha256": "c4995ec5fb87adba9c8c9d1baa8100f13c4a9d6a6d3599fa0fd7615292351b53"
+    },
+    "test_data/tqa.jsonl": {
+      "git_blob_sha1": "80650146f5d8697f28831bacf9b9b87a5e0272a4",
+      "sha256": "76a8f8b5b9f8a45b7a02a31e9bda9bb670e15037c98ae421839499f56c923d9d"
+    },
+    "trace_generator.py": {
+      "git_blob_sha1": "e51b1680b485cb5b18966501b5af3cc646fa514e",
+      "sha256": "5fd045634df3e88a133fa35c539fc59cbddb3b935c01f0ec5b4c46c99840ab45"
+    }
+  },
+  "stage": "C1.5-B / B0",
+  "status": "UPSTREAM_PINNED_SOURCE_AUDIT_COMPLETE_LOCAL_CHECKOUT_UNVERIFIED",
+  "tensor_semantics": {
+    "arithmetic_input": "[2L,T,C], K layers followed by V layers",
+    "caller_tail_caveat": "src/cachegen_interface.py chunk_kv uses floor(ntokens/chunk_size) and drops a remainder at default chunk_size=1024. LMCache _chunk_kv and run_adaptation.py use range/slicing and include short tails. Neither implements a ten-token anchor group.",
+    "cdf": "[2L,C,Bmax+1]",
+    "channel_axis": 2,
+    "delta": {
+      "K": null,
+      "V": null,
+      "anchor_quantized_independently": false,
+      "before_or_after_quantization": "NOT_APPLICABLE_NO_SOURCE_TRANSFORM"
+    },
+    "input_huggingface": "[L,2,H,T,Dh]",
+    "input_vllm": "[L,2,T,H,Dh]",
+    "layer_axis": 0,
+    "normalized": "[L,2,T,H,Dh]",
+    "padding": "No token padding in inspected serializer path. Final <=256-token arithmetic segment carries its actual ntokens. Zero-filled byte output buffers are not padded KV tokens.",
+    "separate_k_v": "[L,T,C], C=H*Dh; flatten index c=h*Dh+d",
+    "token_axis_in_arithmetic_input": 1
+  },
+  "unsupported_unknown": [
+    "Local official checkout remote/revision/dirty state",
+    "Installed CUDA extension source identity",
+    "Any official anchor/delta transform at this revision",
+    "Signed delta convention from paper",
+    "Meaning/normalization of fractional paper bins",
+    "Short paper groups/padding policy",
+    "Official OPT-2.7B configuration",
+    "Exact C1.5-A T=10 measured ratios and hashes: completed SERAPH artifacts not mounted locally"
+  ],
+  "upstream_evidence": {
+    "acquisition": "Commit-pinned GitHub codeload archive plus commit and recursive tree APIs; not a local git checkout",
+    "all_archive_blobs_match_pinned_git_tree": true,
+    "archive_sha256": "96186147725cb48e5ffe895215c1492d6cd8ac671e107edc69b361eb12a5223e",
+    "archive_url": "https://codeload.github.com/UChi-JCL/CacheGen/tar.gz/6bed34ca9d495289955ed754cf2ad0c43346ee48",
+    "commit_metadata_sha256": "aab9f4e5239d792be632ab7465b944ce4b51a1e87e99e79758ac6d9732a39fa5",
+    "commit_url": "https://github.com/UChi-JCL/CacheGen/commit/6bed34ca9d495289955ed754cf2ad0c43346ee48",
+    "git_tree_sha1": "fa915489da2fc17728c52bc5100c60061bf1f1d0",
+    "limits": "Does not establish the remote, HEAD, worktree modifications, installed extension or runtime import path on SERAPH.",
+    "official_repo_revision": "6bed34ca9d495289955ed754cf2ad0c43346ee48",
+    "previous_c15a_five_source_hashes_match": true,
+    "recursive_tree_sha256": "cf0faca519746f4dba7e7555d8af515eaf9e981a893be45f7560390407496375",
+    "recursive_tree_truncated": false,
+    "recursive_tree_url": "https://api.github.com/repos/UChi-JCL/CacheGen/git/trees/6bed34ca9d495289955ed754cf2ad0c43346ee48?recursive=1",
+    "repository_url": "https://github.com/UChi-JCL/CacheGen",
+    "verified_blob_count": 76
+  }
+}

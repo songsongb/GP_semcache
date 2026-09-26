@@ -30,3 +30,7 @@ results/manifests/*
 # Offline CacheGen tensor interchange and opaque codec payloads
 results/cachegen/**/*.pt
 results/cachegen/**/*.bin
+
+# Versioned C1.5-B source audit and design (not experimental measurements)
+!results/cachegen/c1_5b/source_audit.json
+!results/cachegen/c1_5b/design_manifest.json

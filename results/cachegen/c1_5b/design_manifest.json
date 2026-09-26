@@ -1,0 +1,348 @@
+{
+  "baseline_binding_status": "PENDING_COMPLETED_SERAPH_ARTIFACT_HASHES",
+  "baseline_references": [
+    {
+      "availability": "LOCAL_PLACEHOLDER_NOT_COMPLETED_REFERENCE",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": "b001fb3fae1e7db49f93f7bfd9f535abc78d0f7bed03e637283f13f1d71761f3",
+      "path": "results/cachegen/c1/capture_manifest.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1/reconstruction_manifest.json"
+    },
+    {
+      "availability": "LOCAL_PLACEHOLDER_NOT_COMPLETED_REFERENCE",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": "d8daf0ec552c2125923f7708678967f5890fbc3f511c2236682c5ee84a3fc23e",
+      "path": "results/cachegen/c1/c1_block_raw.csv"
+    },
+    {
+      "availability": "LOCAL_PLACEHOLDER_NOT_COMPLETED_REFERENCE",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": "9cd92443b9c759c6f90caac4124af3e2843ca34c1188a85ef49b3cf403212880",
+      "path": "results/cachegen/c1/environment.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/manifest.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/profile_manifest.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/shared_cdf_global.bin"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/shared_cdf_layergroup.bin"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/manifest.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/storage_manifest.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/c15_full_block_raw.csv"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/c15_full_summary.csv"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/progress.json"
+    },
+    {
+      "availability": "NOT_MOUNTED",
+      "completed_artifact_sha256": null,
+      "local_file_sha256": null,
+      "path": "results/cachegen/c1_5/full_storage/environment.json"
+    }
+  ],
+  "baseline_validation_before_execution": [
+    "Require C1.5-A full_storage COMPLETED, primary_result_eligible=true, 2616 completed pairs and zero failures",
+    "Hash capture/reconstruction/environment, profile manifest and profile binaries, full-storage manifests, raw rows and summary; bind references in a new B execution manifest without editing A",
+    "Select stratum=T=10 from c15_full_summary.csv for UNIFORM_INT8/GLOBAL/LAYERGROUP; verify 236 unique T10 block IDs and matching raw rows",
+    "Reconcile raw/payload/local bytes and charge each full shared profile once for T10 as A does; do not amortize A profiles over 1308 while charging B over 236",
+    "Verify C1 CUDA replay and saved reconstruction hashes before B symbols are analyzed",
+    "Keep unknown completed-artifact hashes null until actual files are available; local placeholder hashes are not completion evidence"
+  ],
+  "c15a_frozen": true,
+  "classification": "CACHEGEN_INSPIRED_RESEARCH_EXTENSION_DESIGN",
+  "created_date": "2026-09-27",
+  "exact_T10_baseline_values": null,
+  "experiment_implemented": true,
+  "experiment_run": false,
+  "invariants": [
+    "C1/C1.5-A artifacts and profile hashes unchanged",
+    "Q remains FP16",
+    "C1 CUDA quantization/reconstruction and original FP32 scale values unchanged in lossless arm",
+    "B1: no arithmetic coding, CDF construction or profile fitting. Coding plans apply only to a separately authorized B2.",
+    "No layer-wise lossy quantization, channel-layer CDF, or physical-page redesign in initial B1/B2",
+    "No model inference or download for B1/B2",
+    "No A profile refit",
+    "No T=10 versus mixed-T primary comparison"
+  ],
+  "later_research_extension": "Logical w=3 reuse with physical compression pages >=10 tokens is deferred; no T=3 transform, page redesign, C2 or GlobalQKVCache change.",
+  "local_design_source_note": "Hashes identify code inspected for this design, not the unmounted SERAPH A execution implementation.",
+  "local_design_source_sha256": {
+    "src/semcache/experiments/cachegen/codecs.py": "9f6979868a72093b1407f757c94d6a7bf35c18087a0b8ddbe19399b6fdcffafa",
+    "src/semcache/experiments/cachegen/shared/core.py": "1a7b159ecda718399bb752f5dd59ebebb36c608c676fa7f7dbca047b6ffc91da",
+    "src/semcache/experiments/cachegen/shared/device_contract.py": "61a31242c69323f6cc37d68dae6fa8f0db9066b314fd39faedbaa9e6ef80b999",
+    "src/semcache/experiments/cachegen/shared/full_storage.py": "57825642fd76ea8b2dcfdfeff0a10d0794c8e6c68185f155d7706ff193572792",
+    "src/semcache/experiments/cachegen/shared/tensors.py": "554398f17bf95a7d0a3dc918380764c60388c2436702a96b17df8e817f336a28"
+  },
+  "no_experiment_statement": "B1 lossless symbol/locality diagnostics implemented but not run on real C1 fixtures. No B2/B3 implementation, arithmetic coding, new lossy quantization, profile fitting or inference performed.",
+  "population": {
+    "T3_excluded": true,
+    "calibration_count": null,
+    "calibration_ids_sha256": null,
+    "calibration_rule": "Only frozen calibration T=10 blocks, count/IDs/hashes resolved from actual manifest; no new partition of evaluation data.",
+    "contiguous_positions_required": true,
+    "cross_fixture_grouping": false,
+    "delta_token_indices": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "evaluation_ids_sha256": null,
+    "expected_count_provenance": "Frozen C1 distribution reported by user; verify against mounted manifest before B1/B2.",
+    "expected_evaluation_blocks": 236,
+    "group_anchor_index": 0,
+    "justification": "Each T=10 fixture is one complete contiguous group; no tail rule is needed. This matches group length/anchor locality, not every paper implementation detail.",
+    "overlap_required": 0,
+    "padding": false,
+    "rule": "All evaluation T=10 blocks in frozen capture-manifest order; both datasets; no sampling or result-dependent ordering.",
+    "scope_limit": "Captured base-projection Q/K/V on short SNIPS/MultiWOZ queries differs from the paper workload. No generalization to post-position-transform cache states, long contexts, or all models is presumed.",
+    "token_group_size": 10
+  },
+  "primary_metrics": {
+    "correctness": [
+      "symbol_roundtrip_exact",
+      "inverse_transform_exact",
+      "scale_bytes_exact",
+      "saved_c1_reconstruction_exact"
+    ],
+    "coverage": [
+      "expected_T10_blocks",
+      "completed_unique_block_arm_pairs",
+      "failed_pairs",
+      "calibration_evaluation_overlap"
+    ],
+    "latency": "Not a primary endpoint",
+    "storage": [
+      "raw_kv_pool_bytes",
+      "encoded_payload_pool_bytes",
+      "local_metadata_pool_bytes",
+      "shared_profile_bytes",
+      "encoded_kv_pool_bytes",
+      "pool_kv_compression_ratio",
+      "raw_semcache_pool_bytes",
+      "encoded_semcache_pool_bytes",
+      "pool_semcache_compression_ratio",
+      "payload_only_ratio",
+      "additional_KV_saving_vs_each_T10_control_percent",
+      "additional_total_saving_vs_each_T10_control_percent"
+    ],
+    "stratification": [
+      "ALL_T10",
+      "SNIPS/T10",
+      "MultiWOZ/T10"
+    ]
+  },
+  "primary_result_eligible": false,
+  "schema_version": 1,
+  "source_audit_sha256": "70d6fa55cb5ab3aa1270c4d0ca06203fac9c1fa6ff8ed0987f2863c205e5d4a6",
+  "stage": "C1.5-B",
+  "stages": {
+    "B0": {
+      "definition": "Pinned upstream source and paper audit; no experiment implementation.",
+      "exit_gate": "On SERAPH verify actual checkout remote, exact HEAD, clean/dirty status and relevant source hashes; bind completed A baseline hashes.",
+      "status": "AUDIT_ARTIFACTS_CREATED_WITH_EXPLICIT_LOCAL_VERIFICATION_GAPS"
+    },
+    "B1": {
+      "calibration_evaluation_statistics": "Separate empirical histograms; evaluation counts describe evaluation entropy, never fit or modify a coder/profile.",
+      "config": {
+        "K_V_models": "separate; combine code costs, never histograms",
+        "alphabet": [
+          -127,
+          127
+        ],
+        "anchor": "u[:,0,:]",
+        "arithmetic_dtype": "wide Python integers; never int8 subtraction",
+        "decision_rule": {
+          "comparison": "ANCHOR_MOD_RESIDUAL versus RAW_ROLE_SPLIT",
+          "go": "overall reduction >= 3% AND positive reduction in both SNIPS and MultiWOZ",
+          "metric": "evaluation K+V weighted bits/symbol, with separate K/V probability models",
+          "provenance": "REPRODUCTION_CHOICE",
+          "statistical_significance_claim": false,
+          "threshold_percent": 3.0,
+          "threshold_tuned_on_evaluation": false
+        },
+        "entropy": "empirical Shannon, no smoothing, no CDF, no differential entropy",
+        "families": [
+          "RAW_GLOBAL",
+          "RAW_ROLE_SPLIT",
+          "ANCHOR_MOD_RESIDUAL"
+        ],
+        "histogram_index": "original s+127 for anchors/raw; centered d+127 for residuals",
+        "input_domain": "u=s+127 in [0,254]",
+        "inverse": "r=d mod 255; u_i=(u_0+r) mod 255; s_i=u_i-127",
+        "locality": "float64 analysis of raw FP16: x_i-x_0; target-normalized relative L2; pooled cosine",
+        "modulus": 255,
+        "no_arithmetic_coding": true,
+        "no_new_lossy_quantization": true,
+        "no_profile_fitting": true,
+        "official_cachegen_reproduction": false,
+        "residual": "r=(u_i-u_0) mod 255; d=r if r<=127 else r-255; i=1..9",
+        "schema_version": 1,
+        "token_group_size": 10
+      },
+      "controls": "Primary comparison ANCHOR_MOD_RESIDUAL vs RAW_ROLE_SPLIT; RAW_GLOBAL additionally measures role-modeling benefit. Pool across layers; do not silently pool K/V.",
+      "correctness": "Exact inverse symbols and unchanged FP32 scales for all blocks; exact direct CUDA reconstruction; exact saved-C1 reconstruction for evaluation blocks (calibration references were not saved by C1). Q untouched FP16.",
+      "decision_rule": {
+        "comparison": "ANCHOR_MOD_RESIDUAL versus RAW_ROLE_SPLIT",
+        "go": "overall reduction >= 3% AND positive reduction in both SNIPS and MultiWOZ",
+        "metric": "evaluation K+V weighted bits/symbol, with separate K/V probability models",
+        "provenance": "REPRODUCTION_CHOICE",
+        "statistical_significance_claim": false,
+        "threshold_percent": 3.0,
+        "threshold_tuned_on_evaluation": false
+      },
+      "definition": "T=10 only; unchanged C1 CUDA quantization; RAW_GLOBAL, RAW_ROLE_SPLIT and ANCHOR_MOD_RESIDUAL with separate K/V probability models.",
+      "execution_status": "NOT_RUN",
+      "go": "overall reduction >= 3% AND positive reduction in both SNIPS and MultiWOZ",
+      "implementation": "scripts/41_cachegen_anchor_probe.py; semcache.experiments.cachegen.b1",
+      "metric_status": "EMPIRICAL_ENTROPY_AND_DESCRIPTIVE_LOCALITY_ONLY_NOT_ENCODED_STORAGE",
+      "metrics": [
+        "255-bin integer counts and unique symbols per component/role",
+        "empirical Shannon entropy and actual-symbol-count-weighted family cost",
+        "percentage reduction vs RAW_GLOBAL and RAW_ROLE_SPLIT",
+        "K/V separate and count-weighted K+V costs across separate models",
+        "raw FP16 float64-analysis mean absolute delta, RMS, target-normalized relative L2 and pooled cosine by distance 1..9"
+      ],
+      "no_arithmetic_coding": true,
+      "no_new_lossy_quantization": true,
+      "no_profile_fitting": true,
+      "no_quality_change": "Exact inverse preserves original C1 symbols and scales; reconstruction unchanged.",
+      "official_cachegen_reproduction": false,
+      "output_directory": "results/cachegen/c1_5b/b1",
+      "protocol_supersedes": "B0 provisional B1 design: user now specifies separately reported empirical calibration/evaluation entropy and an evaluation 3% practical screening rule. No held-out cross-entropy fitting, signed-509-alphabet arm or new profiles in B1.",
+      "selection_policy": "All frozen T=10 calibration and evaluation blocks, with calibration processed first. Transform/alphabet/grouping/3% decision rule frozen before loading any fixtures. Never tune from evaluation.",
+      "status": "IMPLEMENTED_NOT_RUN",
+      "stop": "Otherwise STOP; any inverse/parity/coverage/input-contract failure invalidates the run.",
+      "transform": "u=s+127; a=u[:,0,:]; r=(u_i-a)%255; d=r if r<=127 else r-255. Inverse u_i=(a+(d%255))%255, s_i=u_i-127."
+    },
+    "B2": {
+      "accounting": "Actual produced payload bytes + all local metadata + one serialized shared profile set per independent pool; Q charged uncompressed. Include any transform header/alphabet/role metadata. Never derive primary sizes from entropy.",
+      "arms": [
+        {
+          "definition": "Read exact T=10 C1 UNIFORM_INT8, A GLOBAL and A LAYERGROUP rows and summary; no rebenchmark or refit.",
+          "name": "A_FROZEN_CONTROLS"
+        },
+        {
+          "definition": "Untransformed C1 symbols, new T=10-calibration-only GLOBAL CDFs. Controls for A profiles having pooled T=3 and T=10 calibration.",
+          "name": "B_RAW_T10_FIT_CONTROL"
+        },
+        {
+          "definition": "Same C1 symbols/scales, CDF count, fitting population, coder and byte accounting as B_RAW_T10_FIT_CONTROL; only reversible symbol representation differs.",
+          "name": "B_MOD255_T10_FIT"
+        }
+      ],
+      "definition": "Lossless anchor-relative symbol encoding plus fixed shared entropy coding, isolated from new lossy quantization.",
+      "evaluation": "One encode/decode storage/correctness pass per pending T=10 block/arm; all 236 blocks; deterministic resumable checkpoints. No repeated latency benchmark.",
+      "exactness": [
+        "entropy symbols exact",
+        "inverse transform restores original C1 symbols",
+        "original FP32 scales exact",
+        "reconstructed K/V torch.equal(saved C1 UNIFORM_INT8)",
+        "Q unchanged FP16"
+      ],
+      "optional_later_ablation": "If justified, compare raw-role-split vs mod255-role-split using four CDFs (anchor-K/V and delta-or-nonanchor-K/V); do not attribute this extra profile capacity to the transform alone. Layer-group/channel-layer variants deferred.",
+      "profiles": "New B-only calibration-derived profiles, frozen before evaluation. Initial pooling is GLOBAL: separate K/V, all layers and both token roles pooled, same model capacity as A GLOBAL.",
+      "recommended_transform": "Centered modulo-255 of original C1 symbols after quantization; explicit RESEARCH_EXTENSION, not official CacheGen delta semantics.",
+      "status": "CONDITIONAL_NOT_IMPLEMENTED_NOT_RUN",
+      "stop": "Any correctness/coverage/accounting failure; or no positive total storage saving. Never reinterpret lossless failure as acceptable lossy behavior.",
+      "success": "Positive full stored-byte reduction versus B_RAW_T10_FIT_CONTROL establishes transform benefit. Report reductions versus each frozen A T=10 control separately; only beating A LAYERGROUP establishes improvement over the strongest measured A T=10 control."
+    },
+    "B3": {
+      "comparisons": [
+        "raw FP16/C1 reference",
+        "raw KV + chosen quantizer",
+        "FP anchor/delta + unchanged C1 quantizer (Option 1, separate lossy arm)",
+        "same transform + candidate layer-wise quantizer"
+      ],
+      "definition": "Separately investigate floating-value anchor/delta with layer-wise quantization only if earlier evidence and quality goals justify it.",
+      "go": "Only after explicit study design and preregistered quality bounds; B3 is unnecessary if lossless B2 already answers the question.",
+      "prerequisites": [
+        "Resolve and document delta sign/dtype/predictor/rounding choices",
+        "Obtain an authoritative fractional-bin formula or label a chosen integer-bin schedule as an OPT reproduction choice, not source-verified equivalence",
+        "Register quantization schedules and quality acceptance limits before evaluation",
+        "Keep probability-model granularity fixed while changing quantization; channel-layer CDF requires another ablation"
+      ],
+      "quality_metrics": [
+        "K/V max absolute error, relative L2 and cosine against original FP16 and C1",
+        "separate future task/logit quality study: KL, argmax agreement and task metrics under registered tolerances"
+      ],
+      "status": "OPTIONAL_DEFERRED_NOT_IMPLEMENTED_NOT_RUN",
+      "stop": "Unresolved semantics or unacceptable quality tradeoff. No B3 inference is authorized or run by this audit."
+    }
+  },
+  "status": "B1_IMPLEMENTED_NOT_RUN",
+  "user_reported_c15a": {
+    "blocks": 1308,
+    "failures": 0,
+    "overall_ratios": {
+      "SHARED_CDF_GLOBAL": {
+        "KV": 2.2949,
+        "SemCache": 1.603
+      },
+      "SHARED_CDF_LAYERGROUP": {
+        "KV": 2.305,
+        "SemCache": 1.6063
+      },
+      "UNIFORM_INT8": {
+        "KV": 1.996879875,
+        "SemCache": 1.49882904
+      }
+    },
+    "pairs": 2616,
+    "provenance": "USER_REPORTED_COMPLETED_PRIMARY_RESULT_NOT_LOCALLY_REMEASURED",
+    "saved_c1_reconstruction_exact": true,
+    "symbol_roundtrip_exact": true,
+    "use": "Context only. Overall ratios are not T=10 controls."
+  }
+}
