@@ -14,6 +14,7 @@ from .core import (CONFIG, MODES, Profile, cdf_from_counts, decode, encode, fit_
                    inspect_block, partition_ids, pool_accounting)
 from .source_audit import audit
 from .tensors import check_roundtrip, histograms, prepare, quantize
+from .compatibility import UniformCompatibilityError, failure_report, enrich_report
 
 C1_FILES = ('capture_manifest.json', 'reconstruction_manifest.json', 'c1_block_raw.csv',
             'c1_summary.csv', 'c1_quality.csv')
@@ -223,9 +224,10 @@ def existing_uniform(root, rec, block, expected):
     if not contained(path, root) or file_hash(path) != item['sha256']:
         raise ValueError('C1 reconstruction path/SHA256 mismatch')
     kv = torch.load(path, map_location='cpu', weights_only=True)
-    if set(kv) != {'k', 'v'} or not all(kv[n].dtype == torch.float16 and torch.equal(kv[n], x)
+    if not isinstance(kv, dict) or set(kv) != {'k', 'v'} or not all(isinstance(kv[n], torch.Tensor)
+                                      and kv[n].dtype == torch.float16 and torch.equal(kv[n], x)
                                       for n, x in zip('kv', expected)):
-        raise ValueError('C1.5 quantization differs from existing C1 UNIFORM_INT8 reconstruction')
+        raise UniformCompatibilityError(failure_report(root, item, block, kv, expected))
     return kv
 
 
@@ -249,7 +251,57 @@ def benchmark_selection(blocks, *, smoke=False, max_blocks_per_group=None):
     return selected
 
 
+def diagnose_uniform(args):
+    """Stop at the first incompatible smoke fixture, before any entropy coding."""
+    with inputs(args) as (root, out, capture, rec, ids, selected, hashes):
+        path = out/'uniform_compatibility_diagnostic.json'
+        if path.exists():
+            raise ValueError(f'Diagnostic already exists: {path}; preserve it before rerunning')
+        checked = []
+        for block in benchmark_selection(capture['blocks'], smoke=True):
+            qkv = load_fixture(root, block)
+            encoded = quantize(qkv['k'], qkv['v'])
+            reconstructed = Baseline('UNIFORM_INT8').decode(encoded)
+            checked.append(block['block_id'])
+            try:
+                existing_uniform(root, rec, block, reconstructed)
+            except UniformCompatibilityError as exc:
+                report = enrich_report(exc.report, root, qkv, encoded, reconstructed)
+                report['checked_block_ids'] = checked
+                new_json(path, report)
+                print(f'First incompatible block: {block["block_id"]}; diagnostic: {path}', flush=True)
+                raise
+        new_json(path, dict(status='ALL_SMOKE_RECONSTRUCTIONS_EXACT', checked_block_ids=checked,
+                            provenance='DIAGNOSTIC_ONLY', primary_result_eligible=False,
+                            arithmetic_coding_executed=False))
+        print(f'All smoke reconstructions match C1 exactly; diagnostic: {path}', flush=True)
+
+
 def benchmark(args):
+    run = {}
+    try:
+        _benchmark(args, run)
+    except BaseException as exc:
+        if run:
+            # Mark partial CSVs/bitstreams explicitly unusable, including failures
+            # during output persistence or the final immutable-input check.
+            out = run['out']
+            status = dict(status='FAILED', benchmark_status='FAILED',
+                          exception=f'{type(exc).__name__}: {exc}', provenance='DIAGNOSTIC_ONLY',
+                          primary_result_eligible=False, result_classification='DIAGNOSTIC_ONLY')
+            update_state(out, **status)
+            if (out/'benchmark_manifest.json').exists():
+                bm = read_json(out/'benchmark_manifest.json')
+                bm.update(status)
+                write_json(out/'benchmark_manifest.json', bm)
+            write_json(out/'run_status.json', status)
+        raise
+    if run:
+        write_json(run['out']/'run_status.json', dict(status='COMPLETED', provenance='DIAGNOSTIC_ONLY',
+            primary_result_eligible=False, result_classification='DIAGNOSTIC_ONLY'))
+
+
+def _benchmark(args, run):
     started = getattr(args, '_command_started', time.perf_counter_ns())
     smoke = getattr(args, 'smoke', False)
     limit = getattr(args, 'max_blocks_per_group', None)
@@ -270,6 +322,12 @@ def benchmark(args):
             out.mkdir(parents=True, exist_ok=True)
         if (out/'benchmark_manifest.json').exists() or (out/'c15_block_raw.csv').exists():
             raise ValueError('Benchmark output exists; choose a new isolated run directory')
+        if diagnostic:
+            if (out/'run_status.json').exists() or (out/'manifest.json').exists() or any(out.iterdir()):
+                raise ValueError('Partial diagnostic outputs exist; preserve or remove only that diagnostic directory')
+            new_json(out/'run_status.json', dict(status='INCOMPLETE', provenance='DIAGNOSTIC_ONLY',
+                primary_result_eligible=False, result_classification='DIAGNOSTIC_ONLY'))
+            run['out'] = out
         profiles, pm = load_profiles(profile_out, hashes, ids)
         frozen = {mode: model.to_bytes() for mode, model in profiles.items()}
         rows, entries, repeats = [], [], []
@@ -278,7 +336,16 @@ def benchmark(args):
             qkv = load_fixture(root, block)
             quantized = quantize(qkv['k'], qkv['v'])
             baseline = Baseline('UNIFORM_INT8').decode(quantized)
-            existing_uniform(root, rec, block, baseline)
+            try:
+                existing_uniform(root, rec, block, baseline)
+            except UniformCompatibilityError as exc:
+                if diagnostic:
+                    # Arithmetic coding has not run for this block. Keep the
+                    # saved-vs-fresh evidence even if recorded-device replay fails.
+                    new_json(out/'uniform_compatibility_failure.json', exc.report)
+                    report = enrich_report(exc.report, root, qkv, quantized, baseline)
+                    write_json(out/'uniform_compatibility_failure.json', report)
+                raise
             raw = raw_bytes(block['token_group_size'])
             for mode in ('FP16_RAW', 'UNIFORM_INT8', *MODES):
                 row = dict(block_id=block['block_id'], dataset=block['dataset'],
@@ -444,7 +511,7 @@ def main(argv=None):
     started = time.perf_counter_ns()
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('profile', 'benchmark', 'quality'):
+    for name in ('profile', 'benchmark', 'quality', 'diagnose-uniform'):
         p = sub.add_parser(name)
         p.add_argument('--capture-manifest', type=Path, default=Path('results/cachegen/c1/capture_manifest.json'))
         p.add_argument('--output-dir', type=Path, default=Path('results/cachegen/c1_5'))
@@ -470,4 +537,5 @@ def main(argv=None):
             parser.error('--max-blocks-per-group must be >= 1')
         if args.smoke and args.max_blocks_per_group not in (None, 1):
             parser.error('--smoke selects exactly one block per group; --max-blocks-per-group must be 1')
-    {'profile': profile, 'benchmark': benchmark, 'quality': quality}[args.command](args)
+    {'profile': profile, 'benchmark': benchmark, 'quality': quality,
+     'diagnose-uniform': diagnose_uniform}[args.command](args)

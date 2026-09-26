@@ -173,6 +173,34 @@ class ArithmeticTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_failed_smoke_status_and_finalization_failure_are_not_completed(self):
+        from types import SimpleNamespace
+        from semcache.experiments.cachegen.shared.harness import new_csv, new_json
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            def fail(args, run):
+                run['out'] = out
+                new_csv(out/'c15_block_raw.csv', [dict(partial=True)])
+                new_json(out/'benchmark_manifest.json', dict(status='MEASURED'))
+                raise ValueError('compatibility or final input verification failed')
+            with patch('semcache.experiments.cachegen.shared.harness._benchmark', side_effect=fail):
+                with self.assertRaisesRegex(ValueError, 'compatibility'):
+                    benchmark(SimpleNamespace())
+            for name in ('manifest.json', 'benchmark_manifest.json', 'run_status.json'):
+                report = read_json(out/name)
+                self.assertEqual(report['status'], 'FAILED')
+                self.assertFalse(report['primary_result_eligible'])
+                self.assertIn('compatibility', report['exception'])
+
+    def test_source_history_records_unchanged_c1_baseline(self):
+        from semcache.experiments.cachegen.shared.compatibility import source_provenance
+        report = source_provenance()
+        self.assertTrue(Path(report['baseline_source_path']).exists())
+        self.assertEqual(len(report['baseline_ast_sha256']), 64)
+        # Source trees exported without .git may legitimately have no history.
+        if report['history']:
+            self.assertTrue(report['history'][0]['baseline_matches_current'])
+
     def test_deterministic_smoke_and_limiter_evaluation_selection(self):
         groups = [('snips', 3), ('snips', 10), ('multiwoz', 3), ('multiwoz', 10)]
         candidates = [dict(block_id=f'{p}-{i}-{repeat}', partition=p, dataset=d, token_group_size=t)
@@ -438,6 +466,92 @@ class HarnessTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('torch'), 'PyTorch unavailable; no installation/download')
 class TensorTests(unittest.TestCase):
+    def test_comparison_reports_exact_first_index_and_dtype_failure(self):
+        import torch
+        from semcache.experiments.cachegen.shared.compatibility import compare_tensors
+        a = torch.zeros(2, 3, 4, dtype=torch.float16)
+        b = a.clone()
+        b[1, 0, 2] = .5
+        report = compare_tensors(a, b)
+        self.assertFalse(report['torch_equal'])
+        self.assertEqual(report['unequal_elements'], 1)
+        self.assertEqual(report['first_unequal_index'], [1, 0, 2])
+        self.assertEqual((report['A_value'], report['B_value']), (0, .5))
+        self.assertEqual(report['max_abs_diff'], .5)
+        self.assertEqual(report['mean_abs_diff'], .5/24)
+        self.assertEqual(report['A']['element_count'], 24)
+        self.assertFalse(compare_tensors(a, a.float())['exact_contract_match'])
+        self.assertTrue(compare_tensors(a, a.flatten())['shape_mismatch'])
+
+    def test_mismatch_reports_and_replays_same_c1_source_without_entropy(self):
+        import torch
+        from semcache.experiments.cachegen.codecs import Baseline
+        from semcache.experiments.cachegen.common import file_hash, write_json
+        from semcache.experiments.cachegen.shared.compatibility import UniformCompatibilityError, enrich_report
+        from semcache.experiments.cachegen.shared.harness import existing_uniform
+        from semcache.experiments.cachegen.shared.tensors import quantize
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            qkv = {n: torch.ones(32, 3, 4, dtype=torch.float16) for n in 'qkv'}
+            encoded = quantize(qkv['k'], qkv['v'])
+            expected = Baseline('UNIFORM_INT8').decode(encoded)
+            saved = dict(k=expected[0].clone(), v=expected[1].clone())
+            saved['v'][0, 1, 2] = 0
+            torch.save(saved, root/'saved.pt')
+            write_json(root/'environment.json', dict(benchmark=dict(device='cpu', torch=torch.__version__)))
+            block = dict(block_id='failure', dataset='snips', token_group_size=3, file='fixture.pt')
+            item = dict(block_id='failure', compression_mode='UNIFORM_INT8', file='saved.pt',
+                        sha256=file_hash(root/'saved.pt'))
+            with self.assertRaises(UniformCompatibilityError) as error:
+                existing_uniform(root, {'reconstructed': [item]}, block, expected)
+            with patch('semcache.experiments.cachegen.shared.core.encode', side_effect=AssertionError('No entropy')):
+                report = enrich_report(error.exception.report, root, qkv, encoded, expected)
+            self.assertEqual(report['reconstruction_entry'], item)
+            self.assertEqual(report['components']['v']['first_unequal_index'], [0, 1, 2])
+            self.assertTrue(report['components']['k']['torch_equal'])
+            self.assertEqual(report['devices_reproducing_saved_tensors_exactly'], [])
+            for n in 'kv':
+                for part in ('symbols', 'scales'):
+                    self.assertTrue(report['direct_c1_cpu_vs_c15'][n][part]['exact_contract_match'])
+            self.assertFalse(report['device_replays']['cpu']['saved_vs_replay']['v']['torch_equal'])
+
+    def _real_artifact_compatibility(self, tokens):
+        from semcache.experiments.cachegen.codecs import Baseline
+        from semcache.experiments.cachegen.common import load_fixture, digest
+        from semcache.experiments.cachegen.shared.harness import existing_uniform
+        from semcache.experiments.cachegen.shared.tensors import quantize
+        root = Path(__file__).resolve().parents[1]/'results/cachegen/c1'
+        if not all((root/n).is_file() for n in ('capture_manifest.json', 'reconstruction_manifest.json')):
+            self.skipTest('Completed real C1 artifacts absent')
+        manifest = read_json(root/'capture_manifest.json')
+        if manifest.get('status') != 'CAPTURED':
+            self.skipTest('C1 capture is a local placeholder')
+        rec = read_json(root/'reconstruction_manifest.json')
+        self.assertEqual(rec['capture_manifest_sha256'], digest(manifest))
+        block = next((b for b in manifest['blocks'] if b['partition'] == 'evaluation'
+                      and b['token_group_size'] == tokens), None)
+        self.assertIsNotNone(block, f'Completed C1 is missing an evaluation T={tokens} block')
+        entries = [r for r in rec['reconstructed'] if r['block_id'] == block['block_id']
+                   and r['compression_mode'] == 'UNIFORM_INT8']
+        self.assertEqual(len(entries), 1, 'Expected one matching C1 reconstruction entry')
+        if not (root/block['file']).is_file() or not (root/entries[0]['file']).is_file():
+            self.skipTest('Real C1 fixture/reconstruction tensor files are not mounted locally')
+        qkv = load_fixture(root, block)
+        direct = Baseline('UNIFORM_INT8').encode(qkv['k'], qkv['v'])
+        shared = quantize(qkv['k'], qkv['v'])
+        import torch
+        for a, b in zip(direct, shared):
+            self.assertTrue(all(torch.equal(x, y) for x, y in zip(a, b)))
+        # Uses the exact runtime lookup, SHA and equality gate. Any mismatch is
+        # a regression failure with block/component/index evidence, not a skip.
+        existing_uniform(root, rec, block, Baseline('UNIFORM_INT8').decode(shared))
+
+    def test_real_artifact_t3_uniform_compatibility(self):
+        self._real_artifact_compatibility(3)
+
+    def test_real_artifact_t10_uniform_compatibility(self):
+        self._real_artifact_compatibility(10)
+
     def test_exact_existing_uniform_reconstruction_q_untouched(self):
         import torch
         from semcache.experiments.cachegen.codecs import Baseline

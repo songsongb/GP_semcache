@@ -201,6 +201,7 @@ results/cachegen/c1_5/smoke/
   timing_repeats.json
   environment.json
   run_diagnostics.json
+  run_status.json
   bitstreams/SHARED_CDF_GLOBAL/<id-hash>.bin
   bitstreams/SHARED_CDF_LAYERGROUP/<id-hash>.bin
 ```
@@ -229,6 +230,74 @@ be positive. When combined with `--smoke`, only N=1 is accepted so smoke always
 has exactly four blocks. A limiter or non-default timing counts without `--smoke`
 routes results to **`diagnostic/`** and also sets primary eligibility to false.
 Do not use these overrides for the final primary benchmark.
+
+## Investigating a C1 reconstruction compatibility failure
+
+The exact C1 reconstruction check is mandatory. A mismatch occurs **before
+entropy coding for that block** and is not evidence about the arithmetic coder.
+Do not refit profiles, regenerate C1, relax equality, or change quantization to
+make this check pass.
+
+Run the diagnostic independently of a failed smoke directory:
+
+```bash
+python scripts/40_cachegen_shared_cdf.py diagnose-uniform \
+  --capture-manifest results/cachegen/c1/capture_manifest.json \
+  --output-dir results/cachegen/c1_5
+```
+
+This scans only the four deterministic smoke candidates and stops at the first
+incompatible block. It writes `c1_5/uniform_compatibility_diagnostic.json` before
+raising the mismatch. No arithmetic coding, profile fitting, or model inference
+runs. The report identifies block/dataset/T, the exact selected reconstruction
+entry and path, fixture path, hashes, loaded dictionary keys, and per-component
+shape/dtype/device/stride/element count. Saved C1 (A) versus fresh C1.5 (B) includes
+exact equality, max/mean absolute difference, unequal count, first unequal index,
+and both values at that index.
+
+C1's reconstruction files persist only reconstructed K/V, **not symbols/scales**.
+The diagnostic therefore replays the actual C1 `measured_baseline` helper on this
+one block (quantization/dequantization only). It uses CPU and, if different, the
+C1 benchmark device recorded in `c1/environment.json`; an unavailable recorded
+device is reported rather than substituted. It compares replayed symbols/scales
+to C1.5, replayed K/V to both saved C1 and C1.5, and explicitly checks swapped
+components. The current baseline source path, file/AST hashes, git history,
+PyTorch versions, and static layout/axis/casting/rounding paths are included.
+Replayed intermediates are clearly labelled as reconstructed evidence, not
+historically saved tensors. The diagnostic refuses to overwrite an existing
+report; preserve that file before a repeat.
+
+Local source audit: `codecs.py` is unchanged from its original C1 commit
+`6dc63ff`. Both paths directly call the same `Baseline` with K then V in
+`[L,T,D]`; reduction is over hidden dimension, scales are FP32, and reconstruction
+is FP16. C1 uses `args.device`, whereas C1.5 currently uses CPU. Device execution
+is a **candidate difference**, not a proven numerical cause. C1 did not record a
+baseline source hash, so local history cannot prove the source used on SERAPH.
+The real-artifact tests for the first evaluation T=3 and T=10 blocks fail on any
+incompatibility and skip only when artifacts/PyTorch are unavailable.
+
+Smoke now writes `run_status.json` as `INCOMPLETE` before work, `FAILED` on an
+exception (also marking `manifest.json` and any benchmark manifest `FAILED`),
+and `COMPLETED` only after final input verification and output persistence.
+Partial CSVs must not be consumed unless this status is `COMPLETED`. An abrupt
+termination leaves `INCOMPLETE`. Existing partial directories are refused.
+On a mismatch, smoke also saves `smoke/uniform_compatibility_failure.json`.
+
+After preserving diagnostic evidence, remove **only** stale smoke outputs and
+rerun the diagnostic smoke using the unchanged frozen profiles:
+
+```bash
+cd "$SEMCACHE_REPO"
+rm -rf -- results/cachegen/c1_5/smoke
+python scripts/40_cachegen_shared_cdf.py benchmark \
+  --capture-manifest results/cachegen/c1/capture_manifest.json \
+  --output-dir results/cachegen/c1_5 \
+  --smoke --warmup-runs 1 --measured-runs 2
+```
+
+Cleanup does not fix a tensor mismatch: until the diagnostic proves its cause
+and a compatible path is verified, this rerun is expected to stop at the same
+exact gate. Neither command touches C1 or the frozen profile files.
 
 ## SERAPH execution
 
