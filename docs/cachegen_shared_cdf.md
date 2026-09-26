@@ -445,3 +445,79 @@ Local execution is blocked by absent completed C1 data and torch/model runtime;
 SERAPH can run the commands above. Direct reuse of the pinned CUDA coder is
 blocked by alphabet capacity. GPU speedups, scale compression, anchor/delta,
 dataset-specific profiles, and evaluation-fitted probabilities are deferred.
+
+## PRIMARY C1.5-A full-storage evaluation
+
+Run after the CUDA-contract profiles have been frozen and the diagnostic smoke
+has passed. This command never captures tensors, fits profiles, loads a model,
+performs inference, or invokes the repeated benchmark timing loop:
+
+```bash
+python scripts/40_cachegen_shared_cdf.py storage-full \
+  --capture-manifest results/cachegen/c1/capture_manifest.json \
+  --output-dir results/cachegen/c1_5
+```
+
+The command requires exactly 1,308 evaluation blocks (1,072 T=3; 236 T=10)
+from the frozen split. It processes capture-manifest order, GLOBAL then
+LAYERGROUP, with one quantization/entropy encode/entropy decode per pending pair.
+Integer symbols and FP32 scales must roundtrip exactly, and the reconstructed
+FP16 K/V must equal the saved C1 UNIFORM_INT8 tensors with `torch.equal`.
+Q remains FP16 and is not sent to the entropy coder. C1 FP16_RAW/UNIFORM_INT8
+storage references are read from the existing C1 CSV, with byte-accounting checks.
+
+All outputs live under `results/cachegen/c1_5/full_storage/`:
+
+- `manifest.json`, `storage_manifest.json`, `progress.json`: contract, counts,
+  provenance, status and primary eligibility.
+- `c15_full_block_raw.csv`: completed shared-CDF pairs only (2,616 when complete).
+- `c15_full_summary.csv`: final only, 36 rows (nine strata × four modes).
+- `environment.json`, `run_diagnostics.json`: runtime and invocation wall duration,
+  explicitly `SINGLE_PASS_OPERATIONAL_TIMING` / `NOT_PRIMARY_LATENCY_RESULT`.
+- `checkpoints/<pair-hash>.json`: durable authoritative pair commit records.
+- `bitstreams/SHARED_CDF_GLOBAL/` and `bitstreams/SHARED_CDF_LAYERGROUP/`:
+  actual serialized streams, preserved by default and required for resume validation.
+- `failures.jsonl`: created only on a run failure; `.lock` prevents concurrent writers.
+
+Resume by issuing the **same command**. Each bitstream is flushed, fsynced and
+atomically renamed before its result checkpoint is committed the same way.
+The directory is fsynced after each replacement. CSV/progress files are derived
+views; a crash between checkpoint and progress writes does not lose committed
+work. Uncommitted work may be recomputed after interruption. Committed pairs
+are never encoded or decoded again. Startup validates checkpoint uniqueness,
+row digests, stream hashes/framing/sizes, frozen profiles, C1 capture and
+reconstruction manifests and all selected tensor file hashes, CUDA device
+contract, source/configuration hashes, git commit and runtime environment.
+Incompatible contracts are rejected without mixing or replacing prior outputs.
+A correctness/validation failure seals an active run as FAILED; investigate and
+archive the full_storage directory before starting a replacement run.
+
+INCOMPLETE runs, including SIGTERM/SIGINT interruptions, are non-primary.
+SIGKILL leaves the last durable INCOMPLETE state and pair checkpoints.
+Only complete coverage of all 2,616 unique pairs, exact correctness, valid
+accounting, and unchanged frozen inputs allows COMPLETED with
+`primary_result_eligible=true`. The final summary is written only after these
+checks. No latency threshold or latency comparison affects eligibility.
+
+The nine strata are ALL, SNIPS, MultiWOZ, T=3, T=10 and all four dataset/T
+combinations. Every stratum is an **independent storage pool**, charged one full
+serialized profile. Raw, payload and local-metadata bytes reconcile additively
+across disjoint strata. When reconciling encoded totals for N disjoint strata,
+subtract `(N-1) * shared_profile_bytes`; the ALL pool stores only one profile.
+`payload_only_ratio` means raw KV bytes divided by arithmetic payload bytes.
+Additional savings compare full stored bytes, including local metadata and the
+single shared profile, against C1 UNIFORM_INT8 in the same stratum.
+
+On SERAPH, activate the existing environment, submit from the repository root,
+and add site-required account/partition flags to `sbatch` if applicable:
+
+```bash
+conda activate semcache
+sbatch scripts/slurm_c15a_full_storage.sh
+```
+
+The script requests one CUDA GPU, 2 CPUs, 16 GiB and a 24-hour allocation; adjust
+resource/time flags to local limits. Resubmitting resumes completed work. Keep
+the same code, environment and frozen artifacts across submissions. Operational
+wall duration includes validation, hashing, I/O and checkpointing, and must not
+be compared with C1's 5-warmup/20-measured codec timings.

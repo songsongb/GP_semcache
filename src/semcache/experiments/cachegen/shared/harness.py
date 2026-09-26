@@ -583,7 +583,7 @@ def main(argv=None):
     started = time.perf_counter_ns()
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('profile', 'benchmark', 'quality', 'diagnose-uniform'):
+    for name in ('profile', 'benchmark', 'quality', 'diagnose-uniform', 'storage-full'):
         p = sub.add_parser(name)
         p.add_argument('--capture-manifest', type=Path, default=Path('results/cachegen/c1/capture_manifest.json'))
         p.add_argument('--output-dir', type=Path, default=Path('results/cachegen/c1_5'))
@@ -612,5 +612,6 @@ def main(argv=None):
             parser.error('--max-blocks-per-group must be >= 1')
         if args.smoke and args.max_blocks_per_group not in (None, 1):
             parser.error('--smoke selects exactly one block per group; --max-blocks-per-group must be 1')
-    {'profile': profile, 'benchmark': benchmark, 'quality': quality,
+    from .full_storage import storage_full
+    {'storage-full': storage_full, 'profile': profile, 'benchmark': benchmark, 'quality': quality,
      'diagnose-uniform': diagnose_uniform}[args.command](args)
