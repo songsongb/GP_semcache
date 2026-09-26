@@ -197,12 +197,14 @@ def load_profiles(out, hashes, ids):
     return models, pm
 
 
-def measure(call):
-    for _ in range(TIMING['warmup']):
+def measure(call, *, warmup_runs=5, measured_runs=20):
+    if warmup_runs < 0 or measured_runs < 1:
+        raise ValueError('Timing requires warmup >= 0 and measured >= 1')
+    for _ in range(warmup_runs):
         call()
     times = []
     value = None
-    for _ in range(TIMING['measured_repetitions']):
+    for _ in range(measured_runs):
         start = time.perf_counter_ns()
         value = call()  # CPU synchronous work only; no CUDA events/transfers.
         times.append((time.perf_counter_ns()-start)/1e6)
@@ -227,16 +229,51 @@ def existing_uniform(root, rec, block, expected):
     return kv
 
 
+def benchmark_selection(blocks, *, smoke=False, max_blocks_per_group=None):
+    """First evaluation blocks per dataset/T in capture-manifest order."""
+    if max_blocks_per_group is not None and max_blocks_per_group < 1:
+        raise ValueError('max-blocks-per-group must be positive')
+    if smoke and max_blocks_per_group not in (None, 1):
+        raise ValueError('--smoke selects exactly one block per group; limiter must be 1')
+    limit = 1 if smoke else max_blocks_per_group
+    selected, counts = [], {}
+    for block in blocks:
+        if block['partition'] != 'evaluation':
+            continue
+        group = (block['dataset'], block['token_group_size'])
+        if limit is None or counts.get(group, 0) < limit:
+            selected.append(block)
+            counts[group] = counts.get(group, 0)+1
+    if smoke and set(counts) != {('snips', 3), ('snips', 10), ('multiwoz', 3), ('multiwoz', 10)}:
+        raise ValueError('Smoke requires all four existing evaluation dataset/T groups')
+    return selected
+
+
 def benchmark(args):
+    started = getattr(args, '_command_started', time.perf_counter_ns())
+    smoke = getattr(args, 'smoke', False)
+    limit = getattr(args, 'max_blocks_per_group', None)
+    warmup = getattr(args, 'warmup_runs', 5)
+    measured = getattr(args, 'measured_runs', 20)
+    if warmup < 0 or measured < 1:
+        raise ValueError('Timing requires warmup >= 0 and measured >= 1')
+    diagnostic = smoke or limit is not None or (warmup, measured) != (5, 20)
+    labels = dict(result_classification='DIAGNOSTIC_ONLY' if diagnostic else 'PRIMARY',
+                  primary_result_eligible=not diagnostic)
+    provenance = 'DIAGNOSTIC_ONLY; MEASURED_RESEARCH_EXTENSION' if diagnostic else 'MEASURED_RESEARCH_EXTENSION'
+    timing = dict(TIMING, warmup=warmup, measured_repetitions=measured)
     with inputs(args) as (root, out, capture, rec, ids, selected, hashes):
+        profile_out = out
+        selected = benchmark_selection(capture['blocks'], smoke=smoke, max_blocks_per_group=limit)
+        if diagnostic:
+            out = protect_output(out/('smoke' if smoke else 'diagnostic'), root)
+            out.mkdir(parents=True, exist_ok=True)
         if (out/'benchmark_manifest.json').exists() or (out/'c15_block_raw.csv').exists():
             raise ValueError('Benchmark output exists; choose a new isolated run directory')
-        profiles, pm = load_profiles(out, hashes, ids)
+        profiles, pm = load_profiles(profile_out, hashes, ids)
         frozen = {mode: model.to_bytes() for mode, model in profiles.items()}
         rows, entries, repeats = [], [], []
-        for block in capture['blocks']:
-            if block['partition'] != 'evaluation':
-                continue
+        for block in selected:
             assert block['block_id'] in ids['evaluation'] and block['block_id'] not in ids['calibration']
             qkv = load_fixture(root, block)
             quantized = quantize(qkv['k'], qkv['v'])
@@ -246,16 +283,20 @@ def benchmark(args):
             for mode in ('FP16_RAW', 'UNIFORM_INT8', *MODES):
                 row = dict(block_id=block['block_id'], dataset=block['dataset'],
                     token_group_size=block['token_group_size'], compression_mode=mode, **raw,
+                    symbol_count=raw['raw_kv_bytes']//2,
                     encoded_payload_bytes=0, local_metadata_bytes=0, scale_metadata_bytes=0,
                     symbol_roundtrip_exact=True if mode in MODES else None,
                     uniform_reconstruction_exact=True if mode != 'FP16_RAW' else None,
+                    uniform_int8_tensor_exact=True if mode != 'FP16_RAW' else None,
                     provenance=('MEASURED' if mode == 'FP16_RAW' else 'MEASURED; REPRODUCTION_CHOICE'
                                 if mode == 'UNIFORM_INT8' else 'MEASURED_RESEARCH_EXTENSION'),
                     timing_device='not_retimed' if mode not in MODES else TIMING['timing_device'],
                     timing_method='storage baseline only' if mode not in MODES else TIMING['timing_method'],
-                    warmup=0 if mode not in MODES else 5, measured_repetitions=0 if mode not in MODES else 20,
+                    warmup=0 if mode not in MODES else warmup, measured_repetitions=0 if mode not in MODES else measured,
                     encode_ms_mean=None, encode_ms_median=None, encode_ms_p95=None,
-                    decode_ms_mean=None, decode_ms_median=None, decode_ms_p95=None)
+                    decode_ms_mean=None, decode_ms_median=None, decode_ms_p95=None, **labels)
+                if diagnostic:
+                    row['provenance'] = 'DIAGNOSTIC_ONLY; '+row['provenance']
                 if mode == 'FP16_RAW':
                     row['encoded_payload_bytes'] = raw['raw_kv_bytes']
                 elif mode == 'UNIFORM_INT8':
@@ -267,8 +308,10 @@ def benchmark(args):
                     blob = encode(model, *prepared)
                     check_roundtrip(model, quantized, blob)
                     row.update(inspect_block(blob, model)[3])
-                    measured_blob, et, er = measure(lambda: encode(model, *prepared))
-                    decoded, dt, dr = measure(lambda: decode(blob, model))
+                    measured_blob, et, er = measure(lambda: encode(model, *prepared),
+                                                  warmup_runs=warmup, measured_runs=measured)
+                    decoded, dt, dr = measure(lambda: decode(blob, model),
+                                             warmup_runs=warmup, measured_runs=measured)
                     if measured_blob != blob or decoded != prepared:
                         raise ValueError('Timed codec differs from validated deterministic roundtrip')
                     for name, stats in (('encode', et), ('decode', dt)):
@@ -276,9 +319,9 @@ def benchmark(args):
                     relative = f'bitstreams/{mode}/{digest(block["block_id"])[:24]}.bin'
                     new_file(out/relative, blob)
                     entries.append(dict(block_id=block['block_id'], compression_mode=mode,
-                                        file=relative, sha256=file_hash(out/relative)))
+                                        file=relative, sha256=file_hash(out/relative), provenance=provenance, **labels))
                     repeats.append(dict(block_id=block['block_id'], compression_mode=mode,
-                                        encode_wall_ms=er, decode_wall_ms=dr))
+                                        encode_wall_ms=er, decode_wall_ms=dr, provenance=provenance, **labels))
                     if model.to_bytes() != frozen[mode]:
                         raise ValueError('Evaluation modified frozen CDF')
                 rows.append(row)
@@ -287,20 +330,36 @@ def benchmark(args):
         for mode in ('FP16_RAW', 'UNIFORM_INT8', *MODES):
             group = [r for r in rows if r['compression_mode'] == mode]
             size = len(frozen[mode]) if mode in MODES else 0
-            summary.append(dict(compression_mode=mode, pool='all evaluation blocks; both datasets/T',
+            summary.append(dict(compression_mode=mode,
+                pool='diagnostic selected evaluation blocks' if diagnostic else 'all evaluation blocks; both datasets/T',
                 **pool_accounting(group, size),
                 logical_shared_profile_tensor_bytes=profiles[mode].logical_bytes if mode in MODES else 0,
-                provenance=group[0]['provenance']))
-        load_profiles(out, hashes, ids)  # Recheck on-disk freeze after evaluation.
+                provenance=group[0]['provenance'], **labels))
+        load_profiles(profile_out, hashes, ids)  # Recheck on-disk freeze after evaluation.
         new_csv(out/'c15_block_raw.csv', rows)
         new_csv(out/'c15_summary.csv', summary)
-        new_json(out/'timing_repeats.json', dict(**TIMING, repeats=repeats))
-        new_json(out/'benchmark_manifest.json', dict(profile_manifest_sha256=file_hash(out/'profile_manifest.json'),
+        new_json(out/'timing_repeats.json', dict(**timing, repeats=repeats, provenance=provenance, **labels))
+        new_json(out/'benchmark_manifest.json', dict(profile_manifest_sha256=file_hash(profile_out/'profile_manifest.json'),
+            profile_directory=str(profile_out.resolve()), smoke=smoke, max_blocks_per_group=limit,
+            selection_rule='first evaluation blocks per dataset/T in capture-manifest order',
+            selected_block_ids=[b['block_id'] for b in selected],
+            selected_ids_sha256=digest([b['block_id'] for b in selected]),
             evaluation_ids_sha256=digest(ids['evaluation']), bitstreams=entries,
-            **TIMING, all_symbol_roundtrips_exact=True, all_uniform_reconstructions_exact=True,
-            profile_unchanged_after_evaluation=True))
-        update_state(out, benchmark_status='MEASURED', benchmark_manifest_sha256=file_hash(out/'benchmark_manifest.json'))
-        record_environment(out, 'benchmark')
+            **timing, all_symbol_roundtrips_exact=True, all_uniform_reconstructions_exact=True,
+            profile_unchanged_after_evaluation=True, provenance=provenance, **labels))
+        update_state(out, benchmark_status='MEASURED', benchmark_manifest_sha256=file_hash(out/'benchmark_manifest.json'),
+                     provenance=provenance, **labels)
+        if diagnostic:
+            new_json(out/'environment.json', dict(benchmark=environment(), provenance=provenance, **labels))
+        else:
+            record_environment(out, 'benchmark')
+    if diagnostic:
+        # Includes input checks, I/O, correctness, timings, output persistence and
+        # final C1 snapshot verification. Excludes only this report's own write.
+        new_json(out/'run_diagnostics.json', dict(total_command_wall_ms=(time.perf_counter_ns()-started)/1e6,
+            wall_clock_scope='CLI dispatch through benchmark completion; excludes this report write; '
+                             'diagnostic scheduling only, not codec latency',
+            provenance=provenance, **labels))
 
 
 def quality(args):
@@ -382,6 +441,7 @@ def quality(args):
 
 
 def main(argv=None):
+    started = time.perf_counter_ns()
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('profile', 'benchmark', 'quality'):
@@ -392,5 +452,22 @@ def main(argv=None):
             p.add_argument('--cachegen-repo', type=Path, default=Path('/data/khuss/repos/CacheGen'))
         if name == 'quality':
             p.add_argument('--device', choices=('cpu', 'cuda', 'cuda:0'), default='cuda')
+        if name == 'benchmark':
+            p.add_argument('--smoke', action='store_true',
+                           help='Diagnostic only: first evaluation block per dataset/T; write under output-dir/smoke')
+            p.add_argument('--warmup-runs', type=int, default=5,
+                           help='Warmup repetitions (default: 5); nonstandard counts are diagnostic only')
+            p.add_argument('--measured-runs', type=int, default=20,
+                           help='Measured repetitions (default: 20); nonstandard counts are diagnostic only')
+            p.add_argument('--max-blocks-per-group', type=int,
+                           help='Diagnostic only: first N evaluation blocks per dataset/T in manifest order')
     args = parser.parse_args(argv)
+    args._command_started = started
+    if args.command == 'benchmark':
+        if args.warmup_runs < 0 or args.measured_runs < 1:
+            parser.error('--warmup-runs must be >= 0 and --measured-runs must be >= 1')
+        if args.max_blocks_per_group is not None and args.max_blocks_per_group < 1:
+            parser.error('--max-blocks-per-group must be >= 1')
+        if args.smoke and args.max_blocks_per_group not in (None, 1):
+            parser.error('--smoke selects exactly one block per group; --max-blocks-per-group must be 1')
     {'profile': profile, 'benchmark': benchmark, 'quality': quality}[args.command](args)

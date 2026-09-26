@@ -14,7 +14,7 @@ from semcache.experiments.cachegen.shared.core import (
     cdf_from_counts, decode, encode, fit_profiles, inspect_block, map_symbols,
     partition_ids, pool_accounting, stream_counts, unmap_symbols, validate_cdf)
 from semcache.experiments.cachegen.shared.harness import (
-    benchmark, load_profiles, measure, profile, protect_output, quality_selection)
+    benchmark, benchmark_selection, load_profiles, main, measure, profile, protect_output, quality_selection)
 from semcache.experiments.cachegen.shared.source_audit import audit, REVISION
 from semcache.experiments.cachegen.common import read_json
 
@@ -173,6 +173,151 @@ class ArithmeticTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_deterministic_smoke_and_limiter_evaluation_selection(self):
+        groups = [('snips', 3), ('snips', 10), ('multiwoz', 3), ('multiwoz', 10)]
+        candidates = [dict(block_id=f'{p}-{i}-{repeat}', partition=p, dataset=d, token_group_size=t)
+                      for repeat in range(3) for p in ('calibration', 'evaluation')
+                      for i, (d, t) in enumerate(groups)]
+        selected = benchmark_selection(candidates, smoke=True)
+        self.assertEqual(selected, benchmark_selection(candidates, smoke=True))
+        self.assertEqual([b['block_id'] for b in selected], [f'evaluation-{i}-0' for i in range(4)])
+        self.assertEqual({(b['dataset'], b['token_group_size']) for b in selected}, set(groups))
+        self.assertTrue(all(b['partition'] == 'evaluation' for b in selected))
+        limited = benchmark_selection(candidates, max_blocks_per_group=2)
+        self.assertEqual(len(limited), 8)
+        self.assertEqual([b['block_id'] for b in limited],
+                         [f'evaluation-{i}-{repeat}' for repeat in range(2) for i in range(4)])
+        self.assertEqual(len(benchmark_selection(candidates)), 12)
+        with self.assertRaisesRegex(ValueError, 'all four'):
+            benchmark_selection(candidates[:7], smoke=True)
+        with self.assertRaises(ValueError):
+            benchmark_selection(candidates, smoke=True, max_blocks_per_group=2)
+        with self.assertRaises(ValueError):
+            benchmark_selection(candidates, max_blocks_per_group=0)
+
+    def test_custom_timing_preserves_codec_bytes_and_symbols(self):
+        for model in profiles().values():
+            data = prepared(model, 3)
+            expected = encode(model, *data)
+            for warmup, measured in ((5, 20), (1, 2), (0, 1)):
+                calls = []
+                def call():
+                    calls.append(1)
+                    return encode(model, *data)
+                actual, _, times = measure(call, warmup_runs=warmup, measured_runs=measured)
+                self.assertEqual(actual, expected)
+                self.assertEqual(len(calls), warmup+measured)
+                self.assertEqual(len(times), measured)
+                decoded, _, _ = measure(lambda: decode(actual, model),
+                                        warmup_runs=warmup, measured_runs=measured)
+                self.assertEqual(decoded, data)
+        for warmup, measured in ((-1, 2), (1, 0)):
+            with self.assertRaises(ValueError):
+                measure(lambda: None, warmup_runs=warmup, measured_runs=measured)
+
+    def test_benchmark_cli_defaults_and_diagnostic_controls(self):
+        with patch('semcache.experiments.cachegen.shared.harness.benchmark') as run:
+            main(['benchmark'])
+            args = run.call_args.args[0]
+            self.assertEqual((args.warmup_runs, args.measured_runs), (5, 20))
+            self.assertFalse(args.smoke)
+            self.assertIsNone(args.max_blocks_per_group)
+            main(['benchmark', '--smoke', '--warmup-runs', '1', '--measured-runs', '2'])
+            args = run.call_args.args[0]
+            self.assertTrue(args.smoke)
+            self.assertEqual((args.warmup_runs, args.measured_runs), (1, 2))
+        with patch('sys.stderr'):
+            for flags in (['--measured-runs', '0'], ['--warmup-runs', '-1'],
+                          ['--max-blocks-per-group', '0'], ['--smoke', '--max-blocks-per-group', '2']):
+                with self.assertRaises(SystemExit):
+                    main(['benchmark', *flags])
+
+    def test_smoke_isolated_from_completed_primary_outputs(self):
+        import csv
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = Path(tmp)/'c1', Path(tmp)/'c15'
+            root.mkdir()
+            out.mkdir()
+            models = profiles()
+            for filename in ('manifest.json', 'environment.json', 'profile_manifest.json',
+                             'c15_block_raw.csv', 'c15_summary.csv', 'benchmark_manifest.json'):
+                (out/filename).write_text('immutable primary sentinel')
+            for i, model in enumerate(models.values()):
+                (out/f'profile{i}.bin').write_bytes(model.to_bytes())
+            parent_before = {p.name: p.read_bytes() for p in out.iterdir()}
+            chosen = [dict(block_id=f'e{i}', partition='evaluation', dataset=d, token_group_size=t)
+                      for i, (d, t) in enumerate((('snips', 3), ('snips', 10), ('multiwoz', 3), ('multiwoz', 10)))]
+            candidates = [dict(chosen[0], partition='calibration', block_id='c')]+chosen+[
+                dict(b, block_id=b['block_id']+'later') for b in chosen]
+            capture = dict(blocks=candidates)
+            ids = partition_ids(candidates)
+            @contextmanager
+            def input_stub(args):
+                yield root, out, capture, {}, ids, chosen, {}
+            loaded = []
+            def fixture_loader(root, block):
+                self.assertEqual(block['partition'], 'evaluation')
+                loaded.append(block['block_id'])
+                return dict(q='untouched', k=block['token_group_size'], v=None)
+            def check(model, quantized, blob):
+                self.assertEqual(decode(blob, model), prepared(model, quantized))
+            args = SimpleNamespace(smoke=True, warmup_runs=1, measured_runs=2, max_blocks_per_group=None)
+            with patch('semcache.experiments.cachegen.shared.harness.inputs', input_stub), \
+                 patch('semcache.experiments.cachegen.shared.harness.load_profiles', return_value=(models, {})) as load, \
+                 patch('semcache.experiments.cachegen.shared.harness.fit_profiles', side_effect=AssertionError('No refitting')), \
+                 patch('semcache.experiments.cachegen.shared.harness.load_fixture', fixture_loader), \
+                 patch('semcache.experiments.cachegen.shared.harness.quantize', side_effect=lambda k, v: k), \
+                 patch('semcache.experiments.cachegen.shared.harness.Baseline.decode', return_value=('k', 'v')), \
+                 patch('semcache.experiments.cachegen.shared.harness.Baseline.sizes', return_value=(491520, 768)), \
+                 patch('semcache.experiments.cachegen.shared.harness.existing_uniform') as existing, \
+                 patch('semcache.experiments.cachegen.shared.harness.prepare', side_effect=lambda m, q: prepared(m, q)), \
+                 patch('semcache.experiments.cachegen.shared.harness.check_roundtrip', side_effect=check), \
+                 patch('builtins.print'):
+                benchmark(args)
+                self.assertEqual(existing.call_count, 4)
+                self.assertTrue(all(call.args[0] == out for call in load.call_args_list))
+                with self.assertRaisesRegex(ValueError, 'Benchmark output exists'):
+                    benchmark(args)
+                self.assertEqual(loaded, [b['block_id'] for b in chosen])
+                # A limiter without --smoke must also be ineligible and isolated.
+                benchmark(SimpleNamespace(smoke=False, warmup_runs=0, measured_runs=1,
+                                          max_blocks_per_group=1))
+                diagnostic = read_json(out/'diagnostic'/'benchmark_manifest.json')
+                self.assertFalse(diagnostic['primary_result_eligible'])
+                self.assertEqual(diagnostic['result_classification'], 'DIAGNOSTIC_ONLY')
+                self.assertEqual(diagnostic['selected_block_ids'], [b['block_id'] for b in chosen])
+            self.assertEqual(loaded, [b['block_id'] for b in chosen]*2)
+            for filename, contents in parent_before.items():
+                self.assertEqual((out/filename).read_bytes(), contents)
+            smoke = out/'smoke'
+            bm = read_json(smoke/'benchmark_manifest.json')
+            self.assertEqual(bm['selected_block_ids'], [b['block_id'] for b in chosen])
+            self.assertEqual(len(bm['bitstreams']), 8)
+            self.assertEqual({e['compression_mode'] for e in bm['bitstreams']}, set(MODES))
+            for path in smoke.glob('*.json'):
+                record = read_json(path)
+                self.assertFalse(record['primary_result_eligible'])
+                self.assertEqual(record['result_classification'], 'DIAGNOSTIC_ONLY')
+                self.assertIn('DIAGNOSTIC_ONLY', record['provenance'])
+            duration = read_json(smoke/'run_diagnostics.json')['total_command_wall_ms']
+            self.assertGreater(duration, 0)
+            for filename in ('c15_block_raw.csv', 'c15_summary.csv'):
+                with (smoke/filename).open() as f:
+                    rows = list(csv.DictReader(f))
+                for row in rows:
+                    self.assertEqual(row['primary_result_eligible'], 'False')
+                    self.assertIn('DIAGNOSTIC_ONLY', row['provenance'])
+                    if filename == 'c15_block_raw.csv' and row['compression_mode'] in MODES:
+                        self.assertEqual(row['symbol_count'], str(32*int(row['token_group_size'])*2560*2))
+                        self.assertEqual(row['uniform_int8_tensor_exact'], 'True')
+                        self.assertEqual(row['symbol_roundtrip_exact'], 'True')
+                        self.assertEqual((row['warmup'], row['measured_repetitions']), ('1', '2'))
+            for repeat in read_json(smoke/'timing_repeats.json')['repeats']:
+                self.assertEqual(len(repeat['encode_wall_ms']), 2)
+                self.assertEqual(len(repeat['decode_wall_ms']), 2)
+
     def test_output_guard_c1_and_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -166,6 +166,70 @@ method, and repetition counts; all 20 observations are persisted. These are
 entropy-stage timings, not an end-to-end cache-service benchmark. No timing
 number mixes CUDA events with CPU wall time.
 
+## Diagnostic runtime smoke
+
+Use the already frozen profiles to estimate CPU runtime before launching the
+full benchmark. Do **not** rerun `profile` for this diagnostic:
+
+```bash
+conda activate semcache
+cd "$SEMCACHE_REPO"
+python scripts/40_cachegen_shared_cdf.py benchmark \
+  --capture-manifest results/cachegen/c1/capture_manifest.json \
+  --output-dir results/cachegen/c1_5 \
+  --smoke --warmup-runs 1 --measured-runs 2
+```
+
+`--smoke` chooses the **first evaluation block in capture-manifest order** for
+each of SNIPS T=3, SNIPS T=10, MultiWOZ T=3, and MultiWOZ T=10. All four groups
+must exist. Calibration blocks are filtered out before selection; compression
+outcomes never affect selection. Both GLOBAL and LAYERGROUP run on every selected
+block. No fitting, model inference, or model download occurs.
+
+`--output-dir` still identifies the directory containing the frozen profiles.
+Smoke results go automatically to its **`smoke/` subdirectory**, even if the
+parent already contains a completed primary benchmark. Parent manifests,
+profiles, environment, and final CSVs remain unchanged. Existing smoke results
+are refused rather than overwritten. Smoke outputs are:
+
+```
+results/cachegen/c1_5/smoke/
+  manifest.json
+  benchmark_manifest.json
+  c15_block_raw.csv
+  c15_summary.csv
+  timing_repeats.json
+  environment.json
+  run_diagnostics.json
+  bitstreams/SHARED_CDF_GLOBAL/<id-hash>.bin
+  bitstreams/SHARED_CDF_LAYERGROUP/<id-hash>.bin
+```
+
+All JSON outputs and CSV rows carry `DIAGNOSTIC_ONLY` provenance and
+`primary_result_eligible=false` (CSV serializes the boolean as `False`). Binary
+streams retain the unchanged codec format; their manifest entries carry the
+diagnostic labels. The CSV includes dataset, `token_group_size` (T), block ID,
+K/V `symbol_count`, payload/local bytes, separate encode/decode mean/median/p95,
+`symbol_roundtrip_exact`, and `uniform_int8_tensor_exact`. The existing exact
+checks remain mandatory: decoded symbols/scales equal inputs, reconstruction
+equals UNIFORM_INT8, and that baseline equals the existing C1 reconstruction.
+
+`run_diagnostics.json` records `total_command_wall_ms`, spanning CLI dispatch,
+input validation, loading, correctness checks, timing passes, output writes,
+and final C1 integrity verification. It excludes its own report write and Python
+startup/imports. This is scheduling information, **not codec latency**.
+
+Full benchmark defaults remain **5 warmups / 20 measured repetitions**. `--smoke`
+does not change them implicitly; the command above explicitly requests 1/2.
+`--warmup-runs` accepts zero or more; `--measured-runs` requires at least one.
+
+`--max-blocks-per-group N` is another diagnostic control, selecting at most the
+first N evaluation blocks per dataset/T using the same manifest ordering. N must
+be positive. When combined with `--smoke`, only N=1 is accepted so smoke always
+has exactly four blocks. A limiter or non-default timing counts without `--smoke`
+routes results to **`diagnostic/`** and also sets primary eligibility to false.
+Do not use these overrides for the final primary benchmark.
+
 ## SERAPH execution
 
 Use the existing `semcache` environment with its installed torch/models. No
