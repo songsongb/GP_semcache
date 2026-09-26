@@ -195,6 +195,43 @@ class StorageTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('torch'), 'PyTorch unavailable; no installation permitted')
 class TensorTests(unittest.TestCase):
+    def test_quality_partial_base_qkv_reuse_and_compression_isolation(self):
+        import torch
+        from types import SimpleNamespace
+        from semcache.experiments.cachegen.harness import quality_hits
+        from semcache.system_cost.base_projection import base_projection_path
+        # Tiny plain Linear projections, no pretrained model or tokenizer.
+        modules = {name: torch.nn.Linear(4, 4).half() for name in 'qkv'}
+        model = torch.nn.ModuleDict(modules)
+        adapter = SimpleNamespace(model=model, layers=[0], projection_modules=lambda _: modules,
+                                  projection_module=lambda layer, name: modules[name])
+        hidden = torch.arange(64).reshape(1, 16, 4).half()/64
+        with torch.inference_mode():
+            native = {n: m(hidden) for n, m in modules.items()}
+        for t in (3, 10):
+            start = 2
+            block = dict(token_group_size=t, start_position=start, query_token_ids=list(range(16)),
+                         token_ids=list(range(start, start+t)))
+            original = {n: x[:, start:start+t].clone() for n, x in native.items()}
+            codec = Baseline('UNIFORM_INT8')
+            k, v = codec.decode(codec.encode(original['k'], original['v']))
+            compressed = dict(q=original['q'], k=k, v=v)
+            outputs = []
+            for qkv in (original, compressed):
+                hits = quality_hits(adapter, qkv, block)
+                with base_projection_path(adapter, hits, 16) as audit:
+                    outputs.append({n: m(hidden) for n, m in modules.items()})
+                for record in audit.records.values():
+                    self.assertEqual(record['reused_projection_rows'], t)
+                    self.assertEqual(record['native_projection_rows'], 16-t)
+                for n in 'qkv':
+                    self.assertTrue(torch.equal(outputs[-1][n][:, start:start+t], qkv[n]))
+                    fresh = list(range(start)) + list(range(start+t, 16))
+                    torch.testing.assert_close(outputs[-1][n][:, fresh], native[n][:, fresh])
+            self.assertTrue(torch.equal(outputs[0]['q'], outputs[1]['q']))
+            for n in 'kv':
+                self.assertTrue(torch.equal(outputs[0][n][:, fresh], outputs[1][n][:, fresh]))
+
     def test_real_opt_layout_sizes_and_values(self):
         import torch
         for tokens in (3, 10):

@@ -22,10 +22,19 @@ def base_projection_path(adapter, hits, sequence_length, *, measure_cuda=False):
     mask = torch.zeros(sequence_length, dtype=torch.bool)
     for hit in hits:
         w, entry = hit.window, hit.entry
-        if (not 0 <= w.start < w.end <= sequence_length or mask[w.start:w.end].any()
-                or entry.qkv_metadata.get('component_scope') != 'base_qkv_latency_only'
-                or w.token_ids != entry.token_ids or not entry.tensors):
-            raise ValueError('Invalid, overlapping or non-total cached span')
+        context = f'Cached span [{w.start}:{w.end}] (sequence_length={sequence_length})'
+        if not 0 <= w.start < w.end <= sequence_length:
+            raise ValueError(f'{context}: bounds must satisfy 0 <= start < end <= sequence_length')
+        if mask[w.start:w.end].any():
+            raise ValueError(f'{context}: overlap with an earlier cached span')
+        if entry.qkv_metadata.get('component_scope') != 'base_qkv_latency_only':
+            raise ValueError(f"{context}: component_scope must be 'base_qkv_latency_only'; "
+                             f"got {entry.qkv_metadata.get('component_scope')!r}")
+        if w.token_ids != entry.token_ids:
+            raise ValueError(f'{context}: token_ids mismatch: '
+                             f'window={w.token_ids!r}, entry={entry.token_ids!r}')
+        if not entry.tensors:
+            raise ValueError(f'{context}: nonempty tensor payload required')
         mask[w.start:w.end] = True
     fresh_positions = (~mask).nonzero().flatten()
     reused = int(mask.sum())

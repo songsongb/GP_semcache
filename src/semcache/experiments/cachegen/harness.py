@@ -320,14 +320,36 @@ def benchmark(args):
         padding_bytes=0, anchor_delta='Not applicable to baselines; official anchor/delta stage unavailable'))
 
 
+def quality_hits(adapter, qkv, block):
+    """Materialize one same-position bare-OPT base-QKV control span.
+
+    JSON token IDs are lists; Subsequence requires tuples and does not coerce
+    them. Keep this normalization local to C1, preserving other callers.
+    """
+    from types import SimpleNamespace
+    from semcache.system_cost.base_runtime import materialize_hits
+    t, start = block['token_group_size'], block['start_position']
+    token_ids = tuple(block['token_ids'])
+    if len(token_ids) != t or token_ids != tuple(block['query_token_ids'][start:start+t]):
+        raise ValueError('Quality block token_ids must match the selected query positions')
+    captured = SimpleNamespace(projections={l: {n: qkv[n][l].unsqueeze(0) for n in 'qkv'}
+                                            for l in range(len(adapter.layers))})
+    plan = [dict(start=start, end=start+t, source_start=0, source_end=t,
+                 token_ids=token_ids, cache_key=(0, token_ids))]
+    # This profiling-only materializer already constructs base-QKV entries.
+    hits = materialize_hits(adapter, captured, plan, 'cpu')
+    for hit in hits:
+        if hit.entry.qkv_metadata.get('component_scope') != 'base_qkv_latency_only':
+            raise ValueError('C1 quality requires base_qkv_latency_only entries')
+    return hits
+
+
 def quality(args):
     import torch
     from contextlib import nullcontext
-    from types import SimpleNamespace
     from semcache.models.loader import load_model
     from semcache.models.model_adapter import OPTModelAdapter
     from semcache.system_cost.base_projection import base_projection_path
-    from semcache.system_cost.base_runtime import materialize_hits
     from semcache.metrics.m8 import exact_parity_passed, EXACT_PARITY_TOLERANCES
     from semcache.evaluation.logit_metrics import compare_logits
     from semcache.utils.seed import seed_everything
@@ -363,16 +385,17 @@ def quality(args):
         def forward(qkv=None):
             hits = None
             if qkv is not None:
-                captured = SimpleNamespace(projections={l: {n: qkv[n][l].unsqueeze(0) for n in 'qkv'}
-                                                        for l in range(32)})
-                plan = [dict(start=start, end=start+t, source_start=0, source_end=t,
-                             token_ids=block['token_ids'], cache_key=(0, tuple(block['token_ids'])))]
-                hits = materialize_hits(adapter, captured, plan, 'cpu')
+                hits = quality_hits(adapter, qkv, block)
             with torch.inference_mode(), (base_projection_path(adapter, hits, len(block['query_token_ids']))
                                           if hits is not None else nullcontext()) as projection_audit:
                 logits = model(input_ids=ids, use_cache=False).logits.detach().cpu()
-            if hits is not None and any(r['reused_projection_rows'] != t for r in projection_audit.records.values()):
-                raise AssertionError('Physical reused token count differs from fixture')
+            if hits is not None:
+                for r in projection_audit.records.values():
+                    if (r['reused_projection_rows'] != t or
+                            r['native_projection_rows'] != len(block['query_token_ids'])-t):
+                        raise AssertionError(f'Physical projection row counts differ from fixture: '
+                                             f'expected reused={t}, fresh={len(block["query_token_ids"])-t}; '
+                                             f'got {r}')
             return logits
         native, raw = forward(), forward(original)
         reference = compare_logits(native, raw, start)

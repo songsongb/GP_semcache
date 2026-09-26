@@ -156,7 +156,8 @@ cd "$SEMCACHE_REPO"
 python scripts/39_cachegen_storage.py quality \
   --capture-manifest results/cachegen/c1/capture_manifest.json \
   --reconstruction-manifest results/cachegen/c1/reconstruction_manifest.json \
-  --device cuda
+  --device cuda \
+  --output-dir results/cachegen/c1
 ```
 
 Quality uses the existing M9-A `base_projection_path` and `materialize_hits` to
@@ -164,6 +165,16 @@ physically reuse the same query's captured projections at the same absolute
 positions. It compares native, raw QKV reuse, and original Q plus reconstructed
 K/V reuse. Default selection is the first evaluation block for each dataset/T;
 `--all-blocks` expands it. No trained/personalized LoRA quality claim is made.
+This command reruns only quality against the existing capture and reconstruction
+artifacts; do not rerun C0, capture, or benchmark for a quality harness fix.
+The C1 helper normalizes JSON token-ID lists to tuples before materialization
+and requires `component_scope='base_qkv_latency_only'`, which the base runtime
+materializer already supplies. Previously, the list in `Subsequence` compared
+unequal to the tuple in `CacheEntry`, triggering the cached-span validation error.
+A single partial span is valid: every projection must reuse exactly T rows and
+compute the remaining query_length−T rows natively. FP16_RAW−NATIVE measures
+physical reuse error; UNIFORM_INT8−FP16_RAW isolates compression error, with
+captured FP16 Q unchanged and only K/V reconstructed.
 The uncompressed control must pass existing M8 `exact_parity_passed` thresholds
 (max abs 1e-5, relative L2 1e-6, last-position KL 1e-8, last argmax equality).
 Failure is persisted as REFERENCE_FAILED; compressed quality is then unavailable

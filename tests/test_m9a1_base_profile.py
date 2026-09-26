@@ -193,6 +193,7 @@ class BaseProjectionDispatchTest(unittest.TestCase):
         from contextlib import nullcontext
         from unittest.mock import patch
         from semcache.system_cost.base_projection import base_projection_path
+        from semcache.experiments.cachegen.harness import quality_hits
 
         class Vector:
             def __init__(self, values): self.values = list(values)
@@ -211,7 +212,17 @@ class BaseProjectionDispatchTest(unittest.TestCase):
         transfers = []
         class Tensor:
             dtype, device, is_cuda = 'float16', 'cpu', False
-            def __init__(self, shape): self.shape = shape
+            def __init__(self, shape): self.shape, self.ndim = shape, len(shape)
+            def __getitem__(self, item):
+                if isinstance(item, int): return Tensor(self.shape[1:])
+                return Tensor((self.shape[0], item[1].stop-item[1].start, self.shape[2]))
+            def unsqueeze(self, dim): return Tensor((1, *self.shape))
+            def clone(self): return Tensor(self.shape)
+            def contiguous(self): return self
+            def numel(self):
+                import math
+                return math.prod(self.shape)
+            def element_size(self): return 2
             def index_select(self, dim, index):
                 result = Tensor((1, len(index), self.shape[-1]))
                 result.positions = index.tolist()
@@ -236,26 +247,56 @@ class BaseProjectionDispatchTest(unittest.TestCase):
         torch_stub = SimpleNamespace(zeros=lambda n, **kw: Vector([False]*n), bool=bool,
             inference_mode=nullcontext, empty=lambda shape, **kw: Tensor(shape),
             nn=SimpleNamespace(Linear=Linear))
-        for cached in (0, 2, 5):
+        for cached in (0, 3, 10, 16):
+            length = 16
+            start = 2 if 0 < cached < length else 0
+            fresh = [i for i in range(length) if not start <= i < start+cached]
             modules = {name: Linear() for name in 'qkv'}
             model = SimpleNamespace(named_modules=lambda: modules.items())
-            adapter = SimpleNamespace(model=model, layers=[0], projection_modules=lambda _: modules)
+            adapter = SimpleNamespace(model=model, layers=[0], projection_modules=lambda _: modules,
+                                      projection_module=lambda layer, name: modules[name])
             hits = []
             if cached:
-                ids = tuple(range(cached))
-                entry = SimpleNamespace(token_ids=ids, qkv_metadata={'component_scope': 'base_qkv_latency_only'},
-                                        tensors={0: tuple(Tensor((1, cached, 4)) for _ in 'qkv')})
-                hits = [SimpleNamespace(window=SimpleNamespace(start=0, end=cached, token_ids=ids), entry=entry)]
+                block = dict(token_group_size=cached, start_position=start,
+                             token_ids=list(range(start, start+cached)), query_token_ids=list(range(length)))
+                hits = quality_hits(adapter, {n: Tensor((1, cached, 4)) for n in 'qkv'}, block)
+                self.assertEqual(hits[0].window.token_ids, hits[0].entry.token_ids)
+                self.assertEqual(hits[0].entry.qkv_metadata['component_scope'], 'base_qkv_latency_only')
+                self.assertTrue(hits[0].entry.tensors)
+                if cached == 3:
+                    # Reproduce each original validation predicate independently,
+                    # including C1's JSON-list versus CacheEntry-tuple failure.
+                    hit = hits[0]
+                    invalid = [
+                        ('bounds', SimpleNamespace(start=-1, end=5, token_ids=hit.window.token_ids), hit.entry),
+                        ('component_scope', hit.window, SimpleNamespace(**dict(vars(hit.entry), qkv_metadata={}))),
+                        ('token_ids mismatch', SimpleNamespace(start=start, end=start+cached,
+                            token_ids=list(hit.window.token_ids)), hit.entry),
+                        ('token_ids mismatch', SimpleNamespace(start=start, end=start+cached,
+                            token_ids=(99, 98, 97)), hit.entry),
+                        ('nonempty tensor payload', hit.window, SimpleNamespace(**dict(vars(hit.entry), tensors={}))),
+                    ]
+                    with patch.dict(sys.modules, {'torch': torch_stub}):
+                        for reason, window, entry in invalid:
+                            with self.subTest(reason=reason, window=window):
+                                with self.assertRaisesRegex(ValueError, reason):
+                                    with base_projection_path(adapter, [SimpleNamespace(window=window, entry=entry)], length):
+                                        self.fail('Invalid hit accepted')
+                        with self.assertRaisesRegex(ValueError, 'overlap'):
+                            with base_projection_path(adapter, hits+hits, length):
+                                self.fail('Overlapping hits accepted')
             with patch.dict(sys.modules, {'torch': torch_stub}):
-                with base_projection_path(adapter, hits, 5) as audit:
+                with base_projection_path(adapter, hits, length) as audit:
                     for module in modules.values():
-                        self.assertEqual(module(Tensor((1, 5, 4))).shape, (1, 5, 4))
+                        self.assertEqual(module(Tensor((1, length, 4))).shape, (1, length, 4))
                 for module in modules.values():
-                    self.assertEqual(module.calls, [list(range(cached, 5))] if cached < 5 else [])
+                    self.assertEqual(module.calls, [fresh] if fresh else [])
                     self.assertNotIn('forward', module.__dict__)
                 self.assertEqual(len(audit.records), 3)
                 self.assertTrue(all(r['reused_projection_rows'] == cached for r in audit.records.values()))
-        self.assertEqual(len(transfers), 6)  # three cached Q/K/V copies for each nonempty hit case
+                self.assertTrue(all(r['native_projection_rows'] == length-cached for r in audit.records.values()))
+        # Three materialization transfers and three injection transfers per span.
+        self.assertEqual(len(transfers), 18)
 
 
 if __name__ == '__main__':
