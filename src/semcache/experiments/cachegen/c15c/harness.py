@@ -1,4 +1,4 @@
-"""Only parity and a bounded capture-only w=3 smoke; no full-run command."""
+"""Parity, bounded capture smoke, and calibration-only rate matching."""
 import argparse
 from collections import defaultdict, deque
 import math
@@ -10,7 +10,7 @@ from ..common import digest, file_hash, load_fixture, read_json, write_json, wri
 from ..harness import verify_capture
 from ..shared.device_contract import resolve_contract
 from .parity import run_parity, print_parity
-from .policy import CACHEGEN_RELEASED_QL2
+from .policy import CACHEGEN_RELEASED_QL2, DEFAULT_CANDIDATE_BINS
 from .reference import source_manifest
 from .storage import load_profile, roundtrip
 
@@ -194,7 +194,7 @@ def run_smoke(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='C1.5C released QL2 CPU parity / bounded SERAPH capture smoke')
+    parser = argparse.ArgumentParser(description='C1.5C QL2 parity / capture smoke / calibration-only matched rate')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('parity', 'smoke'):
         p = sub.add_parser(name)
@@ -205,6 +205,13 @@ def main(argv=None):
             p.add_argument('--num-blocks', type=int, default=12)
             p.add_argument('--seed', type=int, default=42)
             p.add_argument('--b2-profile-dir', type=Path, help='Optional existing frozen B2 profile directory; never fits profiles')
+    p = sub.add_parser('rate-calibrate', help='SERAPH calibration captures only; fits fresh policy-specific CDFs')
+    p.add_argument('--capture-manifest', type=Path, default=ROOT/'results/cachegen/c1/capture_manifest.json')
+    p.add_argument('--cachegen-repo', type=Path, default=Path('/data/khuss/repos/CacheGen'))
+    p.add_argument('--output-dir', type=Path, default=RESULTS/'rate_calibration')
+    p.add_argument('--candidate-bins', type=int, nargs='+', default=list(DEFAULT_CANDIDATE_BINS))
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--device', help='Optional assertion: must match recorded C1 device, no fallback')
     args = parser.parse_args(argv)
     if not args.output_dir.resolve().is_relative_to(RESULTS.resolve()):
         parser.error('All new outputs must be under results/cachegen/c1_5c')
@@ -215,5 +222,8 @@ def main(argv=None):
         print_parity(report)
         if report['status'] != 'PASS':
             raise SystemExit(1)
-    else:
+    elif args.command == 'smoke':
         run_smoke(args)
+    else:
+        from .rate_calibration import run_rate_calibration
+        run_rate_calibration(args)

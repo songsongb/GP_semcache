@@ -163,6 +163,16 @@ def encode(profile, streams, scales, shape, *, expected_tokens=10):
     if len(scales) != 2*shape[0]*shape[1]*4:
         raise ValueError('Unchanged C1 FP32 scales required')
     payloads = [core.arithmetic_encode(s, cdf) for s, cdf in zip(streams, profile.cdfs)]
+    return frame_payloads(profile, payloads, scales, shape, expected_tokens=expected_tokens)
+
+
+def frame_payloads(profile, payloads, scales, shape, *, expected_tokens=10):
+    """Frame already encoded independent roles without another coder pass."""
+    validate_shape(shape, expected_tokens=expected_tokens)
+    if len(payloads) != 4 or any(not isinstance(p, bytes) or not p for p in payloads):
+        raise ValueError('Exactly four nonempty encoded B2 role payloads required')
+    if len(scales) != 2*shape[0]*shape[1]*4:
+        raise ValueError('Unchanged B2 FP32 metadata slots required')
     header = core.BLOCK_HEADER.pack(b'SCKVB002', MODES.index(profile.mode), *shape, 4,
                                     bytes.fromhex(profile.sha256))
     lengths = struct.pack('<4I', *(len(p) for p in payloads))

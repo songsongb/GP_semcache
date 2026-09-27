@@ -57,15 +57,8 @@ class QuantizedTensor:
         return self.dequantize().to(self.input_dtype)
 
 
-@dataclass(frozen=True)
-class ReleasedQL2Policy:
-    name: str = 'CACHEGEN_RELEASED_QL2'
-
-    def bins_for(self, layer, role):
-        if type(layer) is not int or not 0 <= layer < 32 or role not in ('K', 'V'):
-            raise ValueError('Expected layer 0..31 and role K or V')
-        return 32 if layer < (10 if role == 'K' else 2) else 16
-
+class ReleasedFormulaPolicy:
+    """One released formula shared by QL2 and constant-bin uniform policies."""
     def profile(self):
         return {role: [self.bins_for(l, role) for l in range(32)] for role in ('K', 'V')}
 
@@ -98,6 +91,55 @@ class ReleasedQL2Policy:
         factor = limits[:, None, None] / maxabs
         symbols = torch.round(x * factor + limits[:, None, None]).to(torch.int8)
         return QuantizedTensor(self.name, role, layer_indices, bins, limits, maxabs, symbols, x.dtype)
+
+
+def validate_layer_role(layer, role):
+    if type(layer) is not int or not 0 <= layer < 32 or role not in ('K', 'V'):
+        raise ValueError('Expected layer 0..31 and role K or V')
+
+
+def validate_bins(bins):
+    # Released shifted int8 codes must fit 0..bins-2 without wrapping.
+    if type(bins) is not int or bins < 4 or bins > 128 or bins % 2:
+        raise ValueError('Bins must be even integers in [4,128] (positive C; shifted int8 range)')
+    return bins
+
+
+DEFAULT_CANDIDATE_BINS = tuple(range(8, 33, 2))
+
+
+def validate_candidates(candidates):
+    candidates = tuple(candidates)
+    if not candidates or len(set(candidates)) != len(candidates):
+        raise ValueError('Candidate bins must be nonempty and distinct')
+    return tuple(sorted(validate_bins(b) for b in candidates))
+
+
+@dataclass(frozen=True)
+class ReleasedQL2Policy(ReleasedFormulaPolicy):
+    name: str = 'CACHEGEN_RELEASED_QL2'
+
+    def bins_for(self, layer, role):
+        validate_layer_role(layer, role)
+        return 32 if layer < (10 if role == 'K' else 2) else 16
+
+
+@dataclass(frozen=True)
+class UniformKVPolicy(ReleasedFormulaPolicy):
+    k_bins: int
+    v_bins: int
+
+    def __post_init__(self):
+        validate_bins(self.k_bins)
+        validate_bins(self.v_bins)
+
+    @property
+    def name(self):
+        return f'UNIFORM_K{self.k_bins}_V{self.v_bins}'
+
+    def bins_for(self, layer, role):
+        validate_layer_role(layer, role)
+        return self.k_bins if role == 'K' else self.v_bins
 
 
 CACHEGEN_RELEASED_QL2 = ReleasedQL2Policy()
