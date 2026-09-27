@@ -22,16 +22,54 @@ def labels(mode):
         transform_classification='LOSSLESS_SYMBOL_TRANSFORM')
 
 
-def validate_shape(shape):
-    if (len(shape) != 3 or shape[0] != 32 or shape[1] != 10 or
+def validate_shape(shape, *, expected_tokens=10):
+    # Existing B2 callers retain their strict T=10 contract. C1.5C opts in to
+    # T=3 explicitly; no padding, regrouping or alternate modulus is involved.
+    if (expected_tokens not in (3, 10) or len(shape) != 3 or shape[0] != 32 or shape[1] != expected_tokens or
             type(shape[2]) is not int or not 1 <= shape[2] <= 65536):
-        raise ValueError('B2 requires [32,10,hidden]; T=3 and padding forbidden')
+        if expected_tokens == 10:
+            raise ValueError('B2 requires [32,10,hidden]; T=3 and padding forbidden')
+        raise ValueError(f'B2 requires [32,{expected_tokens},hidden]; padding forbidden')
 
 
-def stream_counts(shape):
-    validate_shape(shape)
+def stream_counts(shape, *, expected_tokens=10):
+    validate_shape(shape, expected_tokens=expected_tokens)
     n = shape[0]*shape[2]
-    return n, 9*n, n, 9*n
+    return n, (shape[1]-1)*n, n, (shape[1]-1)*n
+
+
+def _representation(data, shape, *, residual=False, inverse=False):
+    """Same B1 modulus-255 representation, extended only to explicit T=3."""
+    layers, tokens, hidden = shape
+    if not isinstance(data, bytes) or len(data) != layers*tokens*hidden or 255 in data:
+        raise ValueError('Expected bytes in the 255-symbol domain [0,254]')
+    if tokens == 10:
+        return b1.transform(data, shape, inverse=inverse) if residual else data
+    if not residual:
+        return data
+    out = bytearray(data)
+    for layer in range(layers):
+        start = layer*tokens*hidden
+        anchor = data[start:start+hidden]
+        for token in range(1, tokens):
+            offset = start+token*hidden
+            values = data[offset:offset+hidden]
+            out[offset:offset+hidden] = bytes(
+                (a+d-127) % 255 if inverse else (d-a+127) % 255
+                for a, d in zip(anchor, values))
+    return bytes(out)
+
+
+def _roles(data, shape):
+    if shape[1] == 10:
+        return b1.role_domains(data, shape)
+    layers, tokens, hidden = shape
+    anchor, remainder = bytearray(), bytearray()
+    for layer in range(layers):
+        start = layer*tokens*hidden
+        anchor.extend(data[start:start+hidden])
+        remainder.extend(data[start+hidden:start+tokens*hidden])
+    return bytes(anchor), bytes(remainder)
 
 
 def residual_components(mode):
@@ -40,29 +78,28 @@ def residual_components(mode):
     return (mode != MODES[0], mode == MODES[1])
 
 
-def streams_from_domains(mode, domains, shape):
-    validate_shape(shape)
+def streams_from_domains(mode, domains, shape, *, expected_tokens=10):
+    validate_shape(shape, expected_tokens=expected_tokens)
     if len(domains) != 2:
         raise ValueError('Separate K and V domains required')
     streams = []
     for data, residual in zip(domains, residual_components(mode)):
-        b1.validate_domain(data, shape)
-        representation = b1.transform(data, shape) if residual else data
-        streams.extend(b1.role_domains(representation, shape))
+        representation = _representation(data, shape, residual=residual)
+        streams.extend(_roles(representation, shape))
     return tuple(streams)
 
 
-def domains_from_streams(mode, streams, shape):
-    expected = stream_counts(shape)
+def domains_from_streams(mode, streams, shape, *, expected_tokens=10):
+    expected = stream_counts(shape, expected_tokens=expected_tokens)
     if len(streams) != 4 or any(len(s) != n or 255 in s for s, n in zip(streams, expected)):
         raise ValueError('Invalid B2 symbol streams')
-    layers, _, hidden = shape
+    layers, tokens, hidden = shape
     domains = []
     for component, residual in enumerate(residual_components(mode)):
         anchor, remainder = streams[2*component:2*component+2]
-        packed = b''.join(anchor[l*hidden:(l+1)*hidden]+remainder[l*9*hidden:(l+1)*9*hidden]
+        packed = b''.join(anchor[l*hidden:(l+1)*hidden]+remainder[l*(tokens-1)*hidden:(l+1)*(tokens-1)*hidden]
                           for l in range(layers))
-        domains.append(b1.transform(packed, shape, inverse=True) if residual else packed)
+        domains.append(_representation(packed, shape, residual=residual, inverse=True))
     return tuple(domains)
 
 
@@ -119,8 +156,8 @@ def fit(blocks, loader):
     return {m: Profile(m, tuple(core.cdf_from_counts(h) for h in counts[m])) for m in MODES}, counts, fitted
 
 
-def encode(profile, streams, scales, shape):
-    expected = stream_counts(shape)
+def encode(profile, streams, scales, shape, *, expected_tokens=10):
+    expected = stream_counts(shape, expected_tokens=expected_tokens)
     if len(streams) != 4 or any(len(s) != n for s, n in zip(streams, expected)):
         raise ValueError('B2 stream size mismatch')
     if len(scales) != 2*shape[0]*shape[1]*4:
@@ -133,7 +170,7 @@ def encode(profile, streams, scales, shape):
     return body+sha256(body).digest()
 
 
-def inspect(data, profile):
+def inspect(data, profile, *, expected_tokens=10):
     overhead = core.BLOCK_HEADER.size+16+32
     if len(data) < overhead or sha256(data[:-32]).digest() != data[-32:]:
         raise ValueError('Corrupt B2 bitstream SHA256')
@@ -141,7 +178,7 @@ def inspect(data, profile):
     if magic != b'SCKVB002' or mode != MODES.index(profile.mode) or n != 4 or fingerprint.hex() != profile.sha256:
         raise ValueError('B2 bitstream mode/profile mismatch')
     shape = layers, tokens, hidden
-    stream_counts(shape)
+    stream_counts(shape, expected_tokens=expected_tokens)
     scale_size = 2*layers*tokens*4
     lengths = struct.unpack_from('<4I', data, core.BLOCK_HEADER.size)
     if any(n < 1 for n in lengths) or len(data) != overhead+scale_size+sum(lengths):
@@ -159,7 +196,7 @@ def inspect(data, profile):
     return shape, scales, payloads, sizes
 
 
-def decode(data, profile):
-    shape, scales, payloads, _ = inspect(data, profile)
+def decode(data, profile, *, expected_tokens=10):
+    shape, scales, payloads, _ = inspect(data, profile, expected_tokens=expected_tokens)
     return tuple(core.arithmetic_decode(p, n, cdf) for p, n, cdf in
-                 zip(payloads, stream_counts(shape), profile.cdfs)), scales, shape
+                 zip(payloads, stream_counts(shape, expected_tokens=expected_tokens), profile.cdfs)), scales, shape

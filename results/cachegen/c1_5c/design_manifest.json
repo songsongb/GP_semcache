@@ -1,0 +1,166 @@
+{
+  "artifact_kind": "SOURCE_AND_CONFIGURATION_ONLY",
+  "decoder_layers": 32,
+  "full_workload_implemented": false,
+  "gp_semcache_base_commit": "dcb593abb1694958f87d704776614e92cbb14b82",
+  "implementation_reference_inspection": {
+    "fetched_official_checkout": "/tmp/semcache-c15c-cachegen-reference",
+    "inspected_commit": "6bed34ca9d495289955ed754cf2ad0c43346ee48",
+    "local_SERAPH_checkout": "NOT_MOUNTED",
+    "source_hashes_verified": true
+  },
+  "layer_profile": {
+    "K": [
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16
+    ],
+    "V": [
+      32,
+      32,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16
+    ]
+  },
+  "matched_rate_uniform_implemented": false,
+  "model": "facebook/opt-2.7b",
+  "model_dtype": "float16",
+  "nominal_ranges": {
+    "16_bins": {
+      "limit": 7,
+      "shifted_codes": [
+        0,
+        14
+      ],
+      "signed_storage_symbols": [
+        -7,
+        7
+      ]
+    },
+    "32_bins": {
+      "limit": 15,
+      "shifted_codes": [
+        0,
+        30
+      ],
+      "signed_storage_symbols": [
+        -15,
+        15
+      ]
+    }
+  },
+  "parity_device": "cpu",
+  "policy": "CACHEGEN_RELEASED_QL2",
+  "reference": {
+    "all_zero_vector": "0*inf -> NaN -> int8 conversion is device dependent; no source repair applied",
+    "checkout_status": "NOT_MOUNTED; faithfully reproduced pinned formulas",
+    "clipping": "none",
+    "commit": "6bed34ca9d495289955ed754cf2ad0c43346ee48",
+    "epsilon": null,
+    "files_functions": {
+      "LMCache/lmcache/storage_backend/serde/cachegen_basics.py": [
+        "CacheGenConfig.from_model_name"
+      ],
+      "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py": [
+        "do_dequantize",
+        "CacheGenDeserializer.from_bytes"
+      ],
+      "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py": [
+        "CacheGenSerializer.make_key_bins",
+        "CacheGenSerializer.make_value_bins",
+        "_split_kv",
+        "torch_quant_vectorized",
+        "encode_function"
+      ]
+    },
+    "formula": "C=bins//2-1; m=amax(abs(x),-1,keepdim=True); q=int8(round(x*(C/m)+C)); xhat=(float(q)-C)/C*m",
+    "input_dtype": "FP16 capture; maxabs inherits input dtype; bins/factor FP32",
+    "reconstruction_dtype": "do_dequantize FP32; final huggingface deserializer casts FP16",
+    "rounding": "torch.round (ties to even), shift BEFORE rounding",
+    "scale_axis": "merged heads*head_dim, independently per layer and token",
+    "schedule_origin": "Mistral-7B QUANT_LEVEL=2 branch copied literally to 32-layer OPT; OPT is not whitelisted",
+    "source_sha256": {
+      "LMCache/lmcache/storage_backend/serde/cachegen_basics.py": "82303500bb5fd44f6c601ff01fec5b7de919d160bb8fe4f429a609c268816ea7",
+      "LMCache/lmcache/storage_backend/serde/cachegen_decoder.py": "fcd529f0c889cd69d15fe9061d2b63b864e691455d964d21896cc327a3b4fc3e",
+      "LMCache/lmcache/storage_backend/serde/cachegen_encoder.py": "b8a0ec7b4d1c787ac885f03b86d361d2e64e88c0b12486c0ac271e1c9ec71832"
+    },
+    "zero_guard": false
+  },
+  "seed": 42,
+  "selected_block_ids": "Recorded only during manual SERAPH smoke",
+  "slurm_submitted": false,
+  "smoke_default_blocks": 12,
+  "smoke_device": "recorded C1 CUDA device, no CPU fallback",
+  "smoke_maximum_blocks": 16,
+  "smoke_status": "NOT RUN \u2014 requires SERAPH",
+  "stage": "C1.5C-0/C1.5C-1",
+  "storage": {
+    "backend": "Existing C1.5B B2_ANCHOR_MOD_RESIDUAL_KV",
+    "geometry": "Explicit opt-in T=3; default T=10 preserved",
+    "metadata": "FP16 maxabs exactly widened into existing FP32 slots",
+    "modulus": 255,
+    "old_B2_bitstreams": "Unchanged bytes; checked by three original-source SHA256 goldens",
+    "old_B2_resume": "Frozen implementation hash contract intentionally differs after format source change",
+    "optional": true,
+    "profile": "Existing frozen Uniform INT8 B2 calibration CDF, unchanged",
+    "signed_mapping": "+127"
+  },
+  "window_size": 3
+}

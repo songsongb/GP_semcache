@@ -34,3 +34,6 @@ results/cachegen/**/*.bin
 # Versioned C1.5-B source audit and design (not experimental measurements)
 !results/cachegen/c1_5b/source_audit.json
 !results/cachegen/c1_5b/design_manifest.json
+
+# C1.5C source/configuration only; generated smoke and parity measurements stay ignored.
+!results/cachegen/c1_5c/design_manifest.json
