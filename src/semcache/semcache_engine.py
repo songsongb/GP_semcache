@@ -67,7 +67,8 @@ class SemCacheEngine:
 
     def query(self, query_text, user_id, query_id, compare_baseline=False,
               execution_mode='SEMCACHE_PHYSICAL_REUSE', collect_timing=False,
-              baseline_logits=None):
+              baseline_logits=None, return_generation_state=False,
+              return_reuse_hits=False):
         import torch
         if collect_timing and compare_baseline and baseline_logits is None:
             raise ValueError('Timed queries require baseline_logits computed outside request timing')
@@ -144,7 +145,8 @@ class SemCacheEngine:
                   executed_nonoverlap_hits=len(execution_hits))
         for hit in execution_hits:
             self.emit('FETCH', **self.entry_fields(hit.entry), target_start=hit.window.start, target_end=hit.window.end)
-        inputs = dict(input_ids=torch.tensor([ids], device=next(self.model.parameters()).device), use_cache=False)
+        inputs = dict(input_ids=torch.tensor([ids], device=next(self.model.parameters()).device),
+                      use_cache=return_generation_state)
         with torch.inference_mode():
             baseline = (external_baseline if external_baseline is not None else
                         (self.model(**inputs).logits.detach().cpu() if compare_baseline else None))
@@ -389,7 +391,14 @@ class SemCacheEngine:
             projection_skip_used=projection_skip_used,
             timing=timing_values, timing_scopes=timing_scopes,
             metric_source='measured except logical capacity and paper_estimated analytical savings', safe_reuse_claimed=False)
-        return dict(summary=row, events=self.events[event_start:], logits=logits, projection_audit=audit.records)
+        result = dict(summary=row, events=self.events[event_start:], logits=logits,
+                      projection_audit=audit.records)
+        if return_generation_state:
+            result['generation_state'] = dict(past_key_values=output.past_key_values,
+                                               next_logits=output.logits[:, -1])
+        if return_reuse_hits:
+            result['reuse_hits'] = tuple(execution_hits)
+        return result
 
     def logical_query(self, query_text, user_id, query_id, *, logical_block_bytes):
         """Workload/cache-event simulation using the M5 policies, without tensors.
