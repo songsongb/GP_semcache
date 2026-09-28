@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT/'src'))
 
 from semcache.experiments.cachegen.b2 import format as fmt
 from semcache.experiments.cachegen.c2.physical_storage import DEFAULT_PROFILE
-from semcache.experiments.cachegen.c4_quality import OUTPUT, run_quality
+from semcache.experiments.cachegen.c4_quality import DIVERSE_OUTPUT, OUTPUT, SELECTION_MODES, run_quality
 
 
 def main():
@@ -20,13 +20,16 @@ def main():
                         default=ROOT/'results/workloads/m9b_multiwoz_semantic.jsonl')
     parser.add_argument('--profile-path', type=Path, default=DEFAULT_PROFILE)
     parser.add_argument('--per-dataset', type=int, default=16)
+    parser.add_argument('--selection-mode', choices=SELECTION_MODES, default='diverse')
     parser.add_argument('--coder-backend', choices=(fmt.FAST_CODER,), default=fmt.FAST_CODER)
     parser.add_argument('--max-new-tokens', type=int, default=16)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--output-dir', type=Path, default=OUTPUT)
+    parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    if args.output_dir is None:
+        args.output_dir = DIVERSE_OUTPUT if args.selection_mode == 'diverse' else OUTPUT
     if not 1 <= args.max_new_tokens <= 16:
         parser.error('C4 greedy generation is limited to 1..16 new tokens')
     try:

@@ -5,7 +5,7 @@ The existing base_projection_path is the validated bare-OPT SemCache reuse path.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict, deque
 from contextlib import nullcontext
 import hashlib
 import json
@@ -20,12 +20,15 @@ from semcache.experiments.cachegen.c2.physical_storage import (
 )
 from semcache.experiments.cachegen.common import file_hash, write_csv, write_json
 from semcache.experiments.cachegen.c15c.harness import ROOT, git_state
+from semcache.experiments.dataset_adapters import SNIPS_INTENTS
 from semcache.experiments.m9b_semantic_workload import MODEL_ID, MODEL_REVISION
 from semcache.semantic.matcher import ExactTokenMatcher
 from semcache.semantic.subsequence import Subsequence, SubsequenceExtractor
 from semcache.simulation.multi_user import digest, read_workload, safety_eligible
 
 OUTPUT = ROOT/'results/cachegen/c4/quality_validation'
+DIVERSE_OUTPUT = ROOT/'results/cachegen/c4/quality_validation_diverse'
+SELECTION_MODES = ('diverse', 'source-order')
 CONDITIONS = ('FULL_RECOMPUTE', 'RAW_REUSE', 'COMPRESSED_REUSE')
 PAIRS = (('RAW_REUSE', 'COMPRESSED_REUSE'),
          ('FULL_RECOMPUTE', 'RAW_REUSE'),
@@ -68,12 +71,39 @@ def validate_case(case):
     return True
 
 
-def select_cases(rows, dataset, limit):
+def _selection_group(row, dataset):
+    source_id = str(row['source_id'])
+    if dataset == 'snips':
+        group, separator, suffix = source_id.rpartition(':')
+        if not separator or not group or not suffix:
+            raise ValueError(f'Cannot recover SNIPS intent from prepared source ID: {source_id}')
+        if group not in SNIPS_INTENTS or not suffix.isdigit():
+            raise ValueError(f'Invalid SNIPS intent/source ID: {source_id}')
+        if row.get('domain_or_intent') not in (None, group):
+            raise ValueError('SNIPS source-ID intent disagrees with prepared intent')
+    elif dataset == 'multiwoz':
+        conversation = row.get('conversation_id')
+        if conversation is None or not str(conversation):
+            raise ValueError('MultiWOZ prepared conversation_id required')
+        group = str(conversation)
+        # Prefix validation leaves the turn ID entirely opaque, including any
+        # embedded colons. It never treats a turn as a separate dialogue.
+        if not source_id.startswith(group + ':') or not source_id[len(group)+1:]:
+            raise ValueError('MultiWOZ dialogue ID must match source ID independently of turn ID')
+    else:
+        raise ValueError('Unsupported C4 dataset')
+    return group
+
+
+def select_cases(rows, dataset, limit, *, mode='source-order'):
     if type(limit) is not int or not 1 <= limit <= 16:
         raise ValueError('C4 is limited to 1..16 cases per dataset')
+    if mode not in SELECTION_MODES:
+        raise ValueError('Unknown C4 selection mode')
     selected, skipped, seen_ids = [], defaultdict(int), set()
+    eligible = []
     for row in rows:
-        if len(selected) == limit:
+        if mode == 'source-order' and len(eligible) == limit:
             break
         if row.get('dataset') != dataset or row.get('model_id') != MODEL_ID:
             raise ValueError('Prepared workload namespace mismatch')
@@ -90,6 +120,23 @@ def select_cases(rows, dataset, limit):
             skipped['missing_prepared_text'] += 1
             continue
         seen_ids.add(source_id)
+        group = _selection_group(row, dataset) if mode == 'diverse' else None
+        eligible.append((row, group))
+    if mode == 'diverse':
+        queues = {}
+        for row, group in eligible:
+            queues.setdefault(group, deque()).append(row)
+        # First pass covers every available group; later passes take second,
+        # third, ... cases, always preserving row order within each group.
+        chosen = []
+        while len(chosen) < limit and any(queues.values()):
+            for group, queue in queues.items():
+                if queue and len(chosen) < limit:
+                    chosen.append((queue.popleft(), group))
+    else:
+        chosen = eligible
+    for row, group in chosen:
+        ids, source_id = row['token_ids'], str(row['source_id'])
         block = tuple(ids[:WINDOW])
         case = dict(case_id=f'{dataset}:{source_id}:exact_repeat', dataset=dataset,
             source_id=source_id, target_id=f'{source_id}::c4_exact_repeat',
@@ -98,7 +145,8 @@ def select_cases(rows, dataset, limit):
             reuse_start=0, reuse_end=WINDOW, logical_user=f'c4_{dataset}_base',
             query_text=row['query_text'], source_workload_index=row.get('global_query_index'),
             query_text_sha256=hashlib.sha256(row['query_text'].encode('utf-8')).hexdigest(),
-            selection_kind='same_prepared_query_cold_then_exact_repeat')
+            selection_kind='same_prepared_query_cold_then_exact_repeat',
+            selection_group=group, selection_group_kind='intent' if dataset == 'snips' else 'dialogue')
         validate_case(case)
         selected.append(case)
     return selected, dict(skipped)
@@ -181,24 +229,35 @@ def dry_run(args):
     profile = verify_profile(args.profile_path)
     if args.coder_backend != fmt.FAST_CODER:
         raise ValueError('C4 requires frozen FAST_PY_BITEXACT backend')
+    selection_mode = getattr(args, 'selection_mode', 'diverse')
+    if selection_mode not in SELECTION_MODES:
+        raise ValueError('Unknown C4 selection mode')
     paths = {'snips': Path(args.snips), 'multiwoz': Path(args.multiwoz)}
     rows = {dataset: read_workload(path, dataset) for dataset, path in paths.items()}
     cases, skipped = {}, {}
     for dataset, workload in rows.items():
-        cases[dataset], skipped[dataset] = select_cases(workload, dataset, args.per_dataset)
+        cases[dataset], skipped[dataset] = select_cases(
+            workload, dataset, args.per_dataset, mode=selection_mode)
         print(f"{dataset}: selected={len(cases[dataset])}/{args.per_dataset} "
-              f"one_exact_w3_hit=true skipped={skipped[dataset]}")
+              f"exact_w3_eligible=true one_exact_w3_hit=true skipped={skipped[dataset]}")
+        if selection_mode == 'diverse':
+            distribution = dict(sorted(Counter(case['selection_group'] for case in cases[dataset]).items()))
+            label = 'intent' if dataset == 'snips' else 'dialogue'
+            print(f"{dataset} cases_per_{label}={json.dumps(distribution, sort_keys=True)}")
         if not cases[dataset]:
             raise ValueError(f'No valid exact-repeat prepared cases for {dataset}')
     selected = [case for dataset in ('snips', 'multiwoz') for case in cases[dataset]]
     for case in selected:
         validate_case(case)
+    print(f'total_selected_cases={len(selected)}; selection_mode={selection_mode}')
     print(f'profile_sha256={profile["sha256"]}; coder_backend={args.coder_backend}')
     print(f'expected controlled teacher-forced inference evaluations={3*len(selected)}')
     print(f'expected greedy decode steps at most={3*len(selected)*args.max_new_tokens}')
     if len(selected) < 2*args.per_dataset:
         print('Fewer than requested valid prepared cases; selected deterministic maximum.')
-    return dict(cases=selected, skipped=skipped, profile=profile,
+    return dict(cases=selected, skipped=skipped, profile=profile, selection_mode=selection_mode,
+        selection_distributions={dataset: dict(sorted(Counter(case['selection_group'] for case in cases[dataset]).items()))
+                                 if selection_mode == 'diverse' else {} for dataset in cases},
         workload_sha256={dataset: file_hash(path) for dataset, path in paths.items()},
         workload_paths={dataset: str(path.resolve()) for dataset, path in paths.items()},
         workload_counts={dataset: len(rows[dataset]) for dataset in rows})
@@ -376,6 +435,7 @@ def run_case(case, model, tokenizer, adapter, codec, max_new_tokens, device):
         target_id=case['target_id'], reused_token_ids=case['reused_token_ids'],
         cache_key=case['cache_key'], reuse_position=case['reuse_start'], reuse_end=case['reuse_end'],
         source_workload_index=case['source_workload_index'], query_text_sha256=case['query_text_sha256'],
+        selection_group=case['selection_group'], selection_group_kind=case['selection_group_kind'],
         prompt_tokens=len(tokenized), timings=timings, comparisons=comparisons,
         observed_prompt_suffix_nll=nll, observed_suffix_label_count=len(tokenized)-WINDOW-1,
         generated_token_ids=generated,
@@ -385,7 +445,8 @@ def run_case(case, model, tokenizer, adapter, codec, max_new_tokens, device):
 def _flatten_case(row):
     flat = {k: row[k] for k in ('case_id', 'dataset', 'source_id', 'target_id', 'reused_token_ids',
                                 'cache_key', 'reuse_position', 'reuse_end', 'source_workload_index',
-                                'query_text_sha256', 'prompt_tokens', 'observed_suffix_label_count',
+                                'query_text_sha256', 'selection_group', 'selection_group_kind',
+                                'prompt_tokens', 'observed_suffix_label_count',
                                 'symbol_mismatches',
                                 'reconstruction_failures', 'logical_hit_mismatches')}
     flat['reused_token_ids'] = json.dumps(flat['reused_token_ids'])
@@ -439,8 +500,9 @@ def run_quality(args):
     from semcache.models.model_adapter import OPTModelAdapter
     from semcache.utils.seed import seed_everything
     output = Path(args.output_dir).resolve()
-    if output != OUTPUT.resolve() and not output.is_relative_to(OUTPUT.resolve()):
-        raise ValueError('C4 outputs must remain under results/cachegen/c4/quality_validation')
+    allowed_root = DIVERSE_OUTPUT if plan['selection_mode'] == 'diverse' else OUTPUT
+    if output != allowed_root.resolve() and not output.is_relative_to(allowed_root.resolve()):
+        raise ValueError(f'C4 {plan["selection_mode"]} outputs must remain under {allowed_root}')
     if (output/'manifest.json').exists():
         raise ValueError('Existing C4 result would be overwritten')
     if not str(args.device).startswith('cuda:') or not torch.cuda.is_available():
@@ -468,9 +530,14 @@ def run_quality(args):
         selected_case_ids=[c['case_id'] for c in plan['cases']],
         selected_cases=[{k: c[k] for k in ('case_id', 'dataset', 'source_id', 'target_id',
             'source_workload_index', 'query_text_sha256', 'reused_token_ids', 'cache_key',
-            'reuse_start', 'reuse_end')} for c in plan['cases']],
+            'reuse_start', 'reuse_end', 'selection_group', 'selection_group_kind')} for c in plan['cases']],
         dataset_counts={d: sum(c['dataset'] == d for c in plan['cases']) for d in ('snips','multiwoz')},
-        selection_rule='First prepared rows in source order, unique source IDs, 5..32 OPT tokens; cold then exact repeat of same prepared query; first w=3 span only',
+        selection_mode=plan['selection_mode'], selection_distributions=plan['selection_distributions'],
+        selection_rule=('Eligible prepared rows in source order within SNIPS source-ID intents / MultiWOZ dialogues; '
+                        'round-robin groups, one per group before a second; unique IDs, 5..32 OPT tokens; '
+                        'cold then exact repeat; first w=3 span only' if plan['selection_mode'] == 'diverse' else
+                        'First eligible prepared rows in source order, unique IDs, 5..32 OPT tokens; '
+                        'cold then exact repeat; first w=3 span only'),
         exact_token_safety='Same full prompt, owner, base adapter, token IDs and source/target position; explicit evidence validated by safety_eligible',
         one_reuse_block_constraint=True, workload_sha256=plan['workload_sha256'],
         workload_paths=plan['workload_paths'], workload_counts=plan['workload_counts'],

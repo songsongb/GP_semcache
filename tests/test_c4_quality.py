@@ -12,7 +12,11 @@ from semcache.experiments.m9b_semantic_workload import MODEL_ID, MODEL_REVISION
 
 def row(dataset='snips', source_id='q0', ids=None, cluster=2):
     ids = ids or [1, 2, 3, 4, 5, 6]
-    return dict(dataset=dataset, source_id=source_id, query_text=f'prepared {source_id}',
+    group = source_id.rpartition(':')[0]
+    return dict(dataset=dataset, source_id=source_id,
+                domain_or_intent=group if dataset == 'snips' else None,
+                conversation_id=group if dataset == 'multiwoz' else None,
+                query_text=f'prepared {source_id}',
                 token_ids=ids, cluster_id=cluster, model_id=MODEL_ID,
                 model_revision=MODEL_REVISION, tokenizer_id=f'{MODEL_ID}@{MODEL_REVISION}',
                 semantic_assignment_source='prepared-semantic-fixture')
@@ -32,6 +36,37 @@ def test_deterministic_exact_repeat_selection_and_one_block():
         assert case['reuse_start'] == 0 and case['reuse_end'] == 3
     selected[0]['reused_token_ids'] = [9, 9, 9]
     with pytest.raises(ValueError, match='exact-repeat'): c4.validate_case(selected[0])
+
+
+def test_diverse_snips_round_robin_source_id_intents():
+    rows = [row(source_id=f'AddToPlaylist:{i}') for i in range(4)] + [
+        row(source_id=f'BookRestaurant:{i}') for i in range(3)] + [
+        row(source_id=f'GetWeather:{i}') for i in range(3)]
+    selected, skipped = c4.select_cases(rows, 'snips', 7, mode='diverse')
+    assert [c['source_id'] for c in selected] == [
+        'AddToPlaylist:0', 'BookRestaurant:0', 'GetWeather:0',
+        'AddToPlaylist:1', 'BookRestaurant:1', 'GetWeather:1', 'AddToPlaylist:2']
+    assert [c['selection_group'] for c in selected[:3]] == [
+        'AddToPlaylist', 'BookRestaurant', 'GetWeather']
+    assert selected == c4.select_cases(rows, 'snips', 7, mode='diverse')[0]
+    assert skipped == {}
+    bad = [dict(row(source_id='AddToPlaylist:0'), domain_or_intent='BookRestaurant')]
+    with pytest.raises(ValueError, match='disagrees'): c4.select_cases(bad, 'snips', 1, mode='diverse')
+
+
+def test_diverse_multiwoz_one_per_dialogue_before_second_turn():
+    rows = [row('multiwoz', source_id) for source_id in (
+        'dlgA:0', 'dlgA:2', 'dlgB:0', 'dlgB:2', 'dlg:part:1', 'dlg:part:3')]
+    selected, _ = c4.select_cases(rows, 'multiwoz', 5, mode='diverse')
+    assert [c['source_id'] for c in selected] == [
+        'dlgA:0', 'dlgB:0', 'dlg:part:1', 'dlgA:2', 'dlgB:2']
+    assert [c['selection_group'] for c in selected[:3]] == ['dlgA', 'dlgB', 'dlg:part']
+    assert selected == c4.select_cases(rows, 'multiwoz', 5, mode='diverse')[0]
+    colon_turn = dict(row('multiwoz', 'dlgA:turn:2'), conversation_id='dlgA')
+    assert c4.select_cases([colon_turn], 'multiwoz', 1, mode='diverse')[0][0]['selection_group'] == 'dlgA'
+    with pytest.raises(ValueError, match='dialogue ID'):
+        c4.select_cases([dict(row('multiwoz', 'dlgA:0'), conversation_id='wrong')],
+                        'multiwoz', 1, mode='diverse')
 
 
 def test_exact_token_safety_rejects_wrong_prompt_position_and_key():
@@ -72,7 +107,8 @@ def test_dry_run_does_not_load_model_or_fit_cdf(tmp_path, monkeypatch, capsys):
     paths = {}
     for dataset in ('snips', 'multiwoz'):
         path = tmp_path/f'{dataset}.jsonl'
-        path.write_text(json.dumps(row(dataset, f'{dataset}_0'))+'\n')
+        source_id = 'AddToPlaylist:0' if dataset == 'snips' else 'dlg0:0'
+        path.write_text(json.dumps(row(dataset, source_id))+'\n')
         paths[dataset] = path
     args = SimpleNamespace(snips=paths['snips'], multiwoz=paths['multiwoz'], profile_path=tmp_path/'profile.bin',
         per_dataset=1, coder_backend='FAST_PY_BITEXACT', max_new_tokens=16, dry_run=True)
@@ -81,6 +117,9 @@ def test_dry_run_does_not_load_model_or_fit_cdf(tmp_path, monkeypatch, capsys):
     report = capsys.readouterr().out
     assert 'expected controlled teacher-forced inference evaluations=6' in report
     assert 'one_exact_w3_hit=true' in report
+    assert 'total_selected_cases=2; selection_mode=diverse' in report
+    assert 'snips cases_per_intent={"AddToPlaylist": 1}' in report
+    assert 'multiwoz cases_per_dialogue={"dlg0": 1}' in report
     assert not (tmp_path/'results').exists()
 
 
