@@ -179,8 +179,13 @@ def test_global_encode_budget_rejects_33_and_finds_first_feasible_alternative():
                   _budget_episode('multiwoz', 'y', 7, 1)])
     chosen, diagnostics = c5.select_balanced_global(discovered, 2, max_encodes=32)
     assert chosen is None  # 9 + 9 + 8 + 7 = 33
-    assert diagnostics['snips']['rejection_counts']['rejected_by_max_encodes'] == 2
-    assert diagnostics['multiwoz']['rejection_counts']['rejected_by_max_encodes'] == 2
+    assert diagnostics['snips']['episodes_passing_encode_guard'] == 2
+    assert diagnostics['multiwoz']['episodes_passing_encode_guard'] == 2
+    assert diagnostics['snips']['candidates_participating_in_feasible_balanced_2plus2'] == 0
+    assert diagnostics['multiwoz']['candidates_participating_in_feasible_balanced_2plus2'] == 0
+    assert diagnostics['snips']['rejection_counts']['rejected_by_max_encodes'] == 0
+    assert diagnostics['multiwoz']['rejection_counts'][
+        'cannot_participate_in_balanced_2plus2_within_encode_cap'] == 2
     discovered['snips'].append(_budget_episode('snips', 'c', 8, 2))
     chosen, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
     assert [e['episode_id'] for e in chosen['snips']] == ['snips:2', 'snips:0']
@@ -202,6 +207,26 @@ def test_global_selection_skips_early_over_budget_combinations_deterministically
     assert [e['episode_id'] for e in first['snips']] == ['snips:1', 'snips:2']
     assert sum(e['expected_compressed_admissions'] for episodes in first.values()
                for e in episodes) == 31
+
+
+def test_minimum_balanced_2plus2_is_exact_deterministic_and_prefix_guarded():
+    discovered = dict(
+        snips=[_budget_episode('snips', 'a', 9, 0),
+               _budget_episode('snips', 'b', 8, 1),
+               _budget_episode('snips', 'c', 1, 2048)],
+        multiwoz=[_budget_episode('multiwoz', 'x', 7, 0),
+                  _budget_episode('multiwoz', 'y', 7, 1)])
+    first = c5.minimum_balanced_2plus2(discovered, max_encodes=32)
+    second = c5.minimum_balanced_2plus2(discovered, max_encodes=32)
+    assert first == second
+    assert first['minimum_balanced_2plus2_encode_upper_bound'] == 31
+    assert first['minimum_balanced_2plus2_episode_ids'] == [
+        'snips:1', 'snips:0', 'multiwoz:0', 'multiwoz:1']
+    assert first['dataset_minima']['snips']['minimum_single_episode_encode_cost'] == 8
+    assert first['dataset_minima']['snips']['minimum_valid_two_episode_combined_encode_cost'] == 17
+    assert first['dataset_minima']['multiwoz']['minimum_valid_two_episode_ids'] == [
+        'multiwoz:0', 'multiwoz:1']
+    assert not first['participation'].get(id(discovered['snips'][2]), False)
 
 
 def test_logical_pair_requires_same_hit_admission_and_key():
@@ -324,3 +349,35 @@ def test_dry_run_never_loads_model_or_codec(tmp_path, monkeypatch, capsys):
     assert 'feasible_balanced_selection=false' in shortfall_output
     assert 'snips: natural_episodes_after_nonprefix_filter=1 candidates_considered=1 selected=0/2' in shortfall_output
     assert 'multiwoz: natural_episodes_after_nonprefix_filter=1 candidates_considered=1 selected=0/2' in shortfall_output
+
+
+def test_dry_run_reports_exact_minimum_when_global_cap_cannot_fit(
+        tmp_path, monkeypatch, capsys):
+    paths = {}
+    for dataset in ('snips', 'multiwoz'):
+        paths[dataset] = tmp_path/f'{dataset}.jsonl'
+        paths[dataset].write_text(''.join(json.dumps(row)+'\n'
+                                              for row in _rows(dataset, count=2)))
+    monkeypatch.setattr(c5, 'verify_profile', lambda _: dict(sha256=c5.PROFILE_SHA256))
+    monkeypatch.setattr(c5, 'FrozenK20V16Codec', lambda *a, **k: pytest.fail('codec loaded'))
+    monkeypatch.setattr(c5.fmt, 'fit', lambda *a, **k: pytest.fail('CDF fit called'))
+    args = argparse.Namespace(snips=paths['snips'], multiwoz=paths['multiwoz'],
+        profile_path=tmp_path/'unused.bin', coder_backend=c5.fmt.FAST_CODER,
+        per_dataset=2, seed=42, max_prompt_tokens=8, max_encodes=32,
+        max_semantic_prefix_rows=2048, dry_run=True)
+    with pytest.raises(ValueError, match='global encode limit 32'):
+        c5.run(args)
+    out = capsys.readouterr().out
+    assert 'minimum_balanced_2plus2_encode_upper_bound=36' in out
+    assert "minimum_balanced_2plus2_episode_ids=['snips:30->31', 'snips:32->33', 'multiwoz:20->21', 'multiwoz:22->23']" in out
+    assert out.count('minimum_cost_episode=') == 4
+    assert 'cumulative_minimum_encode_upper_bound=36' in out
+    assert 'source_positions=' in out and 'target_positions=' in out
+    assert 'cross_user=' in out and 'semantic_cluster=' in out
+    assert 'exact_w3_token_ids=' in out
+    assert 'minimum_single_episode_encode_cost=9' in out
+    assert 'minimum_valid_two_episode_combined_encode_cost=18' in out
+    assert 'episodes_passing_encode_guard=2' in out
+    assert 'individual_candidates_passing_max_encodes=2' in out
+    assert 'candidates_participating_in_feasible_balanced_2plus2=0' in out
+    assert 'planner_reason=no_global_balanced_combination_within_encode_cap' in out
