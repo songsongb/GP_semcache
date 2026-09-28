@@ -260,8 +260,8 @@ class SemCacheEngine:
                 nonlocal materialization_ms
                 materialize_timer = CPUWallTimer()
                 materialize_timer.__enter__()
-                physical = CacheEntry.from_tensors(cluster, window.token_ids, (window.start, window.end),
-                                                  blocks, self.storage_device)
+                physical = self.cache.make_entry(cluster, window.token_ids, (window.start, window.end),
+                                                 blocks, self.storage_device)
                 physical.impact, physical.qkv_metadata = entry.impact, entry.qkv_metadata
                 materialize_timer.__exit__(None, None, None)
                 materialization_ms += materialize_timer.elapsed_ms
