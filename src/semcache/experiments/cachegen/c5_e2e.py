@@ -272,6 +272,142 @@ def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
     return chosen
 
 
+def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
+                           max_semantic_prefix_rows=2048):
+    """Find the first diverse, quality-blind balanced set under one encode cap.
+
+    Candidate priority matches select_diverse. Distinct groups are preferred,
+    then source order breaks ties. The cap is shared by both datasets.
+    """
+    if type(per_dataset) is not int or per_dataset not in (1, 2, 4):
+        raise ValueError('C5 permits 1, 2, or 4 episodes per dataset')
+    if type(max_encodes) is not int or not 1 <= max_encodes <= MAX_ENCODES:
+        raise ValueError('C5 maximum compressed encodes must remain within 1..32')
+    if type(max_semantic_prefix_rows) is not int or max_semantic_prefix_rows < 1:
+        raise ValueError('Invalid semantic-prefix guard')
+    names = ('snips', 'multiwoz')
+    ordered = {}
+    for name in names:
+        ordered[name] = [e for _, e in sorted(
+            ((i, e) for i, e in enumerate(discovered[name])
+             if e['target_index'] < max_semantic_prefix_rows),
+            key=lambda item: (
+                not item[1].get('initial_special_token_id_avoided', True),
+                item[1]['expected_compressed_admissions'],
+                not item[1]['cross_user'], item[0]))]
+
+    def combinations(name, budget, distinct):
+        candidates = ordered[name]
+        # An unconstrained suffix bound prunes impossible branches, including
+        # large candidate pools when the shared cap cannot fit four episodes.
+        lower = [[float('inf')]*(per_dataset+1) for _ in range(len(candidates)+1)]
+        lower[-1][0] = 0
+        for i in range(len(candidates)-1, -1, -1):
+            lower[i][0] = 0
+            cost = candidates[i]['expected_compressed_admissions']
+            for count in range(1, per_dataset+1):
+                lower[i][count] = min(lower[i+1][count], cost+lower[i+1][count-1])
+
+        def visit(start, remaining, available, groups, chosen, total):
+            if remaining == 0:
+                yield tuple(chosen), total
+                return
+            if lower[start][remaining] > available:
+                return
+            for i in range(start, len(candidates)):
+                episode = candidates[i]
+                cost = episode['expected_compressed_admissions']
+                if cost > available or (distinct and episode['group'] in groups):
+                    continue
+                chosen.append(episode)
+                yield from visit(i+1, remaining-1, available-cost,
+                                 groups | {episode['group']}, chosen, total+cost)
+                chosen.pop()
+
+        yield from visit(0, per_dataset, budget, set(), [], 0)
+
+    # Prefer distinct intents/dialogues for both datasets. A repeat is allowed
+    # only when no more diverse balanced combination fits the global budget.
+    def minimum_cost(name, distinct):
+        if distinct:
+            group_costs = {}
+            for episode in ordered[name]:
+                group = episode['group']
+                cost = episode['expected_compressed_admissions']
+                group_costs[group] = min(cost, group_costs.get(group, float('inf')))
+            costs = sorted(group_costs.values())
+        else:
+            costs = sorted(e['expected_compressed_admissions'] for e in ordered[name])
+        return sum(costs[:per_dataset]) if len(costs) >= per_dataset else float('inf')
+
+    selected = None
+    multiwoz_first = {}
+    for snips_distinct, multiwoz_distinct in ((True, True), (True, False),
+                                               (False, True), (False, False)):
+        min_snips = minimum_cost('snips', snips_distinct)
+        min_multiwoz = minimum_cost('multiwoz', multiwoz_distinct)
+        if min_snips + min_multiwoz > max_encodes:
+            continue
+        for snips, snips_cost in combinations('snips', max_encodes-min_multiwoz,
+                                               snips_distinct):
+            remaining = max_encodes-snips_cost
+            key = (remaining, multiwoz_distinct)
+            if key not in multiwoz_first:
+                multiwoz_first[key] = next(combinations('multiwoz', remaining,
+                                                       multiwoz_distinct), None)
+            if multiwoz_first[key] is not None:
+                selected = dict(snips=list(snips), multiwoz=list(multiwoz_first[key][0]))
+                break
+        if selected is not None:
+            break
+
+    diagnostics = {}
+    for name in names:
+        chosen = selected[name] if selected else []
+        selected_ids = {id(e) for e in chosen}
+        rejected = []
+        other_name = 'multiwoz' if name == 'snips' else 'snips'
+        other_costs = sorted(e['expected_compressed_admissions']
+                             for e in ordered[other_name])
+        same_costs_all = sorted(e['expected_compressed_admissions']
+                                for e in ordered[name])
+        for episode in discovered[name]:
+            if id(episode) in selected_ids:
+                continue
+            if episode['target_index'] >= max_semantic_prefix_rows:
+                reason = 'rejected_by_max_semantic_prefix_rows'
+            else:
+                same_costs = same_costs_all[:per_dataset]
+                if episode['expected_compressed_admissions'] in same_costs:
+                    same_costs.remove(episode['expected_compressed_admissions'])
+                elif same_costs:
+                    same_costs.pop()
+                required_costs = (same_costs[:per_dataset-1],
+                                  other_costs[:per_dataset])
+                enough_candidates = (len(required_costs[0]) == per_dataset-1 and
+                                     len(required_costs[1]) == per_dataset)
+                minimum_balanced_cost = (episode['expected_compressed_admissions'] +
+                                         sum(required_costs[0]) + sum(required_costs[1]))
+                if episode['expected_compressed_admissions'] > max_encodes or (
+                        enough_candidates and minimum_balanced_cost > max_encodes):
+                    reason = 'rejected_by_max_encodes'
+                else:
+                    reason = 'rejected_by_other_guard'
+            rejected.append(dict(episode=episode, reason=reason))
+        diagnostics[name] = dict(
+            natural_episodes_after_nonprefix_filter=len(discovered[name]),
+            episodes_passing_prefix_guard=len(ordered[name]),
+            episodes_passing_encode_guard=sum(
+                e['expected_compressed_admissions'] <= max_encodes for e in ordered[name]),
+            candidates_considered=len(ordered[name]),
+            final_selectable_episodes=len(chosen), rejected=rejected,
+            rejection_counts={reason: sum(item['reason'] == reason for item in rejected)
+                for reason in ('rejected_by_max_encodes',
+                               'rejected_by_max_semantic_prefix_rows',
+                               'rejected_by_other_guard')})
+    return selected, diagnostics
+
+
 def plan(args):
     if type(args.max_encodes) is not int or not 1 <= args.max_encodes <= MAX_ENCODES:
         raise ValueError('C5 maximum compressed encodes must remain within 1..32')
@@ -296,19 +432,23 @@ def plan(args):
             # Synthetic unit fixtures can exercise planning; the actual C5 run
             # requires the producing manifest for exact TinyBERT batch replay.
             preparation[name] = None
-    discovered, selected, shortfalls, selection_diagnostics = {}, [], [], {}
+    discovered = {}
     cumulative_encode_upper_bound = 0
     for name in ('snips', 'multiwoz'):
         assignment = logical_user_assignment(rows[name], 2, args.seed, name)
         discovered[name] = discover(rows[name], name, assignment,
                                     max_prompt_tokens=args.max_prompt_tokens)
-        selection_diagnostics[name] = {}
-        picked = select_diverse(discovered[name], args.per_dataset,
-                                max_encodes=args.max_encodes//2,
-                                max_semantic_prefix_rows=args.max_semantic_prefix_rows,
-                                diagnostics=selection_diagnostics[name] if args.dry_run else None)
+    chosen, selection_diagnostics = select_balanced_global(
+        discovered, args.per_dataset, max_encodes=args.max_encodes,
+        max_semantic_prefix_rows=args.max_semantic_prefix_rows)
+    print(f'global_encode_limit={args.max_encodes} '
+          f'feasible_balanced_selection={str(chosen is not None).lower()}')
+    selected = []
+    for name in ('snips', 'multiwoz'):
+        picked = chosen[name] if chosen else []
         selected.extend(picked)
         print(f'{name}: natural_episodes_after_nonprefix_filter={len(discovered[name])} '
+              f'candidates_considered={selection_diagnostics[name]["candidates_considered"]} '
               f'selected={len(picked)}/{args.per_dataset}')
         if args.dry_run:
             diagnostic = selection_diagnostics[name]
@@ -316,7 +456,7 @@ def plan(args):
                   f'episodes_passing_encode_guard={diagnostic["episodes_passing_encode_guard"]} '
                   f'final_selectable_episodes={diagnostic["final_selectable_episodes"]} '
                   f'prefix_guard_limit_rows={args.max_semantic_prefix_rows} '
-                  f'per_dataset_encode_limit={args.max_encodes//2} '
+                  f'global_encode_limit={args.max_encodes} '
                   'encode_guard_count_scope=individual_candidate_within_prefix_guard '
                   f'rejection_counts={diagnostic["rejection_counts"]}')
             for reason in ('rejected_by_max_encodes',
@@ -349,11 +489,10 @@ def plan(args):
                   f"m9b_strict={e['m9b_strict_safety']['decision']} "
                   f"expected_compressed_admissions<={e['expected_compressed_admissions']} "
                   f"cumulative_compressed_encode_upper_bound={cumulative_encode_upper_bound}")
-        if len(picked) != args.per_dataset:
-            shortfalls.append(f'{name}: only {len(picked)}/{args.per_dataset} non-prefix natural '
-                              'episodes fit the encode/prefix guard')
-    if shortfalls:
-        raise ValueError('; '.join(shortfalls)+'; prefix reuse is not a fallback')
+    if chosen is None:
+        raise ValueError(f'No balanced {args.per_dataset}+{args.per_dataset} non-prefix natural '
+                         f'episode combination fits global encode limit {args.max_encodes} '
+                         'and semantic-prefix guard; prefix reuse is not a fallback')
     encodes = sum(e['expected_compressed_admissions'] for e in selected)
     if encodes > args.max_encodes:
         raise AssertionError('C5 encode guard exceeded')

@@ -148,6 +148,62 @@ def test_selection_guard_and_diversity():
     assert sum(x['expected_compressed_admissions'] for x in selected) <= 12
 
 
+def _budget_episode(name, group, cost, index):
+    return dict(episode_id=f'{name}:{index}', group=group, cross_user=True,
+                target_index=index, expected_compressed_admissions=cost,
+                initial_special_token_id_avoided=True)
+
+
+def test_global_encode_budget_accepts_31_without_dataset_split():
+    discovered = dict(
+        snips=[_budget_episode('snips', 'a', 9, 0),
+               _budget_episode('snips', 'b', 8, 1)],
+        multiwoz=[_budget_episode('multiwoz', 'x', 7, 0),
+                  _budget_episode('multiwoz', 'y', 7, 1)])
+    first, diagnostics = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    second, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    assert first == second
+    assert [e['expected_compressed_admissions'] for e in first['snips']] == [8, 9]
+    assert [e['expected_compressed_admissions'] for e in first['multiwoz']] == [7, 7]
+    assert sum(e['expected_compressed_admissions'] for episodes in first.values()
+               for e in episodes) == 31
+    assert sum(e['expected_compressed_admissions'] for e in first['snips']) == 17
+    assert diagnostics['snips']['candidates_considered'] == 2
+
+
+def test_global_encode_budget_rejects_33_and_finds_first_feasible_alternative():
+    discovered = dict(
+        snips=[_budget_episode('snips', 'a', 9, 0),
+               _budget_episode('snips', 'b', 9, 1)],
+        multiwoz=[_budget_episode('multiwoz', 'x', 8, 0),
+                  _budget_episode('multiwoz', 'y', 7, 1)])
+    chosen, diagnostics = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    assert chosen is None  # 9 + 9 + 8 + 7 = 33
+    assert diagnostics['snips']['rejection_counts']['rejected_by_max_encodes'] == 2
+    assert diagnostics['multiwoz']['rejection_counts']['rejected_by_max_encodes'] == 2
+    discovered['snips'].append(_budget_episode('snips', 'c', 8, 2))
+    chosen, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    assert [e['episode_id'] for e in chosen['snips']] == ['snips:2', 'snips:0']
+    assert sum(e['expected_compressed_admissions'] for episodes in chosen.values()
+               for e in episodes) == 32
+
+
+def test_global_selection_skips_early_over_budget_combinations_deterministically():
+    discovered = dict(
+        snips=[_budget_episode('snips', 'a', 15, 0),
+               _budget_episode('snips', 'b', 9, 1),
+               _budget_episode('snips', 'c', 8, 2)],
+        multiwoz=[_budget_episode('multiwoz', 'x', 7, 0),
+                  _budget_episode('multiwoz', 'y', 7, 1)])
+    discovered['snips'][2]['initial_special_token_id_avoided'] = False
+    first, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    second, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    assert first == second
+    assert [e['episode_id'] for e in first['snips']] == ['snips:1', 'snips:2']
+    assert sum(e['expected_compressed_admissions'] for episodes in first.values()
+               for e in episodes) == 31
+
+
 def test_logical_pair_requires_same_hit_admission_and_key():
     summary = dict(cluster_id=1, block_hit_count=1, executed_nonoverlap_hits=1,
         admitted_block_count=1, rejected_block_count=0, reused_unique_token_count=3)
@@ -255,11 +311,16 @@ def test_dry_run_never_loads_model_or_codec(tmp_path, monkeypatch, capsys):
     assert 'source_start' in out and 'target_start' in out and 'token_ids' in out
     assert 'cross_user=' in out and 'expected_compressed_admissions<=' in out
     assert out.count('cumulative_compressed_encode_upper_bound=') == 2
+    assert 'global_encode_limit=32' in out
+    assert 'feasible_balanced_selection=true' in out
+    assert 'per_dataset_encode_limit' not in out
+    assert 'candidates_considered=1' in out
     assert 'expected_model_requests=8' in out
     assert 'expected_compressed_entry_encodes_upper_bound=' in out
     args.per_dataset = 2
     with pytest.raises(ValueError, match='prefix reuse is not a fallback'):
         c5.run(args)
     shortfall_output = capsys.readouterr().out
-    assert 'snips: natural_episodes_after_nonprefix_filter=1 selected=1/2' in shortfall_output
-    assert 'multiwoz: natural_episodes_after_nonprefix_filter=1 selected=1/2' in shortfall_output
+    assert 'feasible_balanced_selection=false' in shortfall_output
+    assert 'snips: natural_episodes_after_nonprefix_filter=1 candidates_considered=1 selected=0/2' in shortfall_output
+    assert 'multiwoz: natural_episodes_after_nonprefix_filter=1 candidates_considered=1 selected=0/2' in shortfall_output
