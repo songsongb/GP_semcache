@@ -64,8 +64,17 @@ class CacheMetricManager:
     def arrive(self, keys):
         """Admission counts every window occurrence, including repeats and misses."""
         self.cache.advance(self.cache.now + 1)
-        self.appearances.append(Counter(keys))
-        self.frequencies = sum(self.appearances, Counter())
+        if len(self.appearances) == self.appearances.maxlen:
+            expired = self.appearances.popleft()
+            for key, count in expired.items():
+                remaining = self.frequencies[key] - count
+                if remaining:
+                    self.frequencies[key] = remaining
+                else:
+                    del self.frequencies[key]
+        current = Counter(keys)
+        self.appearances.append(current)
+        self.frequencies.update(current)
 
     def reused(self, entry, impact):
         """Physical engine calls only after executed reuse, never candidate lookup."""

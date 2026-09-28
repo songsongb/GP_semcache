@@ -97,11 +97,12 @@ def unavailable_candidate_cost():
         candidate_cost_effective_if_safe_reason='UNAVAILABLE: no exact workload/candidate cost-artifact mapping; normalized fixture is diagnostic only')
 
 
-def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None, dataset=None):
+def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None, dataset=None, *,
+             cache_factory=None, query_observer=None, collect_trace=True):
     dims = dims or Dimensions('facebook/opt-2.7b', 2560, 32)
     dataset = dataset or (rows[0].get('dataset', 'snips') if rows else 'snips')
     assignment = logical_user_assignment(rows, users, seed, dataset)
-    cache = GlobalCache(capacity)
+    cache = GlobalCache(capacity) if cache_factory is None else cache_factory(capacity)
     manager = CacheMetricManager(cache, rho=.8, history_lambda=100, frequency_window=100)
     extractor = SubsequenceExtractor(3)
     trace = []
@@ -122,9 +123,10 @@ def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None, dataset=None):
             cross_user_windows.append(hit and owner != user)
             hit_windows.append(hit)
             safe_windows.append(bool(safe))
-            if hit:
+            if hit and collect_trace:
                 candidate_tokens.update(range(w.start, w.end))
         admissions = rejections = evictions = 0
+        admitted_keys, evicted_keys = [], []
         for w, key in zip(windows, keys):
             if key in cache.entries:
                 continue
@@ -133,16 +135,25 @@ def simulate(rows, users, seed=42, capacity=CAPACITY, dims=None, dataset=None):
                 qkv_metadata=dict(target, start=w.start), impact=None)
             emitted = []
             cache.insert(entry, manager.frequencies[key], manager.frequencies,
-                         on_event=lambda kind, e, score: emitted.append(kind))
-            admissions += emitted.count('INSERT')
-            evictions += emitted.count('EVICT')
-            rejections += int('INSERT' not in emitted)
-            events.extend(emitted or ['REJECT'])
+                         on_event=lambda kind, e, score: emitted.append((kind, e.key)))
+            kinds = [kind for kind, _ in emitted]
+            admitted_keys.extend(k for kind, k in emitted if kind == 'INSERT')
+            evicted_keys.extend(k for kind, k in emitted if kind == 'EVICT')
+            admissions += kinds.count('INSERT')
+            evictions += kinds.count('EVICT')
+            rejections += int('INSERT' not in kinds)
+            events.extend(kinds or ['REJECT'])
         # Missing attention remains None. No synthetic I or candidate-as-actual-reuse F.
         manager.history.append(row['cluster_id'], index, index, {})
         if (index + 1) % 100 == 0:
             for cluster in sorted({e.cluster_id for e in cache.entries.values()}):
                 manager.pbr(cluster)
+        if query_observer is not None:
+            query_observer(index=index, row=row, user=user, keys=keys, hit_windows=hit_windows,
+                           admissions=admissions, rejections=rejections, evictions=evictions,
+                           admitted_keys=admitted_keys, evicted_keys=evicted_keys, cache=cache)
+        if not collect_trace:
+            continue
         n = len(row['token_ids'])
         baseline = communication(dims, n)['request']['total_network_bytes']
         potential = baseline - communication(dims, n, len(candidate_tokens))['request']['total_network_bytes']
