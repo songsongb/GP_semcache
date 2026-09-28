@@ -1,6 +1,9 @@
 """CPU-only C5 planning and paired logical invariants; never loads OPT."""
 import argparse
+import importlib.util
 import json
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -169,6 +172,39 @@ def test_global_encode_budget_accepts_31_without_dataset_split():
                for e in episodes) == 31
     assert sum(e['expected_compressed_admissions'] for e in first['snips']) == 17
     assert diagnostics['snips']['candidates_considered'] == 2
+
+
+def test_cli_max_encodes_default_remains_32(monkeypatch):
+    script = Path(__file__).resolve().parents[1]/'scripts/47_cachegen_c5_e2e.py'
+    spec = importlib.util.spec_from_file_location('c5_cli_default_test', script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = []
+    monkeypatch.setattr(module, 'run', lambda args: observed.append(args.max_encodes))
+    monkeypatch.setattr(sys, 'argv', [str(script)])
+    module.main()
+    assert observed == [32]
+    assert c5.MAX_ENCODES == 32
+    assert c5.MAX_ENCODES_LIMIT == 64
+
+
+def test_known_34_encode_balanced_plan_needs_more_than_32():
+    discovered = dict(
+        snips=[_budget_episode('snips', 'a', 9, 0),
+               _budget_episode('snips', 'b', 11, 1)],
+        multiwoz=[_budget_episode('multiwoz', 'x', 7, 0),
+                  _budget_episode('multiwoz', 'y', 7, 1)])
+    assert c5.minimum_balanced_2plus2(discovered, max_encodes=36)[
+        'minimum_balanced_2plus2_encode_upper_bound'] == 34
+    chosen_32, _ = c5.select_balanced_global(discovered, 2, max_encodes=32)
+    chosen_36, _ = c5.select_balanced_global(discovered, 2, max_encodes=36)
+    assert chosen_32 is None
+    assert [e['episode_id'] for episodes in chosen_36.values() for e in episodes] == [
+        'snips:0', 'snips:1', 'multiwoz:0', 'multiwoz:1']
+    assert sum(e['expected_compressed_admissions'] for episodes in chosen_36.values()
+               for e in episodes) == 34
+    with pytest.raises(ValueError, match=r'1\.\.64'):
+        c5.select_balanced_global(discovered, 2, max_encodes=65)
 
 
 def test_global_encode_budget_rejects_33_and_finds_first_feasible_alternative():
@@ -381,3 +417,12 @@ def test_dry_run_reports_exact_minimum_when_global_cap_cannot_fit(
     assert 'individual_candidates_passing_max_encodes=2' in out
     assert 'candidates_participating_in_feasible_balanced_2plus2=0' in out
     assert 'planner_reason=no_global_balanced_combination_within_encode_cap' in out
+    args.max_encodes = 36
+    result = c5.run(args)
+    accepted_output = capsys.readouterr().out
+    assert len(result['selected']) == 4
+    assert result['expected_encodes_upper_bound'] == 36
+    assert 'global_encode_limit=36 feasible_balanced_selection=true' in accepted_output
+    args.max_encodes = 65
+    with pytest.raises(ValueError, match=r'1\.\.64'):
+        c5.run(args)
