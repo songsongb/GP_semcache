@@ -132,6 +132,27 @@ def test_stable_dataset_stratified_assignment():
     assert EmpiricalSizeAssigner('multiwoz', index).frame_bytes(key) == 200
 
 
+def test_reuse_diagnostics_distinguish_same_query_duplicates_from_revisits():
+    one_query = [dict(dataset='snips', token_ids=[1, 2, 3, 1, 2, 3], cluster_id=0)]
+    first = workload_facts(one_query)
+    assert first['access_count'] == 4
+    assert first['unique_cache_keys'] == 3
+    assert first['repeated_accesses'] == 1
+    assert first['keys_accessed_more_than_once'] == 1
+    assert first['total_revisit_events'] == 0
+    assert first['max_accesses_for_one_key'] == 2
+    assert first['reuse_opportunity'] is False
+    later_query = one_query + [dict(dataset='snips', token_ids=[1, 2, 3], cluster_id=0)]
+    second = workload_facts(later_query)
+    assert second['access_count'] == 5
+    assert second['unique_cache_keys'] == 3
+    assert second['repeated_accesses'] == 2
+    assert second['keys_accessed_more_than_once'] == 1
+    assert second['total_revisit_events'] == 1
+    assert second['max_accesses_for_one_key'] == 3
+    assert second['reuse_opportunity'] is True
+
+
 def test_same_access_trace_and_capacity_only_divergence():
     rows, index = tiny_rows(), tiny_index()
     raw = replay_cell(rows, 'snips', RAW_ENTRY_BYTES, RAW, index)
@@ -173,7 +194,8 @@ def test_no_codec_calls_and_dry_run(monkeypatch, tmp_path, capsys):
         path = tmp_path/f'{dataset}.jsonl'
         row = dict(dataset=dataset, token_ids=[1, 2, 3], cluster_id=0, model_id='facebook/opt-2.7b',
                    tokenizer_id='t', semantic_assignment_source='fixture')
-        path.write_text(json.dumps(row)+'\n')
+        rows = [row, dict(row)] if dataset == 'snips' else [row]
+        path.write_text(''.join(json.dumps(item)+'\n' for item in rows))
         paths[dataset] = path
     output = tmp_path/'output'
     args = SimpleNamespace(capture_manifest=tmp_path/'capture.json', holdout_dir=tmp_path/'holdout',
@@ -181,5 +203,12 @@ def test_no_codec_calls_and_dry_run(monkeypatch, tmp_path, capsys):
         output_dir=output, budgets_mib=(64, 128, 256, 512), users=25, seed=42, dry_run=True)
     result = run(args)
     assert result['dry_run'] and not output.exists()
-    assert 'expected experiment cells=16' in capsys.readouterr().out
+    report = capsys.readouterr().out
+    assert 'expected experiment cells=16' in report
+    assert ('snips: total_accesses=2 unique_cache_keys=1 repeated_accesses=1 '
+            'keys_accessed_more_than_once=1 total_revisit_events=1 '
+            'max_accesses_for_one_key=2 reuse_opportunity=true') in report
+    assert ('multiwoz: total_accesses=1 unique_cache_keys=1 repeated_accesses=0 '
+            'keys_accessed_more_than_once=0 total_revisit_events=0 '
+            'max_accesses_for_one_key=1 reuse_opportunity=false') in report
     with pytest.raises(ValueError): validate_budgets((64, 64))

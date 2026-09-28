@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import Counter
 from pathlib import Path
 from statistics import mean
 
@@ -133,15 +134,22 @@ class EmpiricalSizeAssigner:
 
 def workload_facts(rows):
     extractor = SubsequenceExtractor(3)
-    seen, accesses = set(), 0
+    seen, access_counts, accesses, revisits = set(), Counter(), 0, 0
     h = hashlib.sha256()
     for row in rows:
         keys = [(row['cluster_id'], w.token_ids) for w in extractor.extract(row['token_ids'])]
         accesses += len(keys)
+        # M9-B performs all lookups before admitting this query's windows. A
+        # duplicate inside one query is repeated, but is not yet a revisit.
+        revisits += sum(key in seen for key in keys)
+        access_counts.update(keys)
         seen.update(keys)
         h.update(json.dumps(keys, separators=(',', ':')).encode()+b'\n')
     return dict(query_count=len(rows), access_count=accesses, unique_cache_keys=len(seen),
-                reuse_events=accesses-len(seen), query_order_hash=digest(rows),
+                reuse_events=accesses-len(seen), repeated_accesses=accesses-len(seen),
+                keys_accessed_more_than_once=sum(count > 1 for count in access_counts.values()),
+                total_revisit_events=revisits, max_accesses_for_one_key=max(access_counts.values(), default=0),
+                reuse_opportunity=bool(revisits), query_order_hash=digest(rows),
                 access_sequence_sha256=h.hexdigest())
 
 
@@ -264,6 +272,14 @@ def run(args):
     print(f"measured w=3 frame sizes={index['count']}; mapping={MAPPING_MODE}")
     print(f"budgets MiB={list(args.budgets_mib)}; expected experiment cells={len(paths)*len(budgets)*len(MODES)}")
     if args.dry_run:
+        for dataset, item in facts.items():
+            print(f"{dataset}: total_accesses={item['access_count']} "
+                  f"unique_cache_keys={item['unique_cache_keys']} "
+                  f"repeated_accesses={item['repeated_accesses']} "
+                  f"keys_accessed_more_than_once={item['keys_accessed_more_than_once']} "
+                  f"total_revisit_events={item['total_revisit_events']} "
+                  f"max_accesses_for_one_key={item['max_accesses_for_one_key']} "
+                  f"reuse_opportunity={str(item['reuse_opportunity']).lower()}")
         print('Dry run complete; no replay or codec execution.')
         return dict(dry_run=True, workload_facts=facts, size_count=index['count'])
     output = Path(args.output_dir).resolve()
