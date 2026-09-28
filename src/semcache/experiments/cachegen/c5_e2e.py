@@ -37,6 +37,7 @@ from semcache.simulation.multi_user import (
 
 OUTPUT = ROOT/'results/cachegen/c5/e2e_smoke'
 WINDOW = 3
+MIN_REUSE_START = 3
 RAW_ENTRY_BYTES = 3*3*2560*32*2
 LOGICAL_CAPACITY_BYTES = 64*1024**2
 MODES = ('RAW_SEMCACHE', 'COMPRESSED_SEMCACHE')
@@ -143,17 +144,23 @@ def discover(rows, dataset, users, *, max_prompt_tokens=16):
         windows = extractor.extract(ids) if eligible_target else []
         source_indices = set()
         for w in windows:
-            source_indices.update(index[(target['cluster_id'], w.token_ids)])
+            if w.start >= MIN_REUSE_START:
+                source_indices.update(index[(target['cluster_id'], w.token_ids)])
         ranked = sorted(source_indices, key=lambda i: (
             assignment[i] == assignment[target_index],
             len(rows[i]['token_ids']), -i))
-        for source_index in ranked[:16]:
+        for source_index in ranked:
             source = rows[source_index]
             if (source_index >= target_index or source['source_id'] == target['source_id'] or
                     source['token_ids'] == ids):
                 continue
             logical = _logical_pair(source, target)
             if not logical['selected'] or not logical['admitted_keys']:
+                continue
+            # The physical engine executes every selected nonoverlapping hit.
+            # Reject the whole episode if any executed span is a prompt prefix.
+            if any(hit.entry.positions[0] < MIN_REUSE_START or
+                   hit.window.start < MIN_REUSE_START for hit in logical['selected']):
                 continue
             spans = [dict(cache_key=[h.entry.cluster_id, list(h.window.token_ids)],
                           token_ids=list(h.window.token_ids),
@@ -163,6 +170,11 @@ def discover(rows, dataset, users, *, max_prompt_tokens=16):
             if any(tuple(source['token_ids'][s['source_start']:s['source_start']+WINDOW]) != tuple(s['token_ids'])
                    or tuple(ids[s['target_start']:s['target_end']]) != tuple(s['token_ids']) for s in spans):
                 raise AssertionError('Exact w=3 token safety failed')
+            # M9-B rows use the pinned OPT tokenizer with special tokens. Using
+            # each row's initial token ID avoids guessing a BOS ID from memory.
+            avoids_initial_token_id = all(
+                source['token_ids'][0] not in span['token_ids'] and
+                ids[0] not in span['token_ids'] for span in spans)
             strict = m9b_strict_diagnostic(source, target,
                 assignment[source_index], assignment[target_index], spans)
             episodes.append(dict(episode_id=f'{dataset}:{source_index}->{target_index}',
@@ -180,6 +192,8 @@ def discover(rows, dataset, users, *, max_prompt_tokens=16):
                     source_embedding_sha256=source.get('semantic_embedding_sha256'),
                     target_embedding_sha256=target.get('semantic_embedding_sha256')),
                 group=_group(target, dataset), spans=spans,
+                nonprefix_reuse=True,
+                initial_special_token_id_avoided=avoids_initial_token_id,
                 expected_natural_hits=len(spans), candidate_hits=logical['candidate_hits'],
                 expected_compressed_admissions=logical['expected_compressed_admissions_upper_bound'],
                 source_admissions=len(logical['admitted_keys']),
@@ -189,7 +203,13 @@ def discover(rows, dataset, users, *, max_prompt_tokens=16):
         # Only short sources are indexed; no target text, quality, or model output
         # enters the selection score. The first C anchors are not cold sources.
         if target_index >= CLUSTERS[dataset] and WINDOW+1 <= len(ids) <= max_prompt_tokens:
+            first_occurrences = set()
             for w in windows:
+                if w.token_ids in first_occurrences:
+                    continue
+                first_occurrences.add(w.token_ids)
+                if w.start < MIN_REUSE_START:
+                    continue
                 key = (target['cluster_id'], w.token_ids)
                 if not index[key] or index[key][-1] != target_index:
                     index[key].append(target_index)
@@ -205,10 +225,12 @@ def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
     if type(max_semantic_prefix_rows) is not int or max_semantic_prefix_rows < 1:
         raise ValueError('Invalid semantic-prefix guard')
     chosen, groups = [], set()
-    # Smallest valid encode work first; cross-user and source order break ties.
+    # Prefer avoiding the initial OPT token ID, then smallest encode work;
+    # cross-user and source order break ties.
     # A distinct intent/dialogue is taken before a second from one group.
     order = sorted(((i, e) for i, e in enumerate(episodes)
                     if e['target_index'] < max_semantic_prefix_rows), key=lambda item: (
+        not item[1].get('initial_special_token_id_avoided', True),
         item[1]['expected_compressed_admissions'], not item[1]['cross_user'], item[0]))
     for distinct in (True, False):
         for _, episode in order:
@@ -247,7 +269,7 @@ def plan(args):
             # Synthetic unit fixtures can exercise planning; the actual C5 run
             # requires the producing manifest for exact TinyBERT batch replay.
             preparation[name] = None
-    discovered, selected = {}, []
+    discovered, selected, shortfalls = {}, [], []
     for name in ('snips', 'multiwoz'):
         assignment = logical_user_assignment(rows[name], 2, args.seed, name)
         discovered[name] = discover(rows[name], name, assignment,
@@ -256,7 +278,8 @@ def plan(args):
                                 max_encodes=args.max_encodes//2,
                                 max_semantic_prefix_rows=args.max_semantic_prefix_rows)
         selected.extend(picked)
-        print(f'{name}: natural_episodes_discovered={len(discovered[name])} selected={len(picked)}')
+        print(f'{name}: natural_episodes_after_nonprefix_filter={len(discovered[name])} '
+              f'selected={len(picked)}/{args.per_dataset}')
         for e in picked:
             print(f"  [{e['source_index']}->{e['target_index']}] "
                   f"{e['source_id']} ({e['source_user']}) -> {e['target_id']} ({e['target_user']}) "
@@ -264,10 +287,14 @@ def plan(args):
                   f"semantic_cluster_match={e['source_cluster_id'] == e['target_cluster_id']} "
                   f"cluster={e['cluster_id']} "
                   f"exact_w3_spans={e['spans']} expected_hits={e['expected_natural_hits']} "
+                  f"initial_token_id_avoided={str(e['initial_special_token_id_avoided']).lower()} "
                   f"m9b_strict={e['m9b_strict_safety']['decision']} "
                   f"expected_compressed_admissions<={e['expected_compressed_admissions']}")
         if len(picked) != args.per_dataset:
-            raise ValueError(f'{name}: fewer than {args.per_dataset} eligible natural episodes under encode guard')
+            shortfalls.append(f'{name}: only {len(picked)}/{args.per_dataset} non-prefix natural '
+                              'episodes fit the encode/prefix guard')
+    if shortfalls:
+        raise ValueError('; '.join(shortfalls)+'; prefix reuse is not a fallback')
     encodes = sum(e['expected_compressed_admissions'] for e in selected)
     if encodes > args.max_encodes:
         raise AssertionError('C5 encode guard exceeded')

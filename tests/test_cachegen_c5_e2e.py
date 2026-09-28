@@ -16,11 +16,12 @@ def _rows(dataset, *, count=2):
     rows = []
     for i in range(c+2*count):
         if i < c:
-            ids, cluster = [1000+i, 2000+i, 3000+i, 4000+i], 0
+            ids, cluster = [2, 1000+i, 2000+i, 3000+i, 4000+i, 5000+i, 6000+i], 0
         else:
             pair = (i-c)//2
-            ids, cluster = ([11+pair, 21+pair, 31+pair, 41+pair]
-                            if (i-c)%2 == 0 else [11+pair, 21+pair, 31+pair, 51+pair]), 1
+            ids, cluster = ([2, 100+pair, 200+pair, 11+pair, 21+pair, 31+pair, 41+pair]
+                            if (i-c)%2 == 0 else
+                            [2, 300+pair, 400+pair, 11+pair, 21+pair, 31+pair, 51+pair]), 1
         source_id = (f'AddToPlaylist:{i}' if dataset == 'snips' else f'dialogue{i//2}:{i}')
         rows.append(dict(dataset=dataset, source_id=source_id,
             conversation_id=None if dataset == 'snips' else f'dialogue{i//2}',
@@ -48,12 +49,36 @@ def test_natural_discovery_is_deterministic_and_exact_w3():
         assert episode['physical_safety_contract'] == c5.SAFETY_CONTRACT
         assert episode['m9b_strict_safety']['decision'] == 'REJECTED'
         assert not episode['m9b_strict_safety']['eligible']
+        assert episode['nonprefix_reuse']
+        assert episode['initial_special_token_id_avoided']
         assert episode['exact_w3_safe'] and episode['expected_natural_hits'] >= 1
         for span in episode['spans']:
             source = rows[episode['source_index']]['token_ids']
             target = rows[episode['target_index']]['token_ids']
             assert source[span['source_start']:span['source_end']] == span['token_ids']
             assert target[span['target_start']:span['target_end']] == span['token_ids']
+            assert span['source_start'] >= 3 and span['target_start'] >= 3
+
+
+def test_prefix_only_and_mixed_prefix_hits_are_excluded():
+    rows = _rows('snips', count=1)
+    users = ['user_000']*len(rows)
+    rows[-2]['token_ids'] = [2, 7, 8, 30, 31, 32, 40]
+    rows[-1]['token_ids'] = [2, 7, 8, 50, 51, 52, 60]
+    assert c5.discover(rows, 'snips', users) == []
+    # A valid later shared span does not permit the engine's simultaneous
+    # prefix hit to slip into the selected C5 episode.
+    rows[-2]['token_ids'] = [2, 7, 8, 30, 55, 66, 77]
+    rows[-1]['token_ids'] = [2, 7, 8, 50, 55, 66, 77]
+    assert c5.discover(rows, 'snips', users) == []
+
+
+def test_nonprefix_selection_prefers_no_initial_token_id():
+    candidates = [dict(group='a', cross_user=True, target_index=i,
+                       expected_compressed_admissions=3,
+                       initial_special_token_id_avoided=avoid)
+                  for i, avoid in enumerate((False, True))]
+    assert c5.select_diverse(candidates, 1)[0]['initial_special_token_id_avoided']
 
 
 def test_m9b_strict_gate_is_diagnostic_only():
@@ -193,5 +218,14 @@ def test_dry_run_never_loads_model_or_codec(tmp_path, monkeypatch, capsys):
     result = c5.run(args)
     out = capsys.readouterr().out
     assert len(result['selected']) == 2
+    assert 'natural_episodes_after_nonprefix_filter=1' in out
+    assert 'source_start' in out and 'target_start' in out and 'token_ids' in out
+    assert 'cross_user=' in out and 'expected_compressed_admissions<=' in out
     assert 'expected_model_requests=8' in out
     assert 'expected_compressed_entry_encodes_upper_bound=' in out
+    args.per_dataset = 2
+    with pytest.raises(ValueError, match='prefix reuse is not a fallback'):
+        c5.run(args)
+    shortfall_output = capsys.readouterr().out
+    assert 'snips: natural_episodes_after_nonprefix_filter=1 selected=1/2' in shortfall_output
+    assert 'multiwoz: natural_episodes_after_nonprefix_filter=1 selected=1/2' in shortfall_output
