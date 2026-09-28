@@ -8,6 +8,7 @@ from semcache.cache.cache_entry import CacheEntry
 from semcache.cache.global_cache import GlobalCache
 from .c2.physical_storage import (FrozenK20V16Codec, MODE_COMPRESSED, POLICY,
                                   PROFILE_SHA256)
+from .b2 import format as fmt
 from .common import file_hash, load_fixture, percentile, read_json, write_csv, write_json
 from .c15c.harness import ROOT, git_state
 from .c15c.holdout import evaluation_blocks
@@ -47,8 +48,10 @@ def smoke(args):
     if not device.startswith('cuda:'):
         raise ValueError('Real C2 smoke requires recorded C1 CUDA quantization device')
     profile_path = args.profile_path.resolve()
+    coder_backend = getattr(args, 'coder_backend', fmt.REFERENCE_CODER)
     codec = FrozenK20V16Codec(profile_path, quantization_device=device,
-                              decode_device=device, instrument=True)
+                              decode_device=device, instrument=True,
+                              coder_backend=coder_backend)
     cache = GlobalCache(64*1024*1024, admission=AdmissionPolicy(threshold=0),
         physical_storage_mode=MODE_COMPRESSED, physical_codec=codec, instrument_storage=True)
     if cache.physical_codec.profile.sha256 != PROFILE_SHA256:
@@ -65,6 +68,7 @@ def smoke(args):
         dataset_counts=dict(Counter(b['dataset'] for b in blocks)),
         selected_block_count=len(blocks), required_window_size=3, capture_counts=counts,
         codec=MODE_COMPRESSED, policy=POLICY.name, storage_mode='B2_ANCHOR_MOD_RESIDUAL_KV',
+        coder_backend=coder_backend,
         profile_path=str(profile_path), profile_sha256=PROFILE_SHA256,
         profile_bytes_once=cache.physical_codec.profile_bytes,
         q_source='real C1 captured Q; no synthetic Q used', q_storage_device='cpu',

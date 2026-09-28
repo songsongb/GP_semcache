@@ -5,6 +5,7 @@ All byte formats are little endian except arithmetic bits (MSB first).
 """
 from bisect import bisect_right
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 import struct
 
@@ -238,6 +239,120 @@ def arithmetic_decode(data, count, cdf):
             low *= 2
             high = high*2+1
             value = value*2+read()
+    return bytes(out)
+
+
+def arithmetic_encode_fast(symbols, cdf):
+    """Same B2 bits as arithmetic_encode; inline bit emission and use /65536 shifts."""
+    validate_cdf(cdf)
+    low, high, pending = 0, MASK, 0
+    out = bytearray()
+    byte, bits = 0, 0
+    append = out.append
+    for symbol in symbols:
+        if not 0 <= symbol < SUPPORT:
+            raise ValueError('Arithmetic symbol outside support')
+        span = high-low+1
+        high = low + ((span*cdf[symbol+1]) >> 16)-1
+        low += (span*cdf[symbol]) >> 16
+        while True:
+            if high < HALF:
+                bit = 0
+            elif low >= HALF:
+                bit = 1
+                low -= HALF
+                high -= HALF
+            elif low >= QUARTER and high < THREE_QUARTERS:
+                pending += 1
+                low -= QUARTER
+                high -= QUARTER
+                low *= 2
+                high = high*2+1
+                continue
+            else:
+                break
+            byte = (byte << 1) | bit
+            bits += 1
+            if bits == 8:
+                append(byte)
+                byte, bits = 0, 0
+            inverse = 1-bit
+            for _ in range(pending):
+                byte = (byte << 1) | inverse
+                bits += 1
+                if bits == 8:
+                    append(byte)
+                    byte, bits = 0, 0
+            pending = 0
+            low *= 2
+            high = high*2+1
+    pending += 1
+    bit = int(low >= QUARTER)
+    byte = (byte << 1) | bit
+    bits += 1
+    if bits == 8:
+        append(byte)
+        byte, bits = 0, 0
+    inverse = 1-bit
+    for _ in range(pending):
+        byte = (byte << 1) | inverse
+        bits += 1
+        if bits == 8:
+            append(byte)
+            byte, bits = 0, 0
+    if bits:
+        append(byte << (8-bits))
+    return bytes(out)
+
+
+@lru_cache(maxsize=16)
+def _cdf_symbol_table(cdf):
+    """A 64 KiB inverse CDF reused for immutable frozen role tables."""
+    validate_cdf(cdf)
+    return b''.join(bytes([symbol])*(cdf[symbol+1]-cdf[symbol])
+                    for symbol in range(SUPPORT))
+
+
+def arithmetic_decode_fast(data, count, cdf):
+    """Same symbols as arithmetic_decode; inline bit reads in the hot loop."""
+    table = _cdf_symbol_table(cdf)
+    if count < 1 or not data:
+        raise ValueError('Nonempty arithmetic stream required')
+    position, data_size = 0, len(data)
+    low, high, value = 0, MASK, 0
+    for _ in range(32):
+        i = position >> 3
+        value = (value << 1) | ((data[i] >> (7-(position & 7))) & 1 if i < data_size else 0)
+        position += 1
+    out = bytearray()
+    append = out.append
+    for _ in range(count):
+        span = high-low+1
+        target = ((value-low+1)*TOTAL-1)//span
+        if not 0 <= target < TOTAL:
+            raise ValueError('Invalid arithmetic stream')
+        symbol = table[target]
+        append(symbol)
+        high = low + ((span*cdf[symbol+1]) >> 16)-1
+        low += (span*cdf[symbol]) >> 16
+        while True:
+            if high < HALF:
+                pass
+            elif low >= HALF:
+                low -= HALF
+                high -= HALF
+                value -= HALF
+            elif low >= QUARTER and high < THREE_QUARTERS:
+                low -= QUARTER
+                high -= QUARTER
+                value -= QUARTER
+            else:
+                break
+            low *= 2
+            high = high*2+1
+            i = position >> 3
+            value = value*2 + ((data[i] >> (7-(position & 7))) & 1 if i < data_size else 0)
+            position += 1
     return bytes(out)
 
 

@@ -28,9 +28,9 @@ def blocks(seed=7):
             for i in range(32)}
 
 
-def compressed_cache(profile, *, capacity=10000, instrument=True):
+def compressed_cache(profile, *, capacity=10000, instrument=True, coder_backend=fmt.REFERENCE_CODER):
     codec = ps.FrozenK20V16Codec(profile, quantization_device='cpu', decode_device='cpu',
-                                 expected_hidden=2, instrument=instrument)
+                                 expected_hidden=2, instrument=instrument, coder_backend=coder_backend)
     return GlobalCache(capacity, admission=AdmissionPolicy(threshold=0),
         physical_storage_mode=ps.MODE_COMPRESSED, physical_codec=codec,
         instrument_storage=instrument)
@@ -48,9 +48,10 @@ def test_raw_insert_lookup_remains_same_object_and_bytes():
     assert cache.physical_tensor_bytes == entry.physical_tensor_bytes == entry.size_bytes
 
 
-def test_compressed_entry_roundtrip_q_accounting_key_and_no_raw_kv(synthetic_profile, monkeypatch):
+@pytest.mark.parametrize('backend', [fmt.REFERENCE_CODER, fmt.FAST_CODER])
+def test_compressed_entry_roundtrip_q_accounting_key_and_no_raw_kv(synthetic_profile, monkeypatch, backend):
     path, profile = synthetic_profile
-    cache = compressed_cache(path)
+    cache = compressed_cache(path, coder_backend=backend)
     source = blocks()
     with monkeypatch.context() as scoped:
         scoped.setattr(core, 'cdf_from_counts', lambda *a: pytest.fail('Runtime CDF fit'))
@@ -109,6 +110,17 @@ def test_cache_mode_rejects_wrong_physical_entry(synthetic_profile):
         compressed.insert(raw_entry)
     with pytest.raises(ValueError, match='requires a compressed cache'):
         raw.insert(compressed_entry)
+
+
+def test_c2_entry_frame_identical_across_coders(synthetic_profile):
+    path, _ = synthetic_profile
+    source = blocks()
+    reference = compressed_cache(path, instrument=False)
+    fast = compressed_cache(path, instrument=False, coder_backend=fmt.FAST_CODER)
+    a = reference.make_entry(0, (1, 2, 3), (0, 3), source)
+    b = fast.make_entry(0, (1, 2, 3), (0, 3), source)
+    assert a.compressed_kv.bitstream == b.compressed_kv.bitstream
+    assert a.storage_accounting == b.storage_accounting
 
 
 def test_pinned_profile_and_bounded_smoke_selection(monkeypatch):

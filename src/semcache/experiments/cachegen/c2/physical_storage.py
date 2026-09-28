@@ -45,7 +45,8 @@ class DecodedCacheEntryView:
 
 class FrozenK20V16Codec:
     def __init__(self, profile_path=DEFAULT_PROFILE, *, quantization_device='cuda:0',
-                 decode_device=None, expected_hidden=2560, instrument=False):
+                 decode_device=None, expected_hidden=2560, instrument=False,
+                 coder_backend=fmt.REFERENCE_CODER):
         self.profile_path = Path(profile_path).resolve()
         if not self.profile_path.is_file():
             raise FileNotFoundError(f'Frozen C1.5C profile missing: {self.profile_path}')
@@ -58,6 +59,8 @@ class FrozenK20V16Codec:
         self.decode_device = str(decode_device or quantization_device)
         self.expected_hidden = expected_hidden
         self.instrument = instrument
+        fmt.coder_functions(coder_backend)  # Explicit opt-in; defaults to frozen reference bits.
+        self.coder_backend = coder_backend
 
     @staticmethod
     def _clock(device):
@@ -92,7 +95,8 @@ class FrozenK20V16Codec:
         maxima = struct.pack('<192f', *[value for result in quantized
             for value in result.storage_metadata.cpu().flatten().tolist()])
         streams = fmt.streams_from_domains(self.profile.mode, domains, shape, expected_tokens=3)
-        bitstream = fmt.encode(self.profile, streams, maxima, shape, expected_tokens=3)
+        bitstream = fmt.encode(self.profile, streams, maxima, shape, expected_tokens=3,
+                               coder_backend=self.coder_backend)
         _, _, _, sizes = fmt.inspect(bitstream, self.profile, expected_tokens=3)
         encode_ms = self._elapsed(start, self.quantization_device)
         q_tensors = {layer: tensors[layer][0].detach().to(storage_device).clone().contiguous()
@@ -111,7 +115,8 @@ class FrozenK20V16Codec:
         if payload is None or payload.profile_sha256 != PROFILE_SHA256 or payload.dtype != 'torch.float16':
             raise ValueError('Compressed entry/profile/dtype mismatch')
         start = self._clock(self.decode_device) if self.instrument else None
-        streams, maxima, shape = fmt.decode(payload.bitstream, self.profile, expected_tokens=3)
+        streams, maxima, shape = fmt.decode(payload.bitstream, self.profile, expected_tokens=3,
+                                           coder_backend=self.coder_backend)
         if shape != payload.shape or shape != (32, 3, self.expected_hidden):
             raise ValueError('Compressed entry shape mismatch')
         domains = fmt.domains_from_streams(self.profile.mode, streams, shape, expected_tokens=3)

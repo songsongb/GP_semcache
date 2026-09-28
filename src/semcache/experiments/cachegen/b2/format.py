@@ -11,6 +11,16 @@ FILES = dict(zip(MODES, ('raw_role_split.bin', 'anchor_mod_residual_kv.bin', 'k_
 CLASSIFICATIONS = dict(zip(MODES, ('FAIR_CONTROL', 'PRIMARY', 'POST_HOC_EXPLORATORY')))
 STREAM_NAMES = ('k_anchor_payload_bytes', 'k_nonanchor_or_residual_payload_bytes',
                 'v_anchor_payload_bytes', 'v_nonanchor_or_residual_payload_bytes')
+REFERENCE_CODER = 'REFERENCE_PY'
+FAST_CODER = 'FAST_PY_BITEXACT'
+
+
+def coder_functions(backend):
+    if backend == REFERENCE_CODER:
+        return core.arithmetic_encode, core.arithmetic_decode
+    if backend == FAST_CODER:
+        return core.arithmetic_encode_fast, core.arithmetic_decode_fast
+    raise ValueError('Unknown B2 arithmetic coder backend')
 
 
 def labels(mode):
@@ -156,13 +166,14 @@ def fit(blocks, loader):
     return {m: Profile(m, tuple(core.cdf_from_counts(h) for h in counts[m])) for m in MODES}, counts, fitted
 
 
-def encode(profile, streams, scales, shape, *, expected_tokens=10):
+def encode(profile, streams, scales, shape, *, expected_tokens=10, coder_backend=REFERENCE_CODER):
     expected = stream_counts(shape, expected_tokens=expected_tokens)
     if len(streams) != 4 or any(len(s) != n for s, n in zip(streams, expected)):
         raise ValueError('B2 stream size mismatch')
     if len(scales) != 2*shape[0]*shape[1]*4:
         raise ValueError('Unchanged C1 FP32 scales required')
-    payloads = [core.arithmetic_encode(s, cdf) for s, cdf in zip(streams, profile.cdfs)]
+    encode_stream, _ = coder_functions(coder_backend)
+    payloads = [encode_stream(s, cdf) for s, cdf in zip(streams, profile.cdfs)]
     return frame_payloads(profile, payloads, scales, shape, expected_tokens=expected_tokens)
 
 
@@ -206,7 +217,8 @@ def inspect(data, profile, *, expected_tokens=10):
     return shape, scales, payloads, sizes
 
 
-def decode(data, profile, *, expected_tokens=10):
+def decode(data, profile, *, expected_tokens=10, coder_backend=REFERENCE_CODER):
     shape, scales, payloads, _ = inspect(data, profile, expected_tokens=expected_tokens)
-    return tuple(core.arithmetic_decode(p, n, cdf) for p, n, cdf in
+    _, decode_stream = coder_functions(coder_backend)
+    return tuple(decode_stream(p, n, cdf) for p, n, cdf in
                  zip(payloads, stream_counts(shape, expected_tokens=expected_tokens), profile.cdfs)), scales, shape
