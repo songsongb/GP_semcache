@@ -2,17 +2,19 @@
 
 This command compares the two policies frozen by C1.5C-2:
 `CACHEGEN_RELEASED_QL2` and `UNIFORM_K20_V16`. It reads only blocks marked
-`partition=evaluation` from the existing C1 capture manifest. It rejects an
-empty evaluation partition and records every selected block ID. The local
-checkout has only a `NOT_RUN` capture manifest, so real evaluation must be
-run on SERAPH.
+`partition=evaluation` with `token_group_size=3` from the existing C1 capture
+manifest, matching C1.5C-2's calibration window. It excludes T=10 evaluation
+fixtures, rejects an empty evaluation w=3 partition, and records every selected
+block ID. The local checkout has only a `NOT_RUN` capture manifest, so real
+evaluation must be run on SERAPH.
 
 The command loads each evaluation fixture once, quantizes K and V under both
 policies, and arithmetic-encodes four B2 streams per policy using the two
 frozen C1.5C-2 profiles. It does not fit a CDF, run inference, or decode
-evaluation streams. The expected encode count is `8 × evaluation blocks`.
-Both T=3 and T=10 evaluation blocks are included if present in the manifest;
-the command prints their counts before starting. Quantization, the B2
+evaluation streams. The expected encode count is `8 × selected evaluation w=3 blocks`.
+The command prints total evaluation, selected w=3, and excluded non-w=3 counts
+before starting. On the confirmed SERAPH manifest, these are 1308, 1072, and
+236 respectively, for 8576 arithmetic encodes. Quantization, the B2
 anchor/mod-255 residual organization, framing, and metadata accounting retain
 their established definitions.
 

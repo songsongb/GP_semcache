@@ -65,11 +65,15 @@ def test_evaluation_partition_only_and_metadata_counts_without_calibration_detai
             return 'calibration'
     a, b = eval_block('snips', 3, 'snips_3'), eval_block('multiwoz', 10, 'multiwoz_10')
     selected, counts = h.evaluation_blocks(capture([PoisonCalibration(), b, a]))
-    assert [x['block_id'] for x in selected] == ['multiwoz_10', 'snips_3']
-    assert counts == dict(total_capture_count=3, calibration_count=1,
-        evaluation_count=2, evaluation_window_counts={3: 1, 10: 1})
-    with pytest.raises(ValueError, match='No evaluation'):
+    assert [x['block_id'] for x in selected] == ['snips_3']
+    assert all(x['token_group_size'] == h.REQUIRED_WINDOW_SIZE for x in selected)
+    assert counts == dict(total_capture_blocks=3, total_calibration_blocks=1,
+        total_evaluation_blocks=2, evaluation_w3_count=1, evaluation_non_w3_count=1,
+        selected_holdout_count=1, required_window_size=3)
+    with pytest.raises(ValueError, match='No evaluation w=3'):
         h.evaluation_blocks(dict(capture([a]), blocks=[PoisonCalibration()]))
+    with pytest.raises(ValueError, match='No evaluation w=3'):
+        h.evaluation_blocks(capture([b]))
 
 
 def test_frozen_profile_loader_checks_selection_hash_names_scope_and_commit(tmp_path):
@@ -129,13 +133,16 @@ def test_comparison_flags_and_exact_rate_denominators():
 
 
 @torch_available
-def test_one_loader_scan_eight_encodes_no_decode_no_fit_and_mixed_window_accounting():
+def test_one_loader_scan_eight_encodes_no_decode_no_fit_and_w3_accounting():
     import torch
     generator = torch.Generator().manual_seed(19)
-    fixtures = {name: {r: torch.randn(32, tokens, 2, generator=generator).half() for r in ('k', 'v')}
-                for name, tokens in [('a', 3), ('b', 10)]}
-    blocks = [dict(block_id='a', partition='evaluation', dataset='snips', token_group_size=3),
-              dict(block_id='b', partition='evaluation', dataset='multiwoz', token_group_size=10)]
+    fixtures = {name: {r: torch.randn(32, 3, 2, generator=generator).half() for r in ('k', 'v')}
+                for name in ('a', 'b')}
+    blocks, counts = h.evaluation_blocks(capture([
+        eval_block('snips', 3, 'a'), eval_block('multiwoz', 3, 'b'),
+        eval_block('snips', 10, 'excluded_w10')]))
+    assert counts['selected_holdout_count'] == 2
+    assert counts['evaluation_non_w3_count'] == 1
     cdf = core.cdf_from_counts([0]*255)
     profile = fmt.Profile(rs.MODE, (cdf,)*4)
     loaded, progress = [], []
@@ -151,6 +158,7 @@ def test_one_loader_scan_eight_encodes_no_decode_no_fit_and_mixed_window_account
     assert encode.call_count == 16
     assert loaded == ['a', 'b'] and progress == [(1, 2), (2, 2)]
     assert summary['arithmetic_encode_calls'] == 16
+    assert summary['required_window_size'] == 3
     assert summary['arithmetic_decode_calls'] == summary['cdf_fit_calls'] == 0
     assert set(summary['datasets']) == {'snips', 'multiwoz'}
     for policy in h.POLICIES:
@@ -159,12 +167,12 @@ def test_one_loader_scan_eight_encodes_no_decode_no_fit_and_mixed_window_account
         storage = overall['physical_storage']
         assert overall['block_count'] == 2
         assert storage['local_transform_metadata_bytes'] == 2*99
-        assert storage['scale_maxabs_metadata_bytes'] == 2*32*(3+10)*4
+        assert storage['scale_maxabs_metadata_bytes'] == 2*32*(3+3)*4
         assert storage['global_profile_bytes'] == 4108
         assert storage['total_physical_bytes'] == storage['bitstream_pool_bytes']+4108
         assert storage['k_payload_bytes'] == a['physical_storage']['k_payload_bytes']+b['physical_storage']['k_payload_bytes']
         assert storage['v_payload_bytes'] == a['physical_storage']['v_payload_bytes']+b['physical_storage']['v_payload_bytes']
-        assert storage['original_fp16_kv_bytes'] == 2*32*(3+10)*2*2
+        assert storage['original_fp16_kv_bytes'] == 2*32*(3+3)*2*2
         for role in ('K', 'V'):
             pooled = overall['reconstruction'][role]
             assert pooled['element_count'] == a['reconstruction'][role]['element_count']+b['reconstruction'][role]['element_count']
@@ -178,11 +186,15 @@ def test_one_loader_scan_eight_encodes_no_decode_no_fit_and_mixed_window_account
     with pytest.raises(ValueError, match='evaluation'):
         h.evaluate([dict(blocks[0], partition='calibration')], {h.QL2: profile, h.UNIFORM: profile},
                    lambda b: pytest.fail('Calibration loaded'), device='cpu')
+    with pytest.raises(ValueError, match='w=3'):
+        h.evaluate([dict(blocks[0], token_group_size=10)], {h.QL2: profile, h.UNIFORM: profile},
+                   lambda b: pytest.fail('T=10 fixture loaded'), device='cpu')
 
 
 def test_dry_run_counts_profiles_and_encodes_without_fixture_cuda_or_output(tmp_path, capsys):
-    block = eval_block()
-    c = capture([dict(partition='calibration'), block])
+    blocks = [eval_block('snips', 3, 'w3_a'), eval_block('multiwoz', 3, 'w3_b'),
+              eval_block('snips', 10, 'excluded_w10')]
+    c = capture([dict(partition='calibration'), *blocks])
     capture_path = tmp_path/'capture_manifest.json'
     write_json(capture_path, c)
     frozen, _ = frozen_calibration(tmp_path, file_hash(capture_path))
@@ -193,11 +205,14 @@ def test_dry_run_counts_profiles_and_encodes_without_fixture_cuda_or_output(tmp_
          patch.object(h, 'resolve_contract', side_effect=AssertionError('No CUDA preflight')), \
          patch.object(core, 'arithmetic_encode', side_effect=AssertionError('No encoding')):
         result = h.run_holdout(args)
-    assert result['expected_arithmetic_encode_calls'] == 8
+    assert result['expected_arithmetic_encode_calls'] == 2*2*4
+    assert result['counts']['required_window_size'] == 3
+    assert result['counts']['selected_holdout_count'] == 2
     assert not out.exists()
     printed = capsys.readouterr().out
-    assert 'capture=2 calibration=1 evaluation=1' in printed
-    assert 'expected arithmetic encode calls=8' in printed
+    assert 'capture=4\ncalibration=1\nevaluation_total=3\nevaluation_w3=2\n' in printed
+    assert 'evaluation_excluded_non_w3=1\nselected_holdout=2\n' in printed
+    assert 'expected arithmetic encode calls=16' in printed
     assert 'no fixtures loaded' in printed
 
 

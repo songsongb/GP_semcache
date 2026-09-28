@@ -17,6 +17,7 @@ from .rate_calibration import ObservationError, observe
 from .rate_storage import MODE, physical_accounting, role_streams
 
 OUTPUT = RESULTS/'holdout'
+REQUIRED_WINDOW_SIZE = 3
 QL2 = 'CACHEGEN_RELEASED_QL2'
 UNIFORM = 'UNIFORM_K20_V16'
 POLICIES = (QL2, UNIFORM)
@@ -25,13 +26,16 @@ PROFILE_FILES = {QL2: 'profiles/cachegen_released_ql2.bin',
 
 
 def evaluation_blocks(capture):
-    """Filter first; the existing provenance verifier sees evaluation only."""
+    """Select the w=3 holdout matching C1.5C-2; never inspect T=10 fixtures."""
     counts = Counter(b['partition'] for b in capture['blocks'])
     if set(counts) - {'calibration', 'evaluation'}:
         raise ValueError('Unexpected capture partition')
-    selected = [b for b in capture['blocks'] if b['partition'] == 'evaluation']
+    evaluation = [b for b in capture['blocks'] if b['partition'] == 'evaluation']
+    selected = [b for b in evaluation if b['token_group_size'] == REQUIRED_WINDOW_SIZE]
     if not selected:
-        raise ValueError('No evaluation blocks in capture manifest')
+        raise ValueError('No evaluation w=3 blocks in capture manifest')
+    if any(b['token_group_size'] != REQUIRED_WINDOW_SIZE for b in selected):
+        raise ValueError('Selected holdout block is not w=3')
     if (capture['model_config']['name'] != 'facebook/opt-2.7b' or
             capture['model_config']['dtype'] != 'float16' or
             capture.get('scope') != 'base_raw_unscaled_linear_projection; no LoRA adapter'):
@@ -44,9 +48,10 @@ def evaluation_blocks(capture):
     view = dict(capture, blocks=selected, sampling=sampling, sampling_sha256=digest(sampling))
     verify_capture(view)
     return sorted(selected, key=lambda b: b['block_id']), dict(
-        total_capture_count=len(capture['blocks']), calibration_count=counts['calibration'],
-        evaluation_count=counts['evaluation'],
-        evaluation_window_counts=dict(sorted(Counter(b['token_group_size'] for b in selected).items())))
+        total_capture_blocks=len(capture['blocks']), total_calibration_blocks=counts['calibration'],
+        total_evaluation_blocks=counts['evaluation'], evaluation_w3_count=len(selected),
+        evaluation_non_w3_count=len(evaluation)-len(selected),
+        selected_holdout_count=len(selected), required_window_size=REQUIRED_WINDOW_SIZE)
 
 
 def frozen_profiles(calibration_dir, capture_sha256):
@@ -116,7 +121,7 @@ def _metrics(sums):
 
 def _summarize(group, profile_bytes):
     account = physical_accounting(group['k_payload'], group['v_payload'], group['shapes'],
-        profile_bytes=profile_bytes, expected_tokens=None)
+        profile_bytes=profile_bytes, expected_tokens=REQUIRED_WINDOW_SIZE)
     return dict(block_count=group['block_count'],
         k_anchor_payload_bytes=group['k_anchor_payload_bytes'],
         k_residual_payload_bytes=group['k_residual_payload_bytes'],
@@ -158,7 +163,8 @@ def compare_results(summary):
         return 100*(ua[field]-qa[field])/qa[field]
     qm, um = q['reconstruction'], u['reconstruction']
     result = dict(policy_A=QL2, policy_B=UNIFORM, calibration_selected_policy=UNIFORM,
-        comparison_partition='evaluation', selected_policy_changed=False,
+        comparison_partition='evaluation', required_window_size=REQUIRED_WINDOW_SIZE,
+        selected_policy_changed=False,
         sign_convention='Error deltas: Uniform minus QL2; negative means Uniform better. '
                         'Cosine delta: QL2 minus Uniform, so negative also means Uniform better.',
         K_payload_gap_percent=gap('k_payload_bytes'), V_payload_gap_percent=gap('v_payload_bytes'),
@@ -178,8 +184,8 @@ def evaluate(blocks, profiles, loader, *, device, progress=None):
     blocks = list(blocks)
     if not blocks or set(profiles) != set(POLICIES):
         raise ValueError('Nonempty evaluation set and exactly the two frozen policies required')
-    if any(b['partition'] != 'evaluation' or b['token_group_size'] not in (3, 10) for b in blocks):
-        raise ValueError('Only existing evaluation w=3 or w=10 blocks allowed')
+    if any(b['partition'] != 'evaluation' or b['token_group_size'] != REQUIRED_WINDOW_SIZE for b in blocks):
+        raise ValueError('Only evaluation w=3 blocks allowed in the selected holdout')
     if len({b['block_id'] for b in blocks}) != len(blocks):
         raise ValueError('Duplicate evaluation block ID')
     policy_objects = ((QL2, CACHEGEN_RELEASED_QL2), (UNIFORM, UniformKVPolicy(20, 16)))
@@ -189,7 +195,7 @@ def evaluate(blocks, profiles, loader, *, device, progress=None):
         for completed, block in enumerate(blocks, 1):
             qkv = loader(block)
             shape = tuple(qkv['k'].shape)
-            fmt.validate_shape(shape, expected_tokens=block['token_group_size'])
+            fmt.validate_shape(shape, expected_tokens=REQUIRED_WINDOW_SIZE)
             if tuple(qkv['v'].shape) != shape or any(qkv[role].dtype != torch.float16 for role in ('k', 'v')):
                 raise ValueError('Matching captured FP16 K/V required')
             for name, policy in policy_objects:
@@ -204,7 +210,7 @@ def evaluate(blocks, profiles, loader, *, device, progress=None):
                 encode_calls += 4
                 maxima = [v for role in ('K', 'V') for v in encoded[role].storage_metadata.cpu().flatten().tolist()]
                 metadata = struct.pack('<'+'f'*len(maxima), *maxima)
-                blob = fmt.frame_payloads(profile, payloads, metadata, shape, expected_tokens=shape[1])
+                blob = fmt.frame_payloads(profile, payloads, metadata, shape, expected_tokens=REQUIRED_WINDOW_SIZE)
                 expected_bytes = core.BLOCK_HEADER.size+16+32+len(metadata)+sum(map(len, payloads))
                 if len(blob) != expected_bytes:
                     raise ValueError('Frozen B2 framing/accounting mismatch')
@@ -233,7 +239,8 @@ def evaluate(blocks, profiles, loader, *, device, progress=None):
     summary = dict(overall={name: _summarize(groups[name, 'overall'], len(profiles[name].to_bytes())) for name in POLICIES},
         datasets={dataset: {name: _summarize(groups[name, dataset], len(profiles[name].to_bytes())) for name in POLICIES}
                   for dataset in sorted({b['dataset'] for b in blocks})},
-        evaluation_block_count=len(blocks), arithmetic_encode_calls=encode_calls,
+        evaluation_block_count=len(blocks), required_window_size=REQUIRED_WINDOW_SIZE,
+        arithmetic_encode_calls=encode_calls,
         arithmetic_decode_calls=0, cdf_fit_calls=0,
         pooling='Float64 element-pooled sufficient statistics; profile counted once per reported population')
     return summary, compare_results(summary)
@@ -270,8 +277,12 @@ def run_holdout(args):
     capture_sha = file_hash(capture_path)
     profiles, frozen, calibration_contract = frozen_profiles(args.rate_calibration_dir, capture_sha)
     expected = 8*len(blocks)
-    print(f"capture={counts['total_capture_count']} calibration={counts['calibration_count']} "
-          f"evaluation={counts['evaluation_count']}")
+    print(f"capture={counts['total_capture_blocks']}")
+    print(f"calibration={counts['total_calibration_blocks']}")
+    print(f"evaluation_total={counts['total_evaluation_blocks']}")
+    print(f"evaluation_w3={counts['evaluation_w3_count']}")
+    print(f"evaluation_excluded_non_w3={counts['evaluation_non_w3_count']}")
+    print(f"selected_holdout={counts['selected_holdout_count']}")
     print(f'expected arithmetic encode calls={expected}')
     if args.dry_run:
         print('Dry run complete; no fixtures loaded.')
@@ -303,7 +314,7 @@ def run_holdout(args):
         evaluation_block_ids=[b['block_id'] for b in blocks], **counts,
         model=capture['model_config'], model_metadata=capture.get('model_metadata'), dtype='float16',
         frozen_calibration=frozen, selected_policy=UNIFORM, device_contract=contract,
-        seed=args.seed, seed_use='Recorded only; complete sorted evaluation partition, no sampling',
+        seed=args.seed, seed_use='Recorded only; complete sorted evaluation w=3 partition, no sampling',
         policies=list(POLICIES), expected_arithmetic_encode_calls=expected,
         arithmetic_decode_limit=0, no_cdf_fit=True, no_model_inference=True,
         fixture_scan_passes=1, implementation_sha256={str(p): file_hash(p) for p in code_paths},
