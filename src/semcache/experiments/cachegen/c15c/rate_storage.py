@@ -41,7 +41,7 @@ def role_streams(encoded):
     """Use B2's established single-domain transform and anchor/residual splitter."""
     import torch
     shape = tuple(encoded.symbols.shape)
-    fmt.validate_shape(shape, expected_tokens=3)
+    fmt.validate_shape(shape, expected_tokens=shape[1])
     domain = bytes((encoded.signed_symbols.cpu().to(torch.int16)+127).to(torch.uint8).flatten().tolist())
     transformed = fmt._representation(domain, shape, residual=True)
     return fmt._roles(transformed, shape)
@@ -80,7 +80,7 @@ def encode_role(encoded, profile):
     return payloads, metadata
 
 
-def physical_accounting(k_payload, v_payload, shapes, *, profile_bytes):
+def physical_accounting(k_payload, v_payload, shapes, *, profile_bytes, expected_tokens=3):
     """Fixed B2 framing + measured role lengths; one full profile per workload."""
     if len(k_payload) != len(v_payload) or len(shapes) != len(k_payload) or not shapes:
         raise ValueError('Matching nonempty block populations required')
@@ -89,7 +89,7 @@ def physical_accounting(k_payload, v_payload, shapes, *, profile_bytes):
     transform_per_block = core.BLOCK_HEADER.size+16+sha256().digest_size
     local, scales, raw = [], [], 0
     for shape in shapes:
-        fmt.validate_shape(shape, expected_tokens=3)
+        fmt.validate_shape(shape, expected_tokens=shape[1] if expected_tokens is None else expected_tokens)
         scale_size = 2*shape[0]*shape[1]*4
         scales.append(scale_size)
         local.append(transform_per_block+scale_size)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C1.5C QL2 CPU parity, SERAPH capture smoke and matched-rate calibration."""
+"""C1.5C parity, capture smoke, rate calibration and frozen-policy holdout."""
 from _common import ROOT
 from semcache.experiments.cachegen.c15c.harness import main
 

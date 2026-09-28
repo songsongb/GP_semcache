@@ -1,4 +1,4 @@
-"""Parity, bounded capture smoke, and calibration-only rate matching."""
+"""Parity, capture smoke, rate calibration, and frozen-policy holdout."""
 import argparse
 from collections import defaultdict, deque
 import math
@@ -194,7 +194,7 @@ def run_smoke(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='C1.5C QL2 parity / capture smoke / calibration-only matched rate')
+    parser = argparse.ArgumentParser(description='C1.5C QL2 parity, smoke, rate calibration, and frozen-policy holdout')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('parity', 'smoke'):
         p = sub.add_parser(name)
@@ -212,6 +212,12 @@ def main(argv=None):
     p.add_argument('--candidate-bins', type=int, nargs='+', default=list(DEFAULT_CANDIDATE_BINS))
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--device', help='Optional assertion: must match recorded C1 device, no fallback')
+    p = sub.add_parser('holdout-compare', help='SERAPH evaluation only; frozen QL2 versus frozen K20/V16')
+    p.add_argument('--capture-manifest', type=Path, default=ROOT/'results/cachegen/c1/capture_manifest.json')
+    p.add_argument('--rate-calibration-dir', type=Path, default=RESULTS/'rate_calibration')
+    p.add_argument('--output-dir', type=Path, default=RESULTS/'holdout')
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--dry-run', action='store_true', help='Manifest/profile preflight only; no fixtures, CUDA or output files')
     args = parser.parse_args(argv)
     if not args.output_dir.resolve().is_relative_to(RESULTS.resolve()):
         parser.error('All new outputs must be under results/cachegen/c1_5c')
@@ -224,6 +230,9 @@ def main(argv=None):
             raise SystemExit(1)
     elif args.command == 'smoke':
         run_smoke(args)
-    else:
+    elif args.command == 'rate-calibrate':
         from .rate_calibration import run_rate_calibration
         run_rate_calibration(args)
+    else:
+        from .holdout import run_holdout
+        run_holdout(args)
