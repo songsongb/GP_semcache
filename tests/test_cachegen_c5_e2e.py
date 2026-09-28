@@ -81,6 +81,36 @@ def test_nonprefix_selection_prefers_no_initial_token_id():
     assert c5.select_diverse(candidates, 1)[0]['initial_special_token_id_avoided']
 
 
+def test_selection_diagnostics_preserve_choice_and_separate_guards():
+    candidates = [dict(episode_id=str(i), group=group, cross_user=False,
+        target_index=target, expected_compressed_admissions=cost,
+        source_id=f's{i}', target_id=f't{i}',
+        spans=[dict(source_start=3, source_end=6, target_start=4,
+                    target_end=7, token_ids=[11, 12, 13])])
+        for i, (group, cost, target) in enumerate((
+            ('a', 4, 10), ('b', 7, 11), ('c', 11, 12),
+            ('d', 3, 2048), ('a', 5, 13), ('a', 4, 14)))]
+    baseline = c5.select_diverse(candidates, 2, max_encodes=10,
+                                 max_semantic_prefix_rows=2048)
+    diagnostics = {}
+    selected = c5.select_diverse(candidates, 2, max_encodes=10,
+                                 max_semantic_prefix_rows=2048,
+                                 diagnostics=diagnostics)
+    assert selected == baseline
+    assert [episode['episode_id'] for episode in selected] == ['0', '5']
+    assert diagnostics['natural_episodes_after_nonprefix_filter'] == 6
+    assert diagnostics['episodes_passing_prefix_guard'] == 5
+    assert diagnostics['episodes_passing_encode_guard'] == 4
+    assert diagnostics['final_selectable_episodes'] == 2
+    assert diagnostics['rejection_counts'] == dict(
+        rejected_by_max_encodes=2,
+        rejected_by_max_semantic_prefix_rows=1,
+        rejected_by_other_guard=1)
+    assert {x['episode']['episode_id']: x['reason'] for x in diagnostics['rejected']} == {
+        '1': 'rejected_by_max_encodes', '2': 'rejected_by_max_encodes',
+        '3': 'rejected_by_max_semantic_prefix_rows', '4': 'rejected_by_other_guard'}
+
+
 def test_m9b_strict_gate_is_diagnostic_only():
     source = dict(token_ids=[1, 2, 3, 4], adapter_id='same')
     target = dict(token_ids=[1, 2, 3, 5], adapter_id='same')
@@ -219,8 +249,12 @@ def test_dry_run_never_loads_model_or_codec(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert len(result['selected']) == 2
     assert 'natural_episodes_after_nonprefix_filter=1' in out
+    assert 'episodes_passing_prefix_guard=1' in out
+    assert 'episodes_passing_encode_guard=1' in out
+    assert 'final_selectable_episodes=1' in out
     assert 'source_start' in out and 'target_start' in out and 'token_ids' in out
     assert 'cross_user=' in out and 'expected_compressed_admissions<=' in out
+    assert out.count('cumulative_compressed_encode_upper_bound=') == 2
     assert 'expected_model_requests=8' in out
     assert 'expected_compressed_entry_encodes_upper_bound=' in out
     args.per_dataset = 2

@@ -217,7 +217,7 @@ def discover(rows, dataset, users, *, max_prompt_tokens=16):
 
 
 def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
-                   max_semantic_prefix_rows=2048):
+                   max_semantic_prefix_rows=2048, diagnostics=None):
     if type(per_dataset) is not int or per_dataset not in (1, 2, 4):
         raise ValueError('C5 permits 1, 2, or 4 episodes per dataset')
     if type(max_encodes) is not int or max_encodes < 1:
@@ -225,6 +225,7 @@ def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
     if type(max_semantic_prefix_rows) is not int or max_semantic_prefix_rows < 1:
         raise ValueError('Invalid semantic-prefix guard')
     chosen, groups = [], set()
+    selected_indices, encode_rejected_indices = set(), set()
     # Prefer avoiding the initial OPT token ID, then smallest encode work;
     # cross-user and source order break ties.
     # A distinct intent/dialogue is taken before a second from one group.
@@ -233,15 +234,41 @@ def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
         not item[1].get('initial_special_token_id_avoided', True),
         item[1]['expected_compressed_admissions'], not item[1]['cross_user'], item[0]))
     for distinct in (True, False):
-        for _, episode in order:
+        for candidate_index, episode in order:
             if len(chosen) >= per_dataset:
                 break
             if episode in chosen or (distinct and episode['group'] in groups):
                 continue
             if sum(e['expected_compressed_admissions'] for e in chosen)+episode['expected_compressed_admissions'] > max_encodes:
+                encode_rejected_indices.add(candidate_index)
                 continue
             chosen.append(episode)
             groups.add(episode['group'])
+            selected_indices.add(candidate_index)
+    if diagnostics is not None:
+        rejected = []
+        for candidate_index, episode in enumerate(episodes):
+            if candidate_index in selected_indices:
+                continue
+            if episode['target_index'] >= max_semantic_prefix_rows:
+                reason = 'rejected_by_max_semantic_prefix_rows'
+            elif (episode['expected_compressed_admissions'] > max_encodes or
+                  candidate_index in encode_rejected_indices):
+                reason = 'rejected_by_max_encodes'
+            else:
+                reason = 'rejected_by_other_guard'
+            rejected.append(dict(episode=episode, reason=reason))
+        diagnostics.update(natural_episodes_after_nonprefix_filter=len(episodes),
+            episodes_passing_prefix_guard=sum(e['target_index'] < max_semantic_prefix_rows
+                                              for e in episodes),
+            episodes_passing_encode_guard=sum(
+                e['target_index'] < max_semantic_prefix_rows and
+                e['expected_compressed_admissions'] <= max_encodes for e in episodes),
+            final_selectable_episodes=len(chosen), rejected=rejected,
+            rejection_counts={reason: sum(item['reason'] == reason for item in rejected)
+                for reason in ('rejected_by_max_encodes',
+                               'rejected_by_max_semantic_prefix_rows',
+                               'rejected_by_other_guard')})
     return chosen
 
 
@@ -269,18 +296,49 @@ def plan(args):
             # Synthetic unit fixtures can exercise planning; the actual C5 run
             # requires the producing manifest for exact TinyBERT batch replay.
             preparation[name] = None
-    discovered, selected, shortfalls = {}, [], []
+    discovered, selected, shortfalls, selection_diagnostics = {}, [], [], {}
+    cumulative_encode_upper_bound = 0
     for name in ('snips', 'multiwoz'):
         assignment = logical_user_assignment(rows[name], 2, args.seed, name)
         discovered[name] = discover(rows[name], name, assignment,
                                     max_prompt_tokens=args.max_prompt_tokens)
+        selection_diagnostics[name] = {}
         picked = select_diverse(discovered[name], args.per_dataset,
                                 max_encodes=args.max_encodes//2,
-                                max_semantic_prefix_rows=args.max_semantic_prefix_rows)
+                                max_semantic_prefix_rows=args.max_semantic_prefix_rows,
+                                diagnostics=selection_diagnostics[name] if args.dry_run else None)
         selected.extend(picked)
         print(f'{name}: natural_episodes_after_nonprefix_filter={len(discovered[name])} '
               f'selected={len(picked)}/{args.per_dataset}')
+        if args.dry_run:
+            diagnostic = selection_diagnostics[name]
+            print(f'{name}: episodes_passing_prefix_guard={diagnostic["episodes_passing_prefix_guard"]} '
+                  f'episodes_passing_encode_guard={diagnostic["episodes_passing_encode_guard"]} '
+                  f'final_selectable_episodes={diagnostic["final_selectable_episodes"]} '
+                  f'prefix_guard_limit_rows={args.max_semantic_prefix_rows} '
+                  f'per_dataset_encode_limit={args.max_encodes//2} '
+                  'encode_guard_count_scope=individual_candidate_within_prefix_guard '
+                  f'rejection_counts={diagnostic["rejection_counts"]}')
+            for reason in ('rejected_by_max_encodes',
+                           'rejected_by_max_semantic_prefix_rows',
+                           'rejected_by_other_guard'):
+                examples = [x for x in diagnostic['rejected'] if x['reason'] == reason][:3]
+                for item in examples:
+                    episode = item['episode']
+                    source_positions = [[s['source_start'], s['source_end']]
+                                        for s in episode['spans']]
+                    target_positions = [[s['target_start'], s['target_end']]
+                                        for s in episode['spans']]
+                    token_ids = [s['token_ids'] for s in episode['spans']]
+                    prefix_rows_required = episode['target_index'] + 1
+                    print(f"  rejected {episode['source_id']} -> {episode['target_id']} "
+                          f"source_positions={source_positions} "
+                          f"target_positions={target_positions} "
+                          f"token_ids={token_ids} "
+                          f"expected_compressed_admissions={episode['expected_compressed_admissions']} "
+                          f"prefix_rows_required={prefix_rows_required} reason={reason}")
         for e in picked:
+            cumulative_encode_upper_bound += e['expected_compressed_admissions']
             print(f"  [{e['source_index']}->{e['target_index']}] "
                   f"{e['source_id']} ({e['source_user']}) -> {e['target_id']} ({e['target_user']}) "
                   f"source_ne_target=true cross_user={str(e['cross_user']).lower()} "
@@ -289,7 +347,8 @@ def plan(args):
                   f"exact_w3_spans={e['spans']} expected_hits={e['expected_natural_hits']} "
                   f"initial_token_id_avoided={str(e['initial_special_token_id_avoided']).lower()} "
                   f"m9b_strict={e['m9b_strict_safety']['decision']} "
-                  f"expected_compressed_admissions<={e['expected_compressed_admissions']}")
+                  f"expected_compressed_admissions<={e['expected_compressed_admissions']} "
+                  f"cumulative_compressed_encode_upper_bound={cumulative_encode_upper_bound}")
         if len(picked) != args.per_dataset:
             shortfalls.append(f'{name}: only {len(picked)}/{args.per_dataset} non-prefix natural '
                               'episodes fit the encode/prefix guard')
@@ -311,6 +370,7 @@ def plan(args):
                     if Path(str(path)+'.manifest.json').is_file() else None
                     for name, path in paths.items()},
                 preparation=preparation, profile=profile,
+                selection_diagnostics=selection_diagnostics,
                 expected_encodes_upper_bound=encodes)
 
 
