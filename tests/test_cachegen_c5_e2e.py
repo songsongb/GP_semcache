@@ -187,7 +187,7 @@ def test_cli_max_encodes_default_remains_32(monkeypatch):
     module.main()
     assert observed == [32]
     assert c5.MAX_ENCODES == 32
-    assert c5.MAX_ENCODES_LIMIT == 64
+    assert c5.MAX_ENCODES_LIMIT == 96
 
 
 def test_known_34_encode_balanced_plan_needs_more_than_32():
@@ -205,8 +205,26 @@ def test_known_34_encode_balanced_plan_needs_more_than_32():
         'snips:0', 'snips:1', 'multiwoz:0', 'multiwoz:1']
     assert sum(e['expected_compressed_admissions'] for episodes in chosen_36.values()
                for e in episodes) == 34
-    with pytest.raises(ValueError, match=r'1\.\.64'):
-        c5.select_balanced_global(discovered, 2, max_encodes=65)
+    with pytest.raises(ValueError, match=r'1\.\.96'):
+        c5.select_balanced_global(discovered, 2, max_encodes=97)
+
+
+def test_known_72_encode_four_plus_four_plan_fits_80_but_not_64():
+    # Synthetic episodes reproduce the measured dataset totals, 42 + 30.
+    discovered = {name: [_budget_episode(name, str(i), cost, i)
+                         for i, cost in enumerate(costs)]
+                  for name, costs in (('snips', [9, 11, 11, 11]),
+                                      ('multiwoz', [7, 7, 8, 8]))}
+    minimum = c5.minimum_balanced_plan(discovered, 4, max_encodes=80)
+    assert minimum['minimum_balanced_encode_upper_bound'] == 72
+    assert minimum['dataset_minima']['snips']['minimum_valid_n_episode_combined_encode_cost'] == 42
+    assert minimum['dataset_minima']['multiwoz']['minimum_valid_n_episode_combined_encode_cost'] == 30
+    assert c5.select_balanced_global(discovered, 4, max_encodes=64)[0] is None
+    for cap in (80, 96):
+        selected, _ = c5.select_balanced_global(discovered, 4, max_encodes=cap)
+        assert all(len(episodes) == 4 for episodes in selected.values())
+        assert sum(e['expected_compressed_admissions'] for episodes in selected.values()
+                   for e in episodes) == 72
 
 
 @pytest.mark.parametrize('count', [1, 2, 4])
@@ -507,14 +525,14 @@ def test_dry_run_reports_exact_minimum_when_global_cap_cannot_fit(
     assert len(result['selected']) == 4
     assert result['expected_encodes_upper_bound'] == 36
     assert 'global_encode_limit=36 feasible_balanced_selection=true' in accepted_output
-    args.max_encodes = 65
-    with pytest.raises(ValueError, match=r'1\.\.64'):
+    args.max_encodes = 97
+    with pytest.raises(ValueError, match=r'1\.\.96'):
         c5.run(args)
 
 
-@pytest.mark.parametrize('cost,feasible', [(8, True), (9, False)])
+@pytest.mark.parametrize('cost,cap,feasible', [(8, 64, True), (9, 64, False), (9, 80, True)])
 def test_four_per_dataset_dry_run_reports_actual_n_without_model_or_codec(
-        tmp_path, monkeypatch, capsys, cost, feasible):
+        tmp_path, monkeypatch, capsys, cost, cap, feasible):
     paths = {}
     for dataset in ('snips', 'multiwoz'):
         paths[dataset] = tmp_path/f'{dataset}.jsonl'
@@ -534,19 +552,19 @@ def test_four_per_dataset_dry_run_reports_actual_n_without_model_or_codec(
         load_model=lambda *a, **k: pytest.fail('model loaded')))
     args = argparse.Namespace(snips=paths['snips'], multiwoz=paths['multiwoz'],
         profile_path=tmp_path/'unused.bin', coder_backend=c5.fmt.FAST_CODER,
-        per_dataset=4, seed=42, max_prompt_tokens=8, max_encodes=64,
+        per_dataset=4, seed=42, max_prompt_tokens=8, max_encodes=cap,
         max_semantic_prefix_rows=2048, dry_run=True)
     if feasible:
         result = c5.run(args)
         assert len(result['selected']) == 8
-        assert result['expected_encodes_upper_bound'] == 64
+        assert result['expected_encodes_upper_bound'] == cost*8
     else:
         with pytest.raises(ValueError, match='No balanced 4\\+4'):
             c5.run(args)
     out = capsys.readouterr().out
     assert 'balanced_per_dataset=4' in out
     assert f'minimum_balanced_encode_upper_bound={cost*8}' in out
-    assert f'minimum_encode_cap_excess={max(0, cost*8-64)}' in out
+    assert f'minimum_encode_cap_excess={max(0, cost*8-cap)}' in out
     assert f'minimum_valid_n_episode_combined_encode_cost={cost*4}' in out
     assert out.count('minimum_cost_episode=') == 8
     assert f'dataset_cumulative_encode_upper_bound={cost*4}' in out

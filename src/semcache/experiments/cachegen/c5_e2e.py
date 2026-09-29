@@ -42,7 +42,7 @@ RAW_ENTRY_BYTES = 3*3*2560*32*2
 LOGICAL_CAPACITY_BYTES = 64*1024**2
 MODES = ('RAW_SEMCACHE', 'COMPRESSED_SEMCACHE')
 MAX_ENCODES = 32
-MAX_ENCODES_LIMIT = 64
+MAX_ENCODES_LIMIT = 96
 SAFETY_CONTRACT = 'PHYSICAL_EXACT_W3_WITHIN_SEMANTIC_CLUSTER'
 
 
@@ -337,7 +337,7 @@ def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
     if type(per_dataset) is not int or per_dataset not in (1, 2, 4):
         raise ValueError('C5 permits 1, 2, or 4 episodes per dataset')
     if type(max_encodes) is not int or not 1 <= max_encodes <= MAX_ENCODES_LIMIT:
-        raise ValueError('C5 maximum compressed encodes must remain within 1..64')
+        raise ValueError('C5 maximum compressed encodes must remain within 1..96')
     if type(max_semantic_prefix_rows) is not int or max_semantic_prefix_rows < 1:
         raise ValueError('Invalid semantic-prefix guard')
     names = ('snips', 'multiwoz')
@@ -446,7 +446,7 @@ def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
 
 def plan(args):
     if type(args.max_encodes) is not int or not 1 <= args.max_encodes <= MAX_ENCODES_LIMIT:
-        raise ValueError('C5 maximum compressed encodes must remain within 1..64')
+        raise ValueError('C5 maximum compressed encodes must remain within 1..96')
     profile = verify_profile(args.profile_path)
     if args.coder_backend != fmt.FAST_CODER:
         raise ValueError('C5 requires FAST_PY_BITEXACT')
