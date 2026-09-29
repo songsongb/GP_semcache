@@ -273,13 +273,17 @@ def select_diverse(episodes, per_dataset, *, max_encodes=MAX_ENCODES,
     return chosen
 
 
-def minimum_balanced_2plus2(discovered, *, max_encodes=MAX_ENCODES,
-                            max_semantic_prefix_rows=2048):
-    """Exact cheapest valid 2+2 plan, independent of the global encode cap.
+def minimum_balanced_plan(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
+                          max_semantic_prefix_rows=2048):
+    """Exact cheapest valid N+N plan, independent of the global encode cap.
 
     Diversity is a selection preference with a repeat-group fallback, not an
     eligibility constraint. Ties retain the existing quality-blind priority.
+    Discovery supplies unique episodes (one per target); cold episodes have
+    no cross-episode conflict rule, so dataset costs compose independently.
     """
+    if type(per_dataset) is not int or per_dataset not in (1, 2, 4):
+        raise ValueError('C5 permits 1, 2, or 4 episodes per dataset')
     eligible = {}
     dataset_minima = {}
     for name in ('snips', 'multiwoz'):
@@ -290,31 +294,35 @@ def minimum_balanced_2plus2(discovered, *, max_encodes=MAX_ENCODES,
                 item[1]['expected_compressed_admissions'],
                 not item[1].get('initial_special_token_id_avoided', True),
                 not item[1]['cross_user'], item[0]))]
-        cheapest = eligible[name][:2]
+        cheapest = eligible[name][:per_dataset]
         dataset_minima[name] = dict(
             minimum_single_episode_encode_cost=(
                 cheapest[0]['expected_compressed_admissions'] if cheapest else None),
             minimum_single_episode_id=(cheapest[0]['episode_id'] if cheapest else None),
-            minimum_valid_two_episode_combined_encode_cost=(
+            minimum_valid_n_episode_combined_encode_cost=(
                 sum(e['expected_compressed_admissions'] for e in cheapest)
-                if len(cheapest) == 2 else None),
-            minimum_valid_two_episode_ids=(
-                [e['episode_id'] for e in cheapest] if len(cheapest) == 2 else []))
-    minimum_episodes = (eligible['snips'][:2] + eligible['multiwoz'][:2]
-                        if all(len(eligible[name]) >= 2 for name in eligible) else [])
+                if len(cheapest) == per_dataset else None),
+            minimum_valid_n_episode_ids=(
+                [e['episode_id'] for e in cheapest] if len(cheapest) == per_dataset else []))
+    minimum_episodes = (eligible['snips'][:per_dataset] + eligible['multiwoz'][:per_dataset]
+                        if all(len(eligible[name]) >= per_dataset for name in eligible) else [])
     minimum_cost = (sum(e['expected_compressed_admissions'] for e in minimum_episodes)
-                    if len(minimum_episodes) == 4 else None)
+                    if len(minimum_episodes) == 2*per_dataset else None)
     participation = {}
     for name in ('snips', 'multiwoz'):
         other = 'multiwoz' if name == 'snips' else 'snips'
         for episode in eligible[name]:
-            companion = next((e for e in eligible[name] if e is not episode), None)
-            required = [episode, companion, *eligible[other][:2]]
+            # Only the first N candidates are needed to find N-1 companions.
+            companions = [e for e in eligible[name][:per_dataset] if e is not episode][:per_dataset-1]
+            required = [episode, *companions, *eligible[other][:per_dataset]]
             participation[id(episode)] = bool(
-                all(e is not None for e in required) and len(required) == 4 and
+                len(companions) == per_dataset-1 and len(required) == 2*per_dataset and
                 sum(e['expected_compressed_admissions'] for e in required) <= max_encodes)
-    return dict(minimum_balanced_2plus2_encode_upper_bound=minimum_cost,
-                minimum_balanced_2plus2_episode_ids=[e['episode_id'] for e in minimum_episodes],
+    return dict(balanced_per_dataset=per_dataset,
+                minimum_balanced_encode_upper_bound=minimum_cost,
+                minimum_encode_cap_excess=(max(0, minimum_cost-max_encodes)
+                                         if minimum_cost is not None else None),
+                minimum_balanced_episode_ids=[e['episode_id'] for e in minimum_episodes],
                 minimum_episodes=minimum_episodes, dataset_minima=dataset_minima,
                 participation=participation)
 
@@ -343,73 +351,62 @@ def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
                 item[1]['expected_compressed_admissions'],
                 not item[1]['cross_user'], item[0]))]
 
-    def combinations(name, budget, distinct):
-        candidates = ordered[name]
-        # An unconstrained suffix bound prunes impossible branches, including
-        # large candidate pools when the shared cap cannot fit four episodes.
-        lower = [[float('inf')]*(per_dataset+1) for _ in range(len(candidates)+1)]
-        lower[-1][0] = 0
-        for i in range(len(candidates)-1, -1, -1):
-            lower[i][0] = 0
-            cost = candidates[i]['expected_compressed_admissions']
-            for count in range(1, per_dataset+1):
-                lower[i][count] = min(lower[i+1][count], cost+lower[i+1][count-1])
-
-        def visit(start, remaining, available, groups, chosen, total):
-            if remaining == 0:
-                yield tuple(chosen), total
-                return
-            if lower[start][remaining] > available:
-                return
-            for i in range(start, len(candidates)):
-                episode = candidates[i]
-                cost = episode['expected_compressed_admissions']
-                if cost > available or (distinct and episode['group'] in groups):
-                    continue
-                chosen.append(episode)
-                yield from visit(i+1, remaining-1, available-cost,
-                                 groups | {episode['group']}, chosen, total+cost)
-                chosen.pop()
-
-        yield from visit(0, per_dataset, budget, set(), [], 0)
-
-    # Prefer distinct intents/dialogues for both datasets. A repeat is allowed
-    # only when no more diverse balanced combination fits the global budget.
-    def minimum_cost(name, distinct):
+    def completion_cost(candidates, count, distinct, groups=frozenset()):
+        """Exact suffix cost; groups are the existing diversity preference."""
+        if count == 0:
+            return 0
         if distinct:
             group_costs = {}
-            for episode in ordered[name]:
+            for episode in candidates:
                 group = episode['group']
+                if group in groups:
+                    continue
                 cost = episode['expected_compressed_admissions']
                 group_costs[group] = min(cost, group_costs.get(group, float('inf')))
             costs = sorted(group_costs.values())
         else:
-            costs = sorted(e['expected_compressed_admissions'] for e in ordered[name])
-        return sum(costs[:per_dataset]) if len(costs) >= per_dataset else float('inf')
+            costs = sorted(e['expected_compressed_admissions'] for e in candidates)
+        return sum(costs[:count]) if len(costs) >= count else float('inf')
+
+    def first_selection(name, budget, distinct):
+        # Choose the earliest candidate that has a feasible suffix. This gives
+        # exactly the old depth-first search's first combination without walking
+        # combinations. At most M suffix checks, each O(M log M); no C(M,N).
+        candidates = ordered[name]
+        chosen, groups = [], set()
+        for i, episode in enumerate(candidates):
+            if distinct and episode['group'] in groups:
+                continue
+            cost = episode['expected_compressed_admissions']
+            remaining = per_dataset-len(chosen)-1
+            tail_cost = completion_cost(candidates[i+1:], remaining, distinct,
+                                        groups | {episode['group']})
+            if cost+tail_cost > budget:
+                continue
+            chosen.append(episode)
+            groups.add(episode['group'])
+            budget -= cost
+            if len(chosen) == per_dataset:
+                return chosen
+        raise AssertionError('Exact completion bound did not produce a feasible set')
 
     selected = None
-    multiwoz_first = {}
+    # Preserve the old phase order, candidate priority, uniqueness (one use of
+    # each discovered episode), and distinct-group preference/fallback exactly.
     for snips_distinct, multiwoz_distinct in ((True, True), (True, False),
                                                (False, True), (False, False)):
-        min_snips = minimum_cost('snips', snips_distinct)
-        min_multiwoz = minimum_cost('multiwoz', multiwoz_distinct)
+        min_snips = completion_cost(ordered['snips'], per_dataset, snips_distinct)
+        min_multiwoz = completion_cost(ordered['multiwoz'], per_dataset, multiwoz_distinct)
         if min_snips + min_multiwoz > max_encodes:
             continue
-        for snips, snips_cost in combinations('snips', max_encodes-min_multiwoz,
-                                               snips_distinct):
-            remaining = max_encodes-snips_cost
-            key = (remaining, multiwoz_distinct)
-            if key not in multiwoz_first:
-                multiwoz_first[key] = next(combinations('multiwoz', remaining,
-                                                       multiwoz_distinct), None)
-            if multiwoz_first[key] is not None:
-                selected = dict(snips=list(snips), multiwoz=list(multiwoz_first[key][0]))
-                break
-        if selected is not None:
-            break
+        snips = first_selection('snips', max_encodes-min_multiwoz, snips_distinct)
+        remaining = max_encodes-sum(e['expected_compressed_admissions'] for e in snips)
+        multiwoz = first_selection('multiwoz', remaining, multiwoz_distinct)
+        selected = dict(snips=snips, multiwoz=multiwoz)
+        break
 
-    minimum_plan = minimum_balanced_2plus2(
-        discovered, max_encodes=max_encodes,
+    minimum_plan = minimum_balanced_plan(
+        discovered, per_dataset, max_encodes=max_encodes,
         max_semantic_prefix_rows=max_semantic_prefix_rows)
     diagnostics = {}
     for name in names:
@@ -423,10 +420,10 @@ def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
                 reason = 'rejected_by_max_semantic_prefix_rows'
             elif episode['expected_compressed_admissions'] > max_encodes:
                 reason = 'rejected_by_max_encodes'
-            elif per_dataset == 2 and not minimum_plan['participation'][id(episode)]:
-                reason = 'cannot_participate_in_balanced_2plus2_within_encode_cap'
+            elif not minimum_plan['participation'][id(episode)]:
+                reason = 'cannot_participate_in_balanced_selection_within_encode_cap'
             else:
-                reason = 'rejected_by_other_guard'
+                reason = 'not_selected_by_deterministic_priority'
             rejected.append(dict(episode=episode, reason=reason))
         diagnostics[name] = dict(
             natural_episodes_after_nonprefix_filter=len(discovered[name]),
@@ -435,15 +432,15 @@ def select_balanced_global(discovered, per_dataset, *, max_encodes=MAX_ENCODES,
                 e['expected_compressed_admissions'] <= max_encodes for e in ordered[name]),
             individual_candidates_passing_max_encodes=sum(
                 e['expected_compressed_admissions'] <= max_encodes for e in ordered[name]),
-            candidates_participating_in_feasible_balanced_2plus2=sum(
+            candidates_participating_in_feasible_balanced_selection=sum(
                 minimum_plan['participation'][id(e)] for e in ordered[name]),
             candidates_considered=len(ordered[name]),
             final_selectable_episodes=len(chosen), rejected=rejected,
             rejection_counts={reason: sum(item['reason'] == reason for item in rejected)
                 for reason in ('rejected_by_max_encodes',
                                'rejected_by_max_semantic_prefix_rows',
-                               'cannot_participate_in_balanced_2plus2_within_encode_cap',
-                               'rejected_by_other_guard')})
+                               'cannot_participate_in_balanced_selection_within_encode_cap',
+                               'not_selected_by_deterministic_priority')})
     return selected, diagnostics
 
 
@@ -483,21 +480,26 @@ def plan(args):
     print(f'global_encode_limit={args.max_encodes} '
           f'feasible_balanced_selection={str(chosen is not None).lower()}')
     if args.dry_run:
-        minimum = minimum_balanced_2plus2(
-            discovered, max_encodes=args.max_encodes,
+        minimum = minimum_balanced_plan(
+            discovered, args.per_dataset, max_encodes=args.max_encodes,
             max_semantic_prefix_rows=args.max_semantic_prefix_rows)
-        print(f'minimum_balanced_2plus2_encode_upper_bound='
-              f'{minimum["minimum_balanced_2plus2_encode_upper_bound"]} '
-              f'minimum_balanced_2plus2_episode_ids='
-              f'{minimum["minimum_balanced_2plus2_episode_ids"]}')
+        print(f'balanced_per_dataset={args.per_dataset} '
+              f'minimum_encode_cap_excess={minimum["minimum_encode_cap_excess"]} '
+              f'minimum_balanced_encode_upper_bound='
+              f'{minimum["minimum_balanced_encode_upper_bound"]} '
+              f'minimum_balanced_episode_ids='
+              f'{minimum["minimum_balanced_episode_ids"]}')
         cumulative_minimum = 0
+        dataset_cumulative = dict(snips=0, multiwoz=0)
         for episode in minimum['minimum_episodes']:
             cumulative_minimum += episode['expected_compressed_admissions']
+            dataset_cumulative[episode['dataset']] += episode['expected_compressed_admissions']
             spans = episode['spans']
             print(f"  minimum_cost_episode={episode['episode_id']} "
                   f"source_id={episode['source_id']} target_id={episode['target_id']} "
                   f"expected_compressed_admissions={episode['expected_compressed_admissions']} "
                   f"cumulative_minimum_encode_upper_bound={cumulative_minimum} "
+                  f"dataset_cumulative_encode_upper_bound={dataset_cumulative[episode['dataset']]} "
                   f"source_positions={[[s['source_start'], s['source_end']] for s in spans]} "
                   f"target_positions={[[s['target_start'], s['target_end']] for s in spans]} "
                   f"cross_user={str(episode['cross_user']).lower()} "
@@ -519,19 +521,20 @@ def plan(args):
         if args.dry_run:
             diagnostic = selection_diagnostics[name]
             dataset_minimum = minimum['dataset_minima'][name]
-            print(f'{name}: minimum_single_episode_encode_cost='
+            print(f'{name}: balanced_per_dataset={args.per_dataset} '
+                  f'minimum_single_episode_encode_cost='
                   f'{dataset_minimum["minimum_single_episode_encode_cost"]} '
                   f'minimum_single_episode_id={dataset_minimum["minimum_single_episode_id"]} '
-                  f'minimum_valid_two_episode_combined_encode_cost='
-                  f'{dataset_minimum["minimum_valid_two_episode_combined_encode_cost"]} '
-                  f'minimum_valid_two_episode_ids='
-                  f'{dataset_minimum["minimum_valid_two_episode_ids"]}')
+                  f'minimum_valid_n_episode_combined_encode_cost='
+                  f'{dataset_minimum["minimum_valid_n_episode_combined_encode_cost"]} '
+                  f'minimum_valid_n_episode_ids='
+                  f'{dataset_minimum["minimum_valid_n_episode_ids"]}')
             print(f'{name}: episodes_passing_prefix_guard={diagnostic["episodes_passing_prefix_guard"]} '
                   f'episodes_passing_encode_guard={diagnostic["episodes_passing_encode_guard"]} '
                   f'individual_candidates_passing_max_encodes='
                   f'{diagnostic["individual_candidates_passing_max_encodes"]} '
-                  f'candidates_participating_in_feasible_balanced_2plus2='
-                  f'{diagnostic["candidates_participating_in_feasible_balanced_2plus2"]} '
+                  f'candidates_participating_in_feasible_balanced_selection='
+                  f'{diagnostic["candidates_participating_in_feasible_balanced_selection"]} '
                   f'final_selectable_episodes={diagnostic["final_selectable_episodes"]} '
                   f'prefix_guard_limit_rows={args.max_semantic_prefix_rows} '
                   f'global_encode_limit={args.max_encodes} '
@@ -539,8 +542,8 @@ def plan(args):
                   f'rejection_counts={diagnostic["rejection_counts"]}')
             for reason in ('rejected_by_max_encodes',
                            'rejected_by_max_semantic_prefix_rows',
-                           'cannot_participate_in_balanced_2plus2_within_encode_cap',
-                           'rejected_by_other_guard'):
+                           'cannot_participate_in_balanced_selection_within_encode_cap',
+                           'not_selected_by_deterministic_priority'):
                 examples = [x for x in diagnostic['rejected'] if x['reason'] == reason][:3]
                 for item in examples:
                     episode = item['episode']
