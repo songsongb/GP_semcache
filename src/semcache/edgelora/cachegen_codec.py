@@ -6,15 +6,17 @@ CDFs can be built offline and reused at runtime.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Dict, Optional
 
 import torch
 
-LMCACHE_ROOT = Path(
-    "/data/qwe1234k/repos/kvcache/cachegen_qwen3/vendor/CacheGen/LMCache"
-)
+LMCACHE_ROOT = Path(os.environ.get(
+    "CACHEGEN_LMCACHE_ROOT",
+    "/data/qwe1234k/repos/kvcache/cachegen_qwen3/vendor/CacheGen/LMCache",
+)).expanduser()
 if str(LMCACHE_ROOT) not in sys.path:
     sys.path.insert(0, str(LMCACHE_ROOT))
 
