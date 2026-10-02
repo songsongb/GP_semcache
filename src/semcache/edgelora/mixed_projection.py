@@ -6,11 +6,14 @@ from semcache.metrics.timing import resolve_cuda_event_pairs
 
 
 @contextmanager
-def mixed_projection_path(adapter, adapter_name, hits, sequence_length, *, measure_cuda=False):
+def mixed_projection_path(adapter, adapter_name, hits, sequence_length, *, measure_cuda=False,
+                          fresh_projection=None):
     """Patch instance forwards only; restore exact original attributes in finally.
 
     Module hooks must be absent: M2 validation hooks independently re-project
     full inputs and would invalidate work accounting. Captures here are passive.
+    ``fresh_projection`` optionally reconstructs fresh rows (e.g. transported
+    LoRA deltas). Cached total projections bypass that callback entirely.
     """
     import torch
     if sequence_length < 1:
@@ -44,7 +47,10 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length, *, measu
             with torch.inference_mode():
                 # This is the ONLY invocation of the native PEFT forward.
                 index = fresh_positions.to(hidden_states.device)
-                fresh = native(hidden_states.index_select(1, index)) if len(index) else None
+                fresh_inputs = hidden_states.index_select(1, index)
+                fresh = ((native(fresh_inputs) if fresh_projection is None else
+                          fresh_projection(layer, name, module, fresh_inputs, native))
+                         if len(index) else None)
                 dtype = fresh.dtype if fresh is not None else module.get_base_layer().weight.dtype
                 output = torch.empty((1, sequence_length, module.out_features), device=hidden_states.device, dtype=dtype)
                 if fresh is not None:
@@ -56,8 +62,11 @@ def mixed_projection_path(adapter, adapter_name, hits, sequence_length, *, measu
                         raise ValueError('Cached projection shape mismatch')
                     output[:, w.start:w.end] = source.to(output)
                 audit.records[key] = dict(layer=layer, tensor_type=name, full_sequence_length=sequence_length,
-                    native_projection_rows=len(index), reused_projection_rows=reused,
-                    expected_saved_projection_positions=reused, native_call_count=int(fresh is not None),
+                    native_projection_rows=len(index) if fresh_projection is None else 0,
+                    reconstructed_projection_rows=len(index) if fresh_projection is not None else 0,
+                    reused_projection_rows=reused,
+                    expected_saved_projection_positions=reused,
+                    native_call_count=int(fresh is not None and fresh_projection is None),
                     native_positions=fresh_positions.tolist(), component_scope='total_qkv')
                 # Keep passive detached captures on the execution device. Moving every
                 # projection to CPU here creates a host barrier per Q/K/V call;
