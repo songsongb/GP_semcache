@@ -6,7 +6,7 @@ from statistics import mean
 from semcache.models.task_adapters import (USERS, ADAPTER_CONFIG, load_two_task_users,
                                           activate_task_user, validate_task_config, select_training_user)
 from semcache.models.lora_fixtures import base_weight_fingerprint, assert_frozen_base
-from .c6b_snips import (MODEL_ID, MODEL_REVISION, LABELS, SCOPE, encode_example, label_ids,
+from .c6b_snips import (MODEL_ID, MODEL_REVISION, LABELS, LABEL_SERIALIZATION, SCOPE, encode_example, label_ids,
     score_candidate_logits, classify, aggregate, file_hashes, file_hash, digest,
     write_json, write_csv, normalized_label, build_plan)
 
@@ -126,6 +126,8 @@ def verify_training_artifacts(args, rows, plan):
     manifest_path=args.adapter_root/'training_manifest.json'
     trained=json.loads(manifest_path.read_text())
     saved_plan=json.loads((args.adapter_root/'train_selection.json').read_text())
+    if trained.get('label_serialization') != LABEL_SERIALIZATION:
+        raise ValueError('Training/candidate label serialization mismatch')
     if (trained.get('status')!='COMPLETE' or trained.get('trained_adapter') is not True
             or trained.get('adapter_source')!='task_finetuned_snips'
             or trained.get('base_model')!=MODEL_ID or trained.get('model_revision')!=MODEL_REVISION

@@ -16,6 +16,7 @@ from semcache.models.task_adapters import USERS, ADAPTER_CONFIG
 from .c6_quality import write_json, write_csv, normalized_label
 
 LABELS = tuple(SNIPS_INTENTS)
+LABEL_SERIALIZATION = 'one leading ASCII space + canonical_label; separately tokenized without special tokens'
 USER_MAP = dict(user_000='user_a', user_001='user_b')
 SCOPE = dict(task_capability_stage='C6-B1', paper_bleu_claimed=False,
     semantic_reuse_enabled=False, compression_enabled=False,
@@ -107,7 +108,7 @@ def build_plan(rows, selection, per_intent_per_user=200, seed=42):
 
 
 def encode_example(tokenizer, row, max_sequence_length):
-    """Explicit concatenation: no whitespace insertion, text slicing or truncation."""
+    """Keep frozen prompt IDs; append shared space-prefixed label IDs and EOS."""
     prompt = list(tokenizer(row['query_text'], add_special_tokens=True, truncation=False)['input_ids'])
     if prompt != row['token_ids']:
         raise ValueError('Tokenizer prompt IDs differ from canonical workload')
@@ -122,9 +123,11 @@ def encode_example(tokenizer, row, max_sequence_length):
 
 
 def label_ids(tokenizer, label):
+    """Canonical completion for both training and candidate likelihood scoring."""
     if label not in LABELS:
         raise ValueError('Noncanonical candidate label')
-    ids = list(tokenizer(label,add_special_tokens=False,truncation=False)['input_ids'])
+    completion_text = ' ' + label
+    ids = list(tokenizer(completion_text,add_special_tokens=False,truncation=False)['input_ids'])
     if not ids or any(t in tokenizer.all_special_ids for t in ids):
         raise ValueError('Candidate label must have nonempty nonspecial tokens')
     return ids
@@ -196,7 +199,8 @@ def provenance(args, plan):
         adapter_validation='pending until real execution',
         git=dict(branch=git('branch','--show-current'),commit=git('rev-parse','HEAD'),status=git('status','--porcelain')),
         software=dict(python=platform.python_version(),**versions), arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
-        tokenization_protocol='prompt with special tokens; label separately without specials; concatenate; no added separator',
+        label_serialization=LABEL_SERIALIZATION,
+        tokenization_protocol='frozen prompt IDs unchanged; separately tokenize one space + canonical label without specials; concatenate',
         training_label_policy='prompt -100; label tokens plus one EOS supervised',
         candidate_score_policy='mean label-token log probability; EOS excluded; canonical-order ties')
 

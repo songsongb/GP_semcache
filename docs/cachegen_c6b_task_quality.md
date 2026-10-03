@@ -45,8 +45,13 @@ optimizer and scaler. Frozen base QKV fingerprints must remain unchanged.
 
 Prompt IDs are the tokenizer's special-token-enabled encoding of the unchanged
 prepared `query_text`, verified against the workload token IDs. Label IDs are
-encoded separately with `add_special_tokens=False`, then one EOS ID is appended.
-No separator or answer text is inserted into the prompt. The label array is
+encoded from `completion_text = " " + canonical_label` separately with
+`add_special_tokens=False`, then one EOS ID is appended. This renders
+`Intent: AddToPlaylist`, while leaving the frozen prompt token IDs unchanged.
+The single leading ASCII space belongs to the completion, not the prompt.
+Training and candidate scoring share `label_ids()` and this exact serialization;
+provenance records it, and validation rejects adapters with a different recorded
+serialization. The label array is
 `[-100] * prompt_length + label_ids + [eos]`; the causal LM's ordinary shift
 therefore supervises the first label token from the last prompt position.
 Overlength examples fail rather than dropping examples or truncating labels.

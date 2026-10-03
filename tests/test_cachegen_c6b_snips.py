@@ -39,7 +39,9 @@ class Tokenizer:
         if text.startswith('utterance'):
             i=int(text.split()[-1])
             return dict(input_ids=[2,100+i,500,10,11,12,600+i])
-        return dict(input_ids=[20+b1.LABELS.index(text),30])
+        if not text.startswith(' ') or text.startswith('  ') or add_special_tokens:
+            raise AssertionError('Expected separately tokenized single-space completion')
+        return dict(input_ids=[20+b1.LABELS.index(text[1:]),30])
 
 
 class DataTests(unittest.TestCase):
@@ -102,6 +104,27 @@ class DataTests(unittest.TestCase):
         result=b1.classify(scores,b1.LABELS[-1])
         self.assertTrue(result['correct']); self.assertEqual(result['classification_margin'],1.0)
 
+    def test_leading_space_shared_by_training_and_candidate_scoring(self):
+        class RecordingTokenizer(Tokenizer):
+            def __init__(self): self.calls=[]
+            def __call__(self,text,**kwargs):
+                self.calls.append((text,kwargs))
+                return super().__call__(text,**kwargs)
+        tokenizer=RecordingTokenizer()
+        for label in b1.LABELS:
+            row=workload()[0].copy()
+            row['reference_text']=label
+            tokenizer.calls.clear()
+            training=b1.encode_example(tokenizer,row,64)
+            # Evaluation builds each candidate through this same label_ids API.
+            candidate=b1.label_ids(tokenizer,label)
+            self.assertEqual(tokenizer.calls[1:], [(' '+label,dict(add_special_tokens=False,truncation=False))]*2)
+            self.assertEqual(training['input_ids'][:training['prompt_length']],row['token_ids'])
+            self.assertEqual(training['labels'][:training['prompt_length']],[-100]*len(row['token_ids']))
+            self.assertEqual(training['labels'][training['prompt_length']:],candidate+[tokenizer.eos_token_id])
+            self.assertNotIn(tokenizer.eos_token_id,candidate)
+            self.assertEqual(b1.normalized_label(' '+label+'\n'),label.casefold())
+
     @unittest.skipUnless(HAS_TORCH,'PyTorch unavailable')
     def test_causal_score_positions_exclude_prompt_and_eos(self):
         import torch
@@ -145,6 +168,7 @@ class DataTests(unittest.TestCase):
                 name='training_manifest.json' if training else 'capability_manifest.json'
                 manifest=json.loads((out/name).read_text())
                 self.assertEqual(manifest['status'],'DRY_RUN')
+                self.assertEqual(manifest['label_serialization'],b1.LABEL_SERIALIZATION)
                 self.assertFalse(manifest['trained_adapter'])
                 for flag in ('compression_enabled','semantic_reuse_enabled','paper_bleu_claimed'):
                     self.assertFalse(manifest[flag])
@@ -193,6 +217,7 @@ class DataTests(unittest.TestCase):
             for u in b1.USERS:
                 (root/u).mkdir(); (root/u/'adapter_config.json').write_text('{}')
             trained=dict(**b1.SCOPE,base_qkv_unchanged=True,train_ids_sha256=plan['train_ids_sha256'],counts=plan['counts'],status='COMPLETE',trained_adapter=True,adapter_source='task_finetuned_snips',
+                label_serialization=b1.LABEL_SERIALIZATION,
                 base_model=b1.MODEL_ID,model_revision=b1.MODEL_REVISION,resolved_model_revision=b1.MODEL_REVISION,
                 resolved_tokenizer_revision=b1.MODEL_REVISION,adapter_config=ADAPTER_CONFIG,
                 workload_sha256=b1.file_hash(data),selection_sha256=b1.file_hash(selected),
