@@ -168,6 +168,11 @@ class DataTests(unittest.TestCase):
                 name='training_manifest.json' if training else 'capability_manifest.json'
                 manifest=json.loads((out/name).read_text())
                 self.assertEqual(manifest['status'],'DRY_RUN')
+                if training:
+                    from semcache.experiments.cachegen.c6b_order import order_manifest
+                    plan=json.loads((out/'train_selection.json').read_text())
+                    for key,value in order_manifest(plan,42,3).items():
+                        self.assertEqual(manifest[key],value)
                 self.assertEqual(manifest['label_serialization'],b1.LABEL_SERIALIZATION)
                 self.assertFalse(manifest['trained_adapter'])
                 for flag in ('compression_enabled','semantic_reuse_enabled','paper_bleu_claimed'):

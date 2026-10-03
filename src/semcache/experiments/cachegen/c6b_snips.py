@@ -246,6 +246,9 @@ def main(training, argv=None):
     args.output_root.mkdir(parents=True,exist_ok=True)
     write_json(args.output_root/'train_selection.json',plan)
     manifest=provenance(args,plan)
+    if training:
+        from .c6b_order import order_manifest
+        manifest.update(order_manifest(plan,args.seed,args.epochs))
     manifest['train_selection_sha256']=file_hash(args.output_root/'train_selection.json')
     manifest['status']='DRY_RUN' if args.dry_run else 'STARTING'
     name='training_manifest.json' if training else 'capability_manifest.json'

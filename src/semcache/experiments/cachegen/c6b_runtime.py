@@ -6,6 +6,7 @@ from statistics import mean
 from semcache.models.task_adapters import (USERS, ADAPTER_CONFIG, load_two_task_users,
                                           activate_task_user, validate_task_config, select_training_user)
 from semcache.models.lora_fixtures import base_weight_fingerprint, assert_frozen_base
+from .c6b_order import epoch_order
 from .c6b_snips import (MODEL_ID, MODEL_REVISION, LABELS, LABEL_SERIALIZATION, SCOPE, encode_example, label_ids,
     score_candidate_logits, classify, aggregate, file_hashes, file_hash, digest,
     write_json, write_csv, normalized_label, build_plan)
@@ -67,11 +68,12 @@ def train(args, rows, plan, manifest):
         model.train()
         optimizer=torch.optim.AdamW(parameters,lr=args.learning_rate,weight_decay=0.0)
         scaler=torch.cuda.amp.GradScaler()
-        user_ids=[r['source_id'] for r in plan['train_rows'] if r['user']==user]
         losses=[]; steps=0; skipped_steps=0
         for epoch in range(args.epochs):
             epoch_losses=[]
-            # Stable workload order each epoch; only training RNG affects dropout.
+            user_ids,order_audit=epoch_order(plan,user,epoch+1,args.seed)
+            if order_audit != manifest['training_order_epochs'][user][epoch]:
+                raise ValueError('Epoch order differs from recorded training order')
             for offset in range(0,len(user_ids),args.gradient_accumulation):
                 group=user_ids[offset:offset+args.gradient_accumulation]
                 optimizer.zero_grad(set_to_none=True)
@@ -95,7 +97,7 @@ def train(args, rows, plan, manifest):
                     skipped_steps+=1
                 else:
                     steps+=1
-            losses.append(dict(epoch=epoch+1,mean_example_completion_loss=mean(epoch_losses)))
+            losses.append(dict(**order_audit,mean_example_completion_loss=mean(epoch_losses)))
             print(f'{user}: epoch {epoch+1}/{args.epochs} complete',flush=True)
         if steps==0:
             raise ValueError(f'No successful optimizer updates for {user}')

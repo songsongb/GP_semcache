@@ -62,7 +62,8 @@ checkpointing with non-reentrant checkpointing. Frozen base weights are FP16;
 LoRA parameters and Adam moments are FP32, with FP16 autocast and gradient
 scaling. Partial accumulation groups divide by their actual example count.
 Overflow-skipped updates and successful updates are recorded; zero successful
-updates fails. Training order is stable per epoch. These are conservative
+updates fails. Training order uses deterministic per-epoch within-intent shuffle
+followed by class-balanced round-robin interleaving, as described below. These are conservative
 starting settings for a 12 GB RTX A2000, not measured memory/runtime guarantees.
 
 Successful training saves standard local PEFT directories `user_a/` and
@@ -71,6 +72,35 @@ Successful training saves standard local PEFT directories `user_a/` and
 optimizer settings, per-user training losses/update counts, seeds and resolved
 model/tokenizer provenance. Dry-run/failed-start manifests do not claim trained
 adapters. Output roots must be empty; automatic resume is not implemented.
+
+### Epoch ordering correction
+
+The frozen training selection is unchanged: the first 200 selected rows per
+intent/user remain the same rows. Only their consumption order changes.
+For each user and each one-based epoch, partition the selected rows into the
+seven canonical intents in stable selection order. Seed a local Python RNG with
+`int(digest(['c6b_order_v1', global_seed, zero_based_user_index, epoch]), 16)`;
+`digest` is the repository's SHA256 of canonical JSON. Shuffle each intent queue
+with that RNG in canonical intent order, then interleave one item from each
+queue round-robin in the same canonical order. This RNG does not alter the global
+Python or PyTorch RNG state. No example is added, removed or oversampled.
+
+For the balanced pilot, each user consumes exactly 1,400 examples per epoch,
+with 200 from each intent and no consecutive same-intent examples. The epoch
+ends with a single SearchScreeningEvent example, never a 200-example block.
+Existing shortfall plans still consume each available row once, skipping
+exhausted queues; the balanced-pilot run-length guarantee applies to equal
+class counts.
+
+Training manifests record `training_order_policy` as
+`deterministic per-epoch within-intent shuffle + class-balanced interleave`.
+`training_order_epochs[user]` records each epoch's derived seed, row count and
+`ordered_row_ids_sha256`, including during dry runs. These are planned order
+hashes; completed epoch history repeats the audit alongside measured loss.
+Before consuming an epoch, the runtime verifies the regenerated order against
+the manifest. Holdout IDs, train IDs, class counts, hyperparameters, leading-space
+label serialization and capability evaluation remain unchanged. Retrain into
+a new output root; previous adapters/results remain untouched.
 
 `load_two_task_users()` validates both configurations, loads them under the two
 required names, verifies base QKV fingerprints, and validates every projection
@@ -149,8 +179,8 @@ overwrite or replace the frozen C6-A selection.
 ```bash
 cd /data/khuss/repos/GP_semcache
 export SELECTION=/data/khuss/repos/GP_semcache/results/cachegen/c6/quality_dry_run_32/selection.json
-export TRAIN_ROOT=/data/khuss/repos/GP_semcache/results/cachegen/c6b/snips_pilot200
-export CAPABILITY_ROOT=/data/khuss/repos/GP_semcache/results/cachegen/c6b/snips_pilot200_capability
+export TRAIN_ROOT=/data/khuss/repos/GP_semcache/results/cachegen/c6b/snips_pilot200_interleaved
+export CAPABILITY_ROOT=/data/khuss/repos/GP_semcache/results/cachegen/c6b/snips_pilot200_interleaved_capability
 export TORCH_EXTENSIONS_DIR=/data/khuss/.cache/torch_extensions/py311_cu118
 export TRITON_CACHE_DIR=/data/khuss/.cache/triton
 export CUDA_CACHE_PATH=/data/khuss/.cache/cuda
@@ -195,7 +225,7 @@ python3 scripts/51_validate_cachegen_c6b_snips.py \
 CPU/synthetic checks:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -p test_cachegen_c6b_snips.py -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_cachegen_c6b*.py' -v
 bash -n scripts/50_train_cachegen_c6b_snips.sbatch
 ```
 
