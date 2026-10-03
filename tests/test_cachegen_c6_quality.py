@@ -3,6 +3,7 @@ import builtins
 import copy
 import importlib.util
 import io
+import inspect
 import json
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -145,6 +146,9 @@ class C6Tests(unittest.TestCase):
     def test_storage_preserves_q(self):
         import torch
         from types import SimpleNamespace
+        from semcache.cache.cache_entry import CacheEntry
+        if 'compressed_kv' not in inspect.signature(CacheEntry).parameters:
+            self.skipTest('C2 CacheEntry API unavailable in this checkout')
         storage=Storage.__new__(Storage)
         tensors={0:tuple(torch.ones(1,3,4,dtype=torch.float16)*i for i in (1,2,3))}
         class Codec:
@@ -152,10 +156,12 @@ class C6Tests(unittest.TestCase):
                 return factory(0,(10,11,12),(3,6),72,q_tensors={0:tensors[0][0].clone()},
                     compressed_kv=SimpleNamespace(profile_sha256=c6.PROFILE_SHA,bitstream=b'kv',local_metadata_bytes=4))
             def decode_entry(self,entry):
-                return SimpleNamespace(tensors={0:(entry.q_tensors[0],tensors[0][1],tensors[0][2])})
+                return SimpleNamespace(resident=entry,tensors={0:(entry.q_tensors[0],tensors[0][1],tensors[0][2])})
         storage.codec=Codec()
         resident, accounting=storage.encode(dict(cluster=0,token_ids=[10,11,12],source_start=3,source_user='user_a',source_id='source'),tensors)
-        output=storage.decode(resident).tensors
+        view=storage.codec.decode_entry(resident)
+        storage.validate_decoded(resident,view)
+        output=view.tensors
         self.assertIsNone(resident.tensors)
         self.assertTrue(hasattr(resident,'compressed_kv'))
         self.assertTrue(torch.equal(output[0][0],tensors[0][0]))

@@ -5,6 +5,9 @@ import platform
 import subprocess
 import sys
 from contextlib import contextmanager
+from semcache.cache.global_cache import GlobalCache
+
+RAW_ENTRY_BYTES = 3 * 3 * 2560 * 32 * 2
 
 from .c6_quality import (MODES, CONTRACT, BLEU, MODEL_ID, MODEL_REVISION, PROFILE_SHA,
     file_hash, digest, verify_profile, validate_hit, case_result, generation_metrics, logit_metrics, summarize, write_json, write_csv)
@@ -36,6 +39,8 @@ def manifest(args, selection):
         controlled_fixture=dict(rank=8, users=['user_a','user_b'], seeds=[101,202], trained_adapter=False),
         git=dict(branch=git('branch','--show-current'), commit=git('rev-parse','HEAD'), status=git('status','--porcelain')),
         software=dict(python=platform.python_version(), **versions), output_hashes={},
+        capacity_policy=dict(raw_entry_bytes=RAW_ENTRY_BYTES, capacity_charge='entry.size_bytes', shared_overhead_bytes=0),
+        storage_decode_owner='GlobalCache.lookup; one decode per selected hit; resident retained',
         script48_discrepancy='script48 resident Q absent/current Q recomputed; C6 source TOTAL Q remains resident FP16')
 
 
@@ -55,6 +60,44 @@ def forbid_storage_fitting():
         sys.setprofile(previous)
 
 
+def make_c6_cache(mode, storage=None):
+    """Fixed raw logical capacity; physical compression never buys admission."""
+    reuse, _, compressed_storage = MODES[mode]
+    if not reuse:
+        raise ValueError('FULL_RECOMPUTE must not create a cache')
+    if not compressed_storage:
+        return GlobalCache(RAW_ENTRY_BYTES)
+    if storage is None:
+        raise ValueError('Compressed C6 mode requires its frozen Storage codec')
+    if 'physical_codec' not in inspect.signature(GlobalCache).parameters:
+        raise RuntimeError('C6 compressed storage requires the C2 GlobalCache API; this checkout has the legacy cache')
+    return GlobalCache(RAW_ENTRY_BYTES,
+        physical_storage_mode=storage.mode, physical_codec=storage.codec,
+        capacity_charge=None, shared_overhead_bytes=0,
+        instrument_storage=False, homogeneous_logical_fastpath=False)
+
+
+def insert_and_lookup_c6(cache, entry, episode, window, storage=None):
+    """Lookup owns decoding; preserve the resident entry and validate its view."""
+    from semcache.semantic.matcher import ExactTokenMatcher
+    from semcache.semantic.hit_selection import CacheHit
+    if entry.size_bytes != RAW_ENTRY_BYTES:
+        raise ValueError('C6 entry must retain the fixed raw logical size')
+    if not cache.insert(entry):
+        raise ValueError('Frozen source admission failed')
+    with forbid_storage_fitting():
+        view = cache.lookup(ExactTokenMatcher().key(episode['cluster'], window), record_reuse=False)
+    if (getattr(view, 'resident', view) is not entry or len(cache.entries) != 1
+            or cache.entries.get(entry.key) is not entry):
+        raise ValueError('Frozen cache lookup event mismatch')
+    if storage is not None:
+        storage.validate_decoded(entry, view)
+    cache.record_reuse(entry)
+    hit = CacheHit(window, view)
+    validate_hit(episode, hit)
+    return hit
+
+
 class Storage:
     """Reuse C2's entry boundary; keep owned source Q alongside compressed KV."""
     def __init__(self, args):
@@ -64,9 +107,10 @@ class Storage:
             # Extend the C6 package to locate the existing external C2 implementation.
             external = args.storage_src.resolve()/'semcache'/'experiments'/'cachegen'
             semcache.experiments.cachegen.__path__.append(str(external))
-        from semcache.experiments.cachegen.c2.physical_storage import FrozenK20V16Codec
+        from semcache.experiments.cachegen.c2.physical_storage import FrozenK20V16Codec, MODE_COMPRESSED
         from semcache.experiments.cachegen.b2 import format as fmt
         self.source = inspect.getfile(FrozenK20V16Codec)
+        self.mode = MODE_COMPRESSED
         with forbid_storage_fitting():
             self.codec = FrozenK20V16Codec(args.profile_path, quantization_device=args.device,
                                           decode_device=args.device, expected_hidden=2560, coder_backend=fmt.FAST_CODER)
@@ -74,11 +118,9 @@ class Storage:
     def encode(self, episode, tensors):
         from semcache.cache.cache_entry import CacheEntry
         def entry_factory(*args, q_tensors, compressed_kv, **kwargs):
-            resident = CacheEntry(*args, qkv_metadata=dict(component_scope='total_qkv',
-                source_user=episode['source_user'], source_id=episode['source_id']))
-            resident.q_tensors = q_tensors
-            resident.compressed_kv = compressed_kv
-            return resident
+            return CacheEntry(*args, qkv_metadata=dict(component_scope='total_qkv',
+                source_user=episode['source_user'], source_id=episode['source_id']),
+                q_tensors=q_tensors, compressed_kv=compressed_kv, **kwargs)
         with forbid_storage_fitting():
             resident = self.codec.make_entry(entry_factory, episode['cluster'], tuple(episode['token_ids']),
                 (episode['source_start'], episode['source_start']+3), tensors, 'cpu')
@@ -90,19 +132,25 @@ class Storage:
             resident_payload_bytes=q_bytes+frame_bytes,
             resident_local_metadata_bytes=resident.compressed_kv.local_metadata_bytes)
 
-    def decode(self, resident):
+    @staticmethod
+    def validate_decoded(resident, view):
         import torch
-        with forbid_storage_fitting():
-            view = self.codec.decode_entry(resident)
+        if resident.tensors is not None or resident.compressed_kv is None or view is resident:
+            raise ValueError('C6 requires compressed residency and a temporary decoded view')
+        if getattr(view, 'resident', None) is not resident:
+            raise ValueError('Decoded view does not reference the compressed resident')
         for layer, q in resident.q_tensors.items():
             if q.dtype != torch.float16 or not torch.equal(view.tensors[layer][0].cpu(), q.cpu()):
                 raise ValueError('Storage codec changed resident Q')
-        return view
 
 
 def execute(args, workloads, selection, provenance):
     # Dependencies and profile checked before model loading; no substitute codec.
     storage = Storage(args) if any(MODES[m][2] for m in args.modes) else None
+    # Validate the cache contract before loading a model or capturing projections.
+    for mode in args.modes:
+        if MODES[mode][0]:
+            make_c6_cache(mode, storage)
     transport = any(MODES[m][1] for m in args.modes)
     if transport:
         from semcache.edgelora.cachegen_codec import encode_lora_delta, decode_lora_delta
@@ -113,9 +161,6 @@ def execute(args, workloads, selection, provenance):
     from semcache.models.lora_decomposition import projection_parts
     from semcache.edgelora.mixed_projection import mixed_projection_path
     from semcache.cache.cache_entry import CacheEntry
-    from semcache.cache.global_cache import GlobalCache
-    from semcache.semantic.matcher import ExactTokenMatcher
-    from semcache.semantic.hit_selection import CacheHit
     from semcache.semantic.subsequence import Subsequence
     if transport and (not args.device.startswith('cuda') or not torch.cuda.is_available()):
         raise RuntimeError('Real transport codec requires CUDA; use --dry-run for CPU validation')
@@ -198,15 +243,8 @@ def execute(args, workloads, selection, provenance):
                 window = Subsequence(tuple(episode['token_ids']),episode['target_start'],episode['target_start']+3)
                 if tuple(target['token_ids'][window.start:window.end]) != entry.token_ids:
                     raise ValueError('Frozen physical event mismatch')
-                cache = GlobalCache(3*3*2560*32*2)  # fixed raw logical size, identical in every mode
-                if not cache.insert(entry):
-                    raise ValueError('Frozen source admission failed')
-                resident = cache.lookup(ExactTokenMatcher().key(episode['cluster'],window), record_reuse=False)
-                if resident is not entry or len(cache.entries) != 1:
-                    raise ValueError('Frozen cache lookup event mismatch')
-                cache.record_reuse(resident)
-                hits = [CacheHit(window,storage.decode(resident) if store else resident)]
-                validate_hit(episode,hits[0])
+                cache = make_c6_cache(mode, storage)
+                hits = [insert_and_lookup_c6(cache, entry, episode, window, storage if store else None)]
                 del tensors
             tokens = generate(target['token_ids'],episode['target_user'],hits,compressed)
             per_mode[mode] = dict(tokens=tokens,hits=hits,compressed=compressed)

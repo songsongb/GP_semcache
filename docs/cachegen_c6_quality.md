@@ -134,3 +134,69 @@ Choose a new empty output directory for another run. Real execution additionally
 needs the external storage export if still absent on main, compatible installed
 CUDA transport dependencies, and local model files. No real C6 experiment has
 been run or quality values reported during implementation.
+
+## C6 compressed-cache contract fix
+
+C6 now registers `Storage.codec` with `GlobalCache` for STORAGE_KV_COMP and
+FULL_PIPELINE, using `MODE_COMPRESSED` imported from C2. RAW_SEMCACHE and
+TRANSPORT_QKV_COMP continue to construct a raw cache without a codec.
+
+Compressed construction is explicitly:
+
+```python
+GlobalCache(
+    RAW_ENTRY_BYTES,  # 1,474,560 bytes, also required as each entry.size_bytes
+    physical_storage_mode=storage.mode,  # C2 MODE_COMPRESSED
+    physical_codec=storage.codec,
+    capacity_charge=None,
+    shared_overhead_bytes=0,
+    instrument_storage=False,
+    homogeneous_logical_fastpath=False,
+)
+```
+
+`capacity_charge=None` means `charged_entry_bytes(entry) == entry.size_bytes`.
+Admission and eviction scores also use that raw logical size. No physical charge
+callback or profile overhead is used to change admission. Physical accounting
+continues to count resident Q plus compressed K/V frame bytes independently.
+
+The extended GlobalCache's `lookup()` decodes once and returns a temporary view.
+C6 validates `view.resident is entry`, validates the Q tensors, and passes that
+view to the mixed projection path. It does not call a second decoder. The
+resident object stays in `cache.entries` and has no raw K/V tensors. Storage
+construction passes compressed fields through the CacheEntry constructor so its
+representation guards execute. The runtime CDF-fitting guard encloses lookup.
+
+The fix was prepared in the available local checkout `a82cbd21` on
+`exp/cachegen-c6`, which still has the older cache API. The reported SERAPH commit
+`96fb3175` was not available. The extended implementation was inspected and
+tested read-only from local C5 commit `08b553c6851a96a7f593f3f31de3b1cbf85067be`.
+This verifies that contract, not identity with the unavailable SERAPH checkout.
+Compressed execution fails before model loading on a legacy cache API; there is
+no fallback that bypasses the codec guard. Exporting only storage modules via
+`--storage-src` is insufficient without the extended GlobalCache/CacheEntry API.
+
+Run the no-model contract tests on the actual SERAPH checkout before inference:
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_cachegen_c6*.py' -v
+```
+
+After applying and verifying the fix, the next 4+4 smoke command is:
+
+```bash
+cd /data/khuss/repos/GP_semcache
+env XDG_CACHE_HOME=/data/khuss/.cache \
+  TORCH_EXTENSIONS_DIR=/data/khuss/.cache/torch_extensions/py311_cu118 \
+  TORCH_HOME=/data/khuss/.cache/torch \
+  TRITON_CACHE_DIR=/data/khuss/.cache/triton \
+  python3 scripts/49_run_cachegen_c6_quality.py \
+  --snips results/workloads/m9b_snips_semantic.jsonl \
+  --multiwoz results/workloads/m9b_multiwoz_semantic.jsonl \
+  --profile-path results/cachegen/c1_5c/rate_calibration/profiles/matched_uniform_k20_v16.bin \
+  --per-dataset 4 --max-new-tokens 32 --device cuda:0 --semantic-device cpu \
+  --seed 42 --output-dir results/cachegen/c6/quality_smoke_4p4_codec_fix
+```
+
+Use the existing working CacheGen/Python environment and an empty output
+directory. This command was not executed during the fix.
