@@ -85,8 +85,9 @@ def analyze(rows, tokenizer, bound):
     return result
 
 
-def plan(rows, counts, seed=42):
-    episodes = select(rows, 'multiwoz', 32, seed)
+def plan(rows, counts, seed=42, *, episodes=None, selection_rule=RULE):
+    if episodes is None:
+        episodes = select(rows, 'multiwoz', 32, seed)
     holdout = set()
     for episode in episodes:
         for side in ('source','target'):
@@ -111,7 +112,7 @@ def plan(rows, counts, seed=42):
             supervised_tokens=sum(count_map[r['source_id']]['completion_tokens'] for r in subset))
     train_ids=[r['source_id'] for r in train]
     train_cids=sorted({r['conversation_id'] for r in train})
-    return dict(**SCOPE, episodes=episodes, selection_sha256=digest(episodes), selection_rule=RULE,
+    return dict(**SCOPE, episodes=episodes, selection_sha256=digest(episodes), selection_rule=selection_rule,
                 target_conversation_count=len({e['target_conversation_id'] for e in episodes}),
                 cross_user_count=sum(e['cross_user'] for e in episodes)), dict(**SCOPE,
         users=users, seed=seed, train_row_ids=train_ids, train_row_ids_sha256=digest(train_ids),
@@ -149,13 +150,18 @@ def tokenizer_only():
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source',type=Path,required=True)
-    p.add_argument('--stage',choices=['analyze','generate','validate'],required=True)
+    p.add_argument('--stage',choices=['analyze','generate','validate','reselect'],required=True)
     p.add_argument('--output-dir',type=Path,required=True)
     p.add_argument('--analysis',type=Path)
     p.add_argument('--history-k',type=int,choices=range(5))
     p.add_argument('--max-sequence-length',type=int,default=256)
     p.add_argument('--semantic-output',type=Path)
+    p.add_argument('--existing-plan',type=Path)
+    p.add_argument('--semantic-input',type=Path)
     a=p.parse_args(argv)
+    if a.stage=='reselect':
+        from .c6b3_selection import run
+        return run(a)
     if a.stage=='validate':
         manifest=json.loads((a.output_dir/'manifest.json').read_text())
         if m9.file_hash(a.source)!=manifest['source_sha256']:

@@ -95,3 +95,44 @@ Outputs: semantic JSONL plus `training_plan.json`, `evaluation_selection.json`,
 diversity, cross-user statistics and snapshot resolution remain unmeasured until
 SERAPH execution. Local tests use synthetic rows/tokens; no actual data statistics
 or task quality are asserted.
+
+## V2: current-user content reselection of the existing K=4 / 384 artifact
+
+Do not regenerate embeddings or clustering. `reselect` verifies the old manifest's
+output hashes and raw-source hash, reconstructs and compares the same prompts,
+then loads only the pinned offline fast tokenizer. Offset mappings must reproduce
+all frozen token IDs exactly. A token is eligible only if its nonempty character
+interval is entirely inside the CURRENT user's original utterance. Boundary
+crossing tokens, speaker markers, separators and historical turns cannot match.
+
+Targets need depth >=1. Eight targets per bucket (1,2,3,4+) and 32 distinct target
+conversations are mandatory. Candidate ties use earliest source, source span,
+then target span. Stable augmenting bipartite matching allocates conversations to
+bucket slots without a greedy allocation falsely exhausting a bucket. There is
+no quality input or source-user balancing. Infeasibility raises with distinct
+candidate conversation counts per bucket; constraints never relax.
+
+The new selection regenerates training/holdout using the same group-balanced
+assignment code. `selection_audit.json` reports all requested diversity, window,
+user-direction and leakage diagnostics. `current_user_spans.json` records every
+row's content character interval, eligible token indices and history depth.
+The existing semantic JSONL remains byte-for-byte unchanged, referenced by hash.
+
+With the offline/cache environment above:
+
+```bash
+python3 scripts/53_prepare_cachegen_c6b3_multiwoz.py --stage reselect \
+  --source results/workloads/multiwoz.jsonl \
+  --existing-plan results/cachegen/c6b3/multiwoz_plan \
+  --semantic-input results/workloads/c6b3_multiwoz_history_semantic.jsonl \
+  --output-dir results/cachegen/c6b3/multiwoz_plan_v2
+python3 scripts/53_prepare_cachegen_c6b3_multiwoz.py --stage validate \
+  --source results/workloads/multiwoz.jsonl \
+  --output-dir results/cachegen/c6b3/multiwoz_plan_v2
+```
+
+The old manifest must explicitly confirm K=4, bound=384 and the unchanged prompt
+version/BLEU protocol. Reselect does not use the generate-stage default bound.
+It refuses an existing output directory. No TinyBERT, OPT weights, training,
+BLEU computation or generation occurs. Local tests are synthetic; real window
+and user-direction counts remain pending SERAPH execution.
