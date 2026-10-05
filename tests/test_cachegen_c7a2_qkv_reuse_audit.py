@@ -186,3 +186,125 @@ def test_unavailable_runtime_writes_unknown(tmp_path, monkeypatch):
     assert audit['recommendation']=='INCONCLUSIVE'
     assert audit['roles']['q']['consumed_on_hit'] is None
     assert json.loads((tmp_path/'audit/qkv_counterfactual.json').read_text())['status']=='NOT_RUN'
+
+
+def test_cli_storage_paths_are_forwarded(monkeypatch, tmp_path):
+    captured = {}
+    def run(output, **kwargs):
+        captured.update(output=output, **kwargs)
+        return dict(recommendation='INCONCLUSIVE')
+    monkeypatch.setattr(a2, 'run', run)
+    assert a2.main(['--storage-src', str(tmp_path/'src'), '--profile-path', str(tmp_path/'frozen.bin'),
+                    '--output-root', str(tmp_path/'new')]) == 2
+    assert captured['storage_src'] == tmp_path/'src'
+    assert captured['profile_path'] == tmp_path/'frozen.bin'
+    assert captured['output'] == tmp_path/'new'
+
+
+def test_missing_external_source_stays_unknown(tmp_path):
+    evidence, trace = a2.exercise_storage(tmp_path, tmp_path/'missing', tmp_path/'missing.bin')
+    assert evidence['status']=='NOT_RUN'
+    assert evidence['actual_compressed_lookup_confirmed'] is None
+    assert evidence['full_pipeline_confirmed'] is None
+    assert not trace
+
+
+@pytest.mark.parametrize('callback', [False, True])
+def test_storage_branch_with_explicit_unit_doubles(monkeypatch, callback):
+    """Control-flow test only: this is NOT evidence of an actual C2 codec run."""
+    import torch
+    from types import SimpleNamespace
+    from semcache.cache.cache_entry import CacheEntry
+    from semcache.cache.global_cache import GlobalCache
+    from semcache.experiments.cachegen import c6_runtime as c6
+    decoded_kv = {}
+    events = []
+    class CodecDouble:
+        def decode_entry(self, resident):
+            events.append('decode')
+            return SimpleNamespace(resident=resident,
+                tensors={l:(q, *decoded_kv[l]) for l, q in resident.q_tensors.items()},
+                key=resident.key, token_ids=resident.token_ids, positions=resident.positions,
+                qkv_metadata=resident.qkv_metadata)
+    class StorageDouble:
+        codec = CodecDouble()
+        validate_decoded = staticmethod(c6.Storage.validate_decoded)
+        def encode(self, episode, tensors):
+            events.append('encode')
+            assert set(tensors)==set(range(32))
+            assert all(t.shape==(1,3,2560) and t.dtype==torch.float16 for v in tensors.values() for t in v)
+            resident = CacheEntry(7, (10,11,12), (1,4), c6.RAW_ENTRY_BYTES,
+                qkv_metadata=dict(component_scope='total_qkv', source_user='audit', source_id='synthetic'))
+            resident.q_tensors = {l: values[0].clone() for l, values in tensors.items()}
+            resident.compressed_kv = b'UNIT_DOUBLE_ONLY'
+            # Deliberately differ from raw source K/V, as lossy reconstruction can.
+            decoded_kv.update({l:(values[1]+1, values[2]-1) for l, values in tensors.items()})
+            return resident, {}
+    storage = StorageDouble()
+    class CacheDouble(GlobalCache):
+        def lookup(self, key, record_reuse=True):
+            events.append('lookup')
+            resident = super().lookup(key, record_reuse)
+            return storage.codec.decode_entry(resident)
+    def make_cache(mode, owned_storage):
+        assert owned_storage is storage
+        assert mode==('FULL_PIPELINE' if callback else 'STORAGE_KV_COMP')
+        return CacheDouble(c6.RAW_ENTRY_BYTES)
+    monkeypatch.setattr(c6, 'make_c6_cache', make_cache)
+    result, _ = a2.fixture(storage=storage, callback=callback)
+    assert events == ['encode', 'decode', 'lookup', 'decode']
+    assert 'decode_entry' not in storage.codec.__dict__
+    assert a2.compressed_confirmed(result, callback=callback)
+    assert all(all(v.values()) for v in result['storage_checks']['decoded_matches_reference'].values())
+    broken = copy.deepcopy(result)
+    broken['storage_checks']['decoded_matches_reference']['12']['k'] = False
+    assert not a2.compressed_confirmed(broken, callback=callback)
+    broken = copy.deepcopy(result)
+    broken['records'][0]['fresh_compute_skipped_on_hit_rows'] = False
+    assert not a2.compressed_confirmed(broken, callback=callback)
+
+
+def test_loaded_storage_provenance_and_existing_decision(monkeypatch, tmp_path, probes):
+    """Wiring/provenance only; real integration is separately opt-in below."""
+    from types import SimpleNamespace
+    from semcache.experiments.cachegen import c6_runtime as c6
+    received = {}
+    class CodecDouble:
+        pass
+    class StorageDouble:
+        def __init__(self, args):
+            received.update(vars(args))
+            self.codec = CodecDouble()
+            self.source = str(tmp_path/'c2/physical_storage.py')
+    (tmp_path/'c2').mkdir()
+    (tmp_path/'c2/physical_storage.py').write_text('# unit fixture only\n')
+    monkeypatch.setattr(c6, 'Storage', StorageDouble)
+    monkeypatch.setattr(a2, 'storage_availability', lambda *args: dict(source_available=True,
+        extended_global_cache_available=True, modes={}, actual_compressed_lookup_confirmed=None, full_pipeline_confirmed=None))
+    monkeypatch.setattr(a2, 'fixture', lambda **kwargs: (dict(callback=kwargs['callback']), []))
+    monkeypatch.setattr(a2, 'compressed_confirmed', lambda result, **kwargs: True)
+    evidence, _ = a2.exercise_storage(tmp_path, tmp_path/'src', tmp_path/'profile.bin')
+    assert received == dict(storage_src=tmp_path/'src', profile_path=tmp_path/'profile.bin', device='cpu')
+    assert evidence['source_sha256']==a2.sha(tmp_path/'c2/physical_storage.py')
+    assert evidence['loaded_code_hashes']
+    raw, callback, view, counter, _ = probes
+    audit = a2.aggregate(raw, callback, view, counter, evidence)
+    assert audit['recommendation']=='SEMCACHE_FAITHFUL_QKV_REUSE_CONFIRMED'
+    assert audit['next_stage']=='C7-B_Q_COMPRESSION_CALIBRATION'
+    evidence['modes']['FULL_PIPELINE']['confirmed'] = False
+    assert a2.aggregate(raw, callback, view, counter, evidence)['recommendation']=='INCONCLUSIVE'
+
+
+def test_actual_external_c2_cpu_integration():
+    """Requires existing pinned artifacts and installed extended cache; no downloads."""
+    import os
+    from semcache.experiments.cachegen.c6_quality import PROFILE
+    storage_src = os.environ.get('SEMCACHE_C7A2_STORAGE_SRC')
+    if not storage_src:
+        pytest.skip('Set SEMCACHE_C7A2_STORAGE_SRC to run actual frozen C2 CPU integration')
+    profile = Path(os.environ.get('SEMCACHE_C7A2_PROFILE', PROFILE))
+    root = Path(a2.__file__).resolve().parents[4]
+    evidence, _ = a2.exercise_storage(root, Path(storage_src), profile)
+    assert evidence['status']=='COMPLETE', evidence['reason']
+    assert evidence['actual_compressed_lookup_confirmed'] is True
+    assert evidence['full_pipeline_confirmed'] is True

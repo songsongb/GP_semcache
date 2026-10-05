@@ -1,6 +1,6 @@
 """C7-A2: audit the subsequence HIT's TOTAL_QKV payload, CPU only.
 
-No production changes, codec fitting/execution, model loading, or downloads.
+No production changes, codec fitting, model loading, or downloads.
 The decoded-view probe tests the C6 consumer contract only; it never stands in
 for evidence of the unavailable C2 compressed GlobalCache lookup.
 """
@@ -73,7 +73,7 @@ def decoded_view_contract(entry):
     return resident, view
 
 
-def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
+def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None, storage=None):
     """Run the actual source capture/cache/mixed path with tiny PEFT projections.
 
     Every layer has distinct literal weights and independent Q/K/V. Nested
@@ -94,15 +94,20 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
 
     if layers < 1 or corrupt not in (None, 'q', 'k', 'v'):
         raise ValueError('Invalid fixture configuration')
+    if storage is not None and (view_probe or corrupt):
+        raise ValueError('Real storage is not a constructed-view or corruption probe')
+    # C6's fixed profile requires 32 x [1,3,2560]. Four input features keep
+    # this synthetic CPU projection fixture small; no OPT model is loaded.
+    layers, width = (32, 2560) if storage is not None else (layers, 4)
     modules = {}
     for layer in range(layers):
         modules[layer] = {}
         for index, role in enumerate('qkv'):
             config = {'config': LoraConfig(r=2, lora_alpha=2)} if 'config' in inspect.signature(Linear).parameters else {}
-            module = Linear(torch.nn.Linear(4, 4, bias=False, device='cpu'), 'audit',
+            module = Linear(torch.nn.Linear(4, width, bias=False, device='cpu'), 'audit',
                             r=2, lora_alpha=2, **config)
             with torch.no_grad():
-                module.get_base_layer().weight.copy_(torch.eye(4)*(1+layer+index/4))
+                module.get_base_layer().weight.copy_(torch.eye(4).repeat(width//4, 1)*(1+layer+index/4))
                 module.lora_A['audit'].weight.fill_(0.03125)
                 module.lora_B['audit'].weight.fill_(0.0625)
             module.eval()
@@ -123,19 +128,59 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
                 module(source)
     tensors = {layer: tuple(capture.projections[layer][r][:, 1:4].to(torch.float16) for r in 'qkv')
                for layer in modules}
-    entry = CacheEntry.from_tensors(7, (10, 11, 12), (1, 4), tensors)
-    entry.qkv_metadata = dict(component_scope='total_qkv', source_user='audit', source_id='synthetic')
-    cache = GlobalCache(entry.size_bytes)
-    if not cache.insert(entry):
-        raise AssertionError('Synthetic source admission failed')
-    if corrupt:
-        for values in entry.tensors.values():
-            values['qkv'.index(corrupt)].add_(8)
+    episode = dict(cluster=7, token_ids=[10, 11, 12], source_start=1,
+                   target_start=2, source_user='audit', source_id='synthetic')
     window = Subsequence((10, 11, 12), 2, 5)
     assert (99, 98, 10, 11, 12, 97, 96)[window.start:window.end] == window.token_ids
     matcher = ExactTokenMatcher()
-    view = cache.lookup(matcher.key(7, window), record_reuse=False)
-    assert view is entry
+    storage_checks = None
+    if storage is not None:
+        from .c6_runtime import make_c6_cache, insert_and_lookup_c6, forbid_storage_fitting
+        entry, accounting = storage.encode(episode, tensors)
+        # Independent retrieval reference: diagnostic decode only, not a second
+        # cache HIT. Compare each role against the actual lookup's returned view.
+        with forbid_storage_fitting():
+            reference = storage.codec.decode_entry(entry)
+        expected_decode = {l: tuple(t.clone() for t in values) for l, values in reference.tensors.items()}
+        del reference
+        cache = make_c6_cache('FULL_PIPELINE' if callback else 'STORAGE_KV_COMP', storage)
+        decode = storage.codec.decode_entry
+        lookup_decodes = []
+        def counted_decode(resident):
+            lookup_decodes.append(resident is entry)
+            return decode(resident)
+        # Wrap only this audit-owned codec instance, restore even on failure.
+        had_override = 'decode_entry' in storage.codec.__dict__
+        storage.codec.decode_entry = counted_decode
+        try:
+            view = insert_and_lookup_c6(cache, entry, episode, window, storage).entry
+        finally:
+            if had_override:
+                storage.codec.decode_entry = decode
+            else:
+                del storage.codec.decode_entry
+        storage_checks = dict(lookup_decode_count=len(lookup_decodes), diagnostic_reference_decode_count=1,
+            lookup_decoded_selected_resident=lookup_decodes == [True],
+            resident_retained=cache.entries.get(entry.key) is entry,
+            temporary_view=view is not entry and view.resident is entry,
+            resident_raw_kv_absent=entry.tensors is None and entry.compressed_kv is not None,
+            resident_q_fp16=all(q.dtype == torch.float16 for q in entry.q_tensors.values()),
+            accounting=accounting,
+            decoded_matches_reference={str(l): {
+                r: torch.equal(view.tensors[l][i], entry.q_tensors[l] if r=='q' else expected_decode[l][i])
+                for i, r in enumerate('qkv')} for l in range(layers)},
+            source_q_preserved=all(torch.equal(entry.q_tensors[l], tensors[l][0]) for l in range(layers)))
+    else:
+        entry = CacheEntry.from_tensors(7, (10, 11, 12), (1, 4), tensors)
+        entry.qkv_metadata = dict(component_scope='total_qkv', source_user='audit', source_id='synthetic')
+        cache = GlobalCache(entry.size_bytes)
+        if not cache.insert(entry):
+            raise AssertionError('Synthetic source admission failed')
+        if corrupt:
+            for values in entry.tensors.values():
+                values['qkv'.index(corrupt)].add_(8)
+        view = cache.lookup(matcher.key(7, window), record_reuse=False)
+        assert view is entry
     # Prove exact token and cluster boundaries without touching selected-hit counters.
     isolation = (cache.entries.get(matcher.key(8, window)) is None and
                  cache.entries.get(matcher.key(7, Subsequence((10, 11, 13), 2, 5))) is None)
@@ -147,7 +192,8 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
     identity = validate_hit(dict(cluster=7, token_ids=[10, 11, 12], source_start=1,
         target_start=2, source_user='audit', source_id='synthetic'), hit)
     hits, selected_mask = select_nonoverlapping([hit], 7)
-    cache.record_reuse(entry)
+    if storage is None:
+        cache.record_reuse(entry)
     expected, reads, calls, callback_inputs = {}, {}, {}, {}
     for layer in modules:
         for role, module in modules[layer].items():
@@ -209,8 +255,9 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
             row = dict(layer=layer, role=role,
                 source_projection_captured=role in capture.projections[layer],
                 source_w3_rows_extracted=tensors[layer][index].shape[1] == 3,
-                stored_in_cache_entry=torch.equal(tensors[layer][index], cached[layer][index]) if not corrupt else True,
-                present_after_lookup=cached[layer][index].shape == (1, 3, 4),
+                stored_in_cache_entry=(storage_checks['decoded_matches_reference'][str(layer)][role]
+                    if storage is not None else torch.equal(tensors[layer][index], cached[layer][index]) if not corrupt else True),
+                present_after_lookup=cached[layer][index].shape == (1, 3, width),
                 consumed_on_hit=reads[key] > 0 and hit_equal,
                 injected_into_target_hit_rows=hit_equal,
                 fresh_compute_skipped_on_hit_rows=computation_fresh_only,
@@ -230,7 +277,8 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
                 symbol, file = {
                     'source_projection_captured': ('mixed_projection_path.forward', mixed_file),
                     'source_w3_rows_extracted': ('fixture.source_w3_slice', __file__),
-                    'stored_in_cache_entry': ('CacheEntry.from_tensors', inspect.getfile(CacheEntry)),
+                    'stored_in_cache_entry': ('Storage.encode' if storage is not None else 'CacheEntry.from_tensors',
+                                              inspect.getfile(type(storage)) if storage is not None else inspect.getfile(CacheEntry)),
                     'present_after_lookup': ('GlobalCache.lookup' if not view_probe else 'decoded_view_contract',
                                              inspect.getfile(GlobalCache) if not view_probe else __file__),
                 }.get(operation, ('mixed_projection_path.forward', mixed_file))
@@ -242,10 +290,11 @@ def fixture(*, layers=3, callback=False, view_probe=False, corrupt=None):
         selected_mask=selected_mask, mixed_mask=mixed.reused_mask.tolist(), logical_event_hash=identity,
         cluster_and_exact_token_isolation=isolation, records=records,
         decoded_view_q_preserved_contract_probe=decoded_q_preserved,
-        real_compressed_lookup_executed=False, transport_codec_executed=False,
+        real_compressed_lookup_executed=storage is not None, storage_checks=storage_checks, transport_codec_executed=False,
         resident_dtype='float16', fresh_compute_dtype='float32',
-        fixture_kind='DECODED_VIEW_CONTRACT_ONLY' if view_probe else 'FRESH_CALLBACK_BOUNDARY' if callback else 'RAW_SEMCACHE',
-        outputs={f'{layer}:{role}': value.tolist() for (layer, role), value in output.items()}), trace
+        fixture_kind=('FULL_PIPELINE' if callback else 'STORAGE_KV_COMP') if storage is not None else
+                     'DECODED_VIEW_CONTRACT_ONLY' if view_probe else 'FRESH_CALLBACK_BOUNDARY' if callback else 'RAW_SEMCACHE',
+        outputs={f'{layer}:{role}': value.tolist() for (layer, role), value in output.items()} if storage is None else {}), trace
 
 
 def counterfactual(normal, layers):
@@ -281,7 +330,7 @@ STATIC = [
  ('experiments/cachegen/c6_runtime.py', 'execute', 'C6 source and target',
   "Source capture includes qkv; w=3 slices; one selected hit; every record requires reused_projection_rows=3*len(hits)"),
  ('experiments/cachegen/c6_runtime.py', 'encode', 'compressed resident contract',
-  'Storage factory receives raw q_tensors plus compressed_kv; resident Q counted separately; external make_entry implementation unavailable here'),
+  'Storage factory receives raw q_tensors plus compressed_kv; resident Q counted separately; external make_entry checked by the optional actual-storage probe'),
  ('experiments/cachegen/c6_runtime.py', 'insert_and_lookup_c6', 'compressed lookup owner',
   'GlobalCache.lookup owns decode; calls Storage.validate_decoded; returns CacheHit(window,view)'),
  ('experiments/cachegen/c6_runtime.py', 'validate_decoded', 'decoded-view Q validation',
@@ -301,7 +350,7 @@ STATIC = [
  ('experiments/cachegen/c6b3_2_multiwoz.py', 'module', 'frozen mode protocol',
   'Imports C6 modes and B2 byte_accounting; declares resident TOTAL Q FP16 policy'),
  ('experiments/cachegen/c2/physical_storage.py', 'FrozenK20V16Codec', 'actual decoded-view construction',
-  'Required external implementation missing in this checkout; caller/contract probes do not establish actual compressed lookup behavior'),
+  'Caller/constructed-view probes alone do not establish actual compressed lookup behavior; see storage_runtime for loaded-source provenance and execution'),
 ]
 
 
@@ -309,30 +358,88 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def static_audit(root):
+def static_audit(root, storage=None):
     rows = []
     for relative, symbol, operation, description in STATIC:
         path = root/'src/semcache'/relative
+        if relative.endswith('c2/physical_storage.py') and storage and storage.get('source_path'):
+            path = Path(storage['source_path'])
         lines = path.read_text().splitlines() if path.is_file() else []
         line = next((i for i, text in enumerate(lines, 1) if f'def {symbol}(' in text or f'class {symbol}' in text), None)
         for role in 'qkv':
-            rows.append(dict(file=str(path.relative_to(root)), symbol=symbol, approximate_line=line,
+            rows.append(dict(file=str(path.relative_to(root)) if path.is_relative_to(root) else str(path), symbol=symbol, approximate_line=line,
                 role=role, operation=operation, finding=description, source_available=path.is_file(),
                 field=f'tensors[layer][{"qkv".index(role)}]',
                 resident_storage_field='q_tensors[layer]' if role=='q' else 'compressed_kv'))
     return rows
 
 
-def storage_availability(root):
+def storage_availability(root, storage_src=None):
     from semcache.cache.global_cache import GlobalCache
     source = root/'src/semcache/experiments/cachegen/c2/physical_storage.py'
+    if not source.is_file() and storage_src is not None:
+        source = Path(storage_src).resolve()/'semcache/experiments/cachegen/c2/physical_storage.py'
     return dict(source_available=source.is_file(),
+        storage_src=str(storage_src) if storage_src is not None else None,
+        source_path=str(source), source_sha256=sha(source) if source.is_file() else None,
         extended_global_cache_available='physical_codec' in inspect.signature(GlobalCache).parameters,
         status='NOT_RUN', actual_compressed_lookup_confirmed=None,
-        reason='No frozen codec/profile execution in this audit. '+
+        full_pipeline_confirmed=None, modes={},
+        reason='Compressed storage not executed. '+
             ('C2 source is missing. ' if not source.is_file() else 'C2 source needs further codec-path audit. ')+
             ('Installed GlobalCache lacks physical_codec. ' if 'physical_codec' not in inspect.signature(GlobalCache).parameters else '')+
             'Decoded-view contract probe is not a real compressed-storage lookup.')
+
+
+def compressed_confirmed(result, *, callback):
+    checks = result['storage_checks']
+    rows = result['records']
+    return (result['real_compressed_lookup_executed'] is True and result['layers']==32
+        and len(rows)==96 and {(r['layer'], r['role']) for r in rows}=={(l,r) for l in range(32) for r in 'qkv'}
+        and result['selected_hit_count']==1 and sum(result['selected_mask'])==3
+        and result['mixed_mask']==result['selected_mask']
+        and checks['lookup_decode_count']==1
+        and all(checks[k] is True for k in ('lookup_decoded_selected_resident', 'resident_retained',
+            'temporary_view', 'resident_raw_kv_absent', 'resident_q_fp16', 'source_q_preserved'))
+        and all(checks['decoded_matches_reference'][str(l)][r] is True for l in range(32) for r in 'qkv')
+        and all(all(row[k] is True for k in ROLE_FIELDS) and row['fresh_rows_match'] is True
+            and row['reuse_mask']==result['selected_mask'] and row['reused_projection_rows']==3
+            and row['native_projection_rows_skipped']==3 and row['hit_rows_from_cache']==3
+            and (not callback or row['callback_received_only_fresh_rows'] is True) for row in rows))
+
+
+def exercise_storage(root, storage_src, profile_path):
+    """Use C6's loader/codec/cache as installed; never replace a legacy cache."""
+    from .c6_runtime import Storage
+    from semcache.cache.cache_entry import CacheEntry
+    from semcache.cache.global_cache import GlobalCache
+    evidence = storage_availability(root, storage_src)
+    evidence['profile_path'] = str(profile_path)
+    evidence['profile_sha256'] = sha(profile_path) if Path(profile_path).is_file() else None
+    traces = []
+    if not evidence['source_available'] or not evidence['extended_global_cache_available']:
+        return evidence, traces
+    try:
+        # Storage itself extends cachegen.__path__, validates the pinned profile,
+        # selects FAST_PY_BITEXACT, and forbids fitting. No duplicated loader.
+        storage = Storage(SimpleNamespace(storage_src=storage_src, profile_path=Path(profile_path), device='cpu'))
+        evidence.update(source_path=storage.source, source_sha256=sha(storage.source),
+            loaded_code_hashes={inspect.getfile(cls): sha(inspect.getfile(cls))
+                               for cls in (type(storage.codec), CacheEntry, GlobalCache)},
+            storage_source_tree_hashes={str(p): sha(p) for p in sorted(Path(storage.source).parents[1].rglob('*.py'))})
+        for mode, callback in (('STORAGE_KV_COMP', False), ('FULL_PIPELINE', True)):
+            result, rows = fixture(storage=storage, callback=callback)
+            confirmed = compressed_confirmed(result, callback=callback)
+            evidence['modes'][mode] = dict(status='COMPLETE', confirmed=confirmed, result=result)
+            traces.extend(dict(row, probe=mode) for row in rows)
+        evidence.update(status='COMPLETE',
+            actual_compressed_lookup_confirmed=evidence['modes']['STORAGE_KV_COMP']['confirmed'],
+            full_pipeline_confirmed=evidence['modes']['FULL_PIPELINE']['confirmed'],
+            reason='Actual C6 Storage.encode -> GlobalCache.lookup -> decoded view -> mixed projections executed on CPU. '
+                   'One lookup decode plus one independent diagnostic reference decode per mode; no transport codec execution.')
+    except Exception as exc:
+        evidence.update(status='INCOMPLETE', reason=f'{type(exc).__name__}: {exc}')
+    return evidence, traces
 
 
 def aggregate(raw, callback, view, counter, storage):
@@ -358,7 +465,7 @@ def aggregate(raw, callback, view, counter, storage):
         raw_semcache_qkv_reuse_confirmed=all(all(values.values()) for values in roles.values()) and same_mask,
         storage_kv_comp_qkv_reuse_confirmed=storage['actual_compressed_lookup_confirmed'],
         transport_hit_qkv_bypass_confirmed=bypass,
-        full_pipeline_hit_qkv_reuse_confirmed=None,
+        full_pipeline_hit_qkv_reuse_confirmed=storage.get('full_pipeline_confirmed'),
         fresh_target_q_separate_from_cached_q=True, transport_lora_q_delta_separate_from_cached_q=True,
         contradictory_evidence=contradictory, storage_runtime=storage,
         all_synthetic_projection_layers_covered=coverage,
@@ -371,10 +478,12 @@ def aggregate(raw, callback, view, counter, storage):
             real_compressed_lookup_executed=False),
         modes={
             'RAW_SEMCACHE': dict(status='CONFIRMED_SYNTHETIC', evidence='Real raw cache, exact matcher, mixed projections'),
-            'STORAGE_KV_COMP': dict(status='NOT_RUN', evidence=storage['reason']),
+            'STORAGE_KV_COMP': dict(status=storage.get('modes', {}).get('STORAGE_KV_COMP', {}).get('status', 'NOT_RUN'), evidence=storage['reason']),
             'TRANSPORT_QKV_COMP': dict(status='HIT_BYPASS_CONFIRMED_AT_CALLBACK_BOUNDARY',
                 evidence='Real mixed callback receives only fresh rows; uncompressed projection_parts probe; CUDA codec not executed'),
-            'FULL_PIPELINE': dict(status='NOT_RUN', evidence='Fresh callback isolation established; actual compressed lookup unverified')})
+            'FULL_PIPELINE': dict(status=storage.get('modes', {}).get('FULL_PIPELINE', {}).get('status', 'NOT_RUN'), evidence=storage['reason'])})
+    if any(mode.get('confirmed') is False for mode in storage.get('modes', {}).values()):
+        audit['contradictory_evidence'] = True
     for r in 'qkv':
         for field in ('reused_projection_rows', 'native_projection_rows_skipped', 'hit_rows_from_cache'):
             name = f'hit_{r}_rows_from_cache' if field=='hit_rows_from_cache' else f'{r}_{field}'
@@ -389,23 +498,28 @@ def aggregate(raw, callback, view, counter, storage):
 
 def protected_hashes(root):
     paths = list((root/'results/cachegen/c7/a_q_residency_audit').glob('*'))
+    paths += list((root/'results/cachegen/c7/a2_semcache_qkv_reuse_audit').glob('*'))
     paths += [root/'src/semcache/experiments/cachegen/c7_q_residency.py',
               root/'scripts/58_audit_cachegen_c7_q_residency.py', root/'tests/test_cachegen_c7_q_residency.py']
     paths += list((root/'src/semcache/experiments/cachegen').glob('c6*.py'))
     return {str(p.relative_to(root)): sha(p) for p in paths if p.is_file()}
 
 
-def run(output_root, *, layers=3):
+def run(output_root, *, layers=3, storage_src=None, profile_path=None):
+    from .c6_quality import PROFILE
+    profile_path = Path(profile_path or PROFILE)
+    storage_src = Path(storage_src) if storage_src is not None else None
     root = Path(__file__).resolve().parents[4]
     output_root = Path(output_root).resolve()
-    historical = (root/'results/cachegen/c7/a_q_residency_audit').resolve()
-    if output_root == historical or historical in output_root.parents or output_root in historical.parents:
-        raise ValueError('Previous C7-A artifact tree is protected')
+    for name in ('a_q_residency_audit', 'a2_semcache_qkv_reuse_audit'):
+        historical = (root/'results/cachegen/c7'/name).resolve()
+        if output_root == historical or historical in output_root.parents or output_root in historical.parents:
+            raise ValueError('Previous C7-A/C7-A2 artifact tree is protected')
     if output_root.exists() and (not output_root.is_dir() or any(output_root.iterdir())):
         raise FileExistsError('Refusing nonempty output root: '+str(output_root))
     before = protected_hashes(root)
     traces = []
-    storage = storage_availability(root)
+    storage = storage_availability(root, storage_src)
     try:
         raw, rt = fixture(layers=layers)
         callback, ct = fixture(layers=layers, callback=True)
@@ -413,6 +527,8 @@ def run(output_root, *, layers=3):
         for name, rows in (('RAW_SEMCACHE', rt), ('FRESH_CALLBACK_BOUNDARY', ct), ('DECODED_VIEW_CONTRACT_ONLY', vt)):
             traces.extend(dict(row, probe=name) for row in rows)
         counter = counterfactual(raw, layers)
+        storage, storage_trace = exercise_storage(root, storage_src, profile_path)
+        traces.extend(storage_trace)
         audit = aggregate(raw, callback, view, counter, storage)
         runtime_status = 'COMPLETE'
     except Exception as exc:
@@ -424,7 +540,7 @@ def run(output_root, *, layers=3):
                 'full_pipeline_hit_qkv_reuse_confirmed', 'fresh_target_q_separate_from_cached_q',
                 'transport_lora_q_delta_separate_from_cached_q')),
             recommendation='INCONCLUSIVE', next_stage=NEXT['INCONCLUSIVE'], runtime_error=counter['reason'], storage_runtime=storage)
-    audit['static_findings'] = static_audit(root)
+    audit['static_findings'] = static_audit(root, storage)
     output_root.mkdir(parents=True, exist_ok=True)
     def write(name, value):
         (output_root/name).write_text(json.dumps(value, indent=2, sort_keys=True)+'\n')
@@ -450,15 +566,17 @@ def run(output_root, *, layers=3):
         'Per-role base and LoRA-A hooks check actual input rows. Per-layer reuse/skipped counts and value comparisons are in the JSON.',
         'Transport boundary bypass confirmed: '+str(audit['transport_hit_qkv_bypass_confirmed'])+'. '
         'Only an uncompressed base+delta callback probe ran; actual transport-reconstructed row counts are null.',
-        'Compressed-storage / FULL_PIPELINE confirmation: unknown. '+storage['reason'],
+        'Compressed-storage confirmation: '+str(audit['storage_kv_comp_qkv_reuse_confirmed'])+
+        '; FULL_PIPELINE confirmation: '+str(audit['full_pipeline_hit_qkv_reuse_confirmed'])+'. '+storage['reason'],
         'The constructed decoded-view input passes the real C6 validator and exercises the real mixed consumer; '
         'this proves the consumer contract, not external codec view construction or compressed lookup.',
-        'C6 raw/shared mixed execution retains Q as an active SemCache reuse payload. '
-        'The broader claim that compressed C6 preserved it end-to-end remains unverified here.', '',
+        ('C6 did not remove Q reuse; resident Q remained an active SemCache reuse payload.'
+         if audit['storage_kv_comp_qkv_reuse_confirmed'] is True and audit['full_pipeline_hit_qkv_reuse_confirmed'] is True else
+         'C6 raw/shared mixed execution retains Q as an active SemCache reuse payload. Compressed end-to-end reuse remains unverified.'), '',
         'Counterfactual status: '+counter['status']+'. Each independent Q/K/V corruption tests payload consumption only.',
         'Previous C7-A framing is superseded; its implementation and artifacts remain unchanged and are not removal evidence.', '',
         'Recommendation: **'+audit['recommendation']+'**.',
-        'Next stage: **'+audit['next_stage']+'**. Inspect and validate the actual frozen C2 codec and extended GlobalCache path before C7-B.',
+        'Next stage: **'+audit['next_stage']+'**.',
         audit.get('runtime_error', ''), ''])
     (output_root/'summary.md').write_text(summary)
     inspected = {root/'src/semcache'/p for p, *_ in STATIC}
@@ -478,7 +596,8 @@ def run(output_root, *, layers=3):
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             versions[name] = None
-    manifest = dict(stage='C7-A2', status='COMPLETE_WITH_LIMITATIONS' if runtime_status=='COMPLETE' else 'INCOMPLETE',
+    manifest = dict(stage='C7-A2', status=('COMPLETE' if audit['recommendation']=='SEMCACHE_FAITHFUL_QKV_REUSE_CONFIRMED'
+                    else 'COMPLETE_WITH_LIMITATIONS') if runtime_status=='COMPLETE' else 'INCOMPLETE',
         runtime_fixture_status=runtime_status,
         audit_scope='SemCache-faithful cached TOTAL Q/K/V reuse on selected w=3 hit',
         original_semcache_hit_unit='token subsequence',
@@ -489,6 +608,7 @@ def run(output_root, *, layers=3):
         superseded_question='whether resident TOTAL Q could be dropped based on standard KV-cache reasoning',
         corrected_question='whether current implementation faithfully reuses cached TOTAL Q/K/V for the selected SemCache w=3 hit',
         recommendation=audit['recommendation'], next_stage=audit['next_stage'],
+        storage_provenance=storage,
         inspected_files={str(p.relative_to(root)): sha(p) if p.is_file() else None for p in sorted(inspected)},
         preserved_historical_and_c6_hashes=before, protected_files_unchanged=True, software=versions,
         git=dict(branch=git('branch', '--show-current'), commit=git('rev-parse', 'HEAD'), status=git('status', '--porcelain')),
@@ -498,12 +618,17 @@ def run(output_root, *, layers=3):
 
 
 def main(argv=None):
+    from .c6_quality import PROFILE
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output-root', type=Path, default=Path('results/cachegen/c7/a2_semcache_qkv_reuse_audit'))
+    parser.add_argument('--output-root', type=Path, default=Path('results/cachegen/c7/a2_semcache_qkv_reuse_audit_seraph'))
+    parser.add_argument('--storage-src', type=Path,
+        default=Path('/data/khuss/repos/GP_semcache/.c6_storage_src/src'),
+        help='Existing C6 external src export; absence keeps the audit inconclusive')
+    parser.add_argument('--profile-path', type=Path, default=Path(PROFILE), help='Existing C6 frozen profile; SHA validated by Storage')
     parser.add_argument('--layers', type=int, default=3, help='Tiny CPU synthetic layers; never an OPT model')
     args = parser.parse_args(argv)
     if args.layers < 1:
         parser.error('--layers must be positive')
-    audit = run(args.output_root, layers=args.layers)
+    audit = run(args.output_root, layers=args.layers, storage_src=args.storage_src, profile_path=args.profile_path)
     print(audit['recommendation'])
     return 2 if audit['recommendation']=='INCONCLUSIVE' else 0
