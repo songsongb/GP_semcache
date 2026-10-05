@@ -8,11 +8,15 @@ quality evaluation, change C6, refit K/V, or freeze a Q candidate.
 
 Script 60 reuses the B3 input parser and replay checks. It requires the pinned
 frozen32 selection and both frozen adapter weight hashes. It replays capability64
-and the saved full two-epoch training pool. It also scans the B3 results and plan
-directories for existing evaluation selections and capability cohorts, accepting
-only their known schemas and manifest-bound hashes. Missing, changed, unbound,
-or inconsistent provenance fails closed. Training holdouts are excluded by the
-saved/replayed training-pool membership.
+and the saved full two-epoch training pool. Exclusions come from the supplied
+plan's frozen32 source/target conversations and the current adapter root's
+deterministically reconstructed capability64. Additional known cohorts are used
+only when explicitly hash-referenced by the verified current plan or training
+manifest. Sibling/historical artifacts and their self-manifests are not exclusion
+sources; there is no recursive cohort discovery. Missing, changed, unbound, or
+inconsistent canonical provenance fails closed. Training holdouts are excluded
+by the saved/replayed training-pool membership. Cohort/capture provenance records
+both canonical exclusion paths, SHA256s, conversation counts and this policy.
 
 Selection uses only eligible training rows, current-user token spans, and stable
 seed-42 hashes. A deterministic conversation matching assigns one block per

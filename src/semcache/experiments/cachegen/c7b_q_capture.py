@@ -57,22 +57,15 @@ def verify_files(hashes):
         require(Path(path).is_file() and sha(path)==expected, 'Provenance file changed/missing: '+path)
 
 
-def bound_cohort(path):
-    """Only known B3 schemas; every discovered evaluation cohort must be hash-bound."""
+def bound_cohort(path, expected_sha):
+    """Read a known cohort explicitly hash-bound by a canonical B3 manifest.
+
+    Callers select references from the verified current plan/training manifests;
+    a sibling artifact's own manifest cannot make it authoritative.
+    """
     path = Path(path)
-    owners = []
-    for name in ('manifest.json', 'training_manifest.json', 'capability_manifest.json'):
-        owner = path.parent/name
-        if not owner.is_file():
-            continue
-        m = read(owner)
-        hashes = m.get('output_hashes', {})
-        expected = hashes.get(str(path.resolve()), hashes.get(path.name))
-        if path.name=='capability_validation.json':
-            expected = expected or m.get('capability_validation_file_sha256')
-        if expected == sha(path):
-            owners.append(owner)
-    require(owners, 'Unbound B3 exclusion cohort: '+str(path))
+    require(expected_sha and path.is_file() and expected_sha==sha(path),
+            'Canonical B3 exclusion hash mismatch/missing: '+str(path))
     if path.suffix=='.csv':
         with path.open(newline='') as f:
             rows = list(csv.DictReader(f))
@@ -87,7 +80,7 @@ def bound_cohort(path):
             require(data.get('cohort')=='capability64' and len(data.get('examples',[]))==64, 'Unknown capability schema')
             cids = {r['conversation_id'] for r in data['examples']}
             require(cids==set(data['conversation_ids']) and len(cids)==64, 'Capability IDs differ')
-    return cids, {str(p.resolve()):sha(p) for p in [path, *owners]}
+    return cids, {str(path.resolve()):expected_sha}
 
 
 def load_provenance(args):
@@ -101,7 +94,9 @@ def load_provenance(args):
     saved = read(args.adapter_root/'train_selection.json')
     capability = read(args.adapter_root/'capability_validation.json')
     require(capability==b3.capability_cohort(rows,training), 'Capability64 does not replay')
-    require(sha(args.adapter_root/'capability_validation.json')==trained['capability_validation_file_sha256'], 'Capability hash mismatch')
+    require(sha(args.adapter_root/'capability_validation.json')==trained.get('capability_validation_file_sha256'), 'Capability hash mismatch')
+    if 'capability_validation_sha256' in trained:
+        require(digest(capability)==trained['capability_validation_sha256'], 'Capability content digest mismatch')
     require(digest(saved)==trained['plan_sha256'] and sha(args.adapter_root/'train_selection.json')==trained['train_selection_file_sha256'], 'Saved full training pool differs')
     require(saved['profile']=='full' and saved['epochs']==2, 'Expected frozen full two-epoch pool')
     replay = b3.training_subset(rows, training, capability, 'full')
@@ -114,18 +109,28 @@ def load_provenance(args):
         args.plan_dir/'manifest.json',args.plan_dir/'evaluation_selection.json',args.plan_dir/'training_plan.json',
         args.plan_dir/'current_user_spans.json',args.adapter_root/'training_manifest.json',
         args.adapter_root/'train_selection.json',args.adapter_root/'capability_validation.json')}
-    # Include old/pilot/final B3 cohorts, never silently ignore an unbound file.
-    roots = {args.adapter_root.parent.resolve(), args.plan_dir.resolve()}
-    scanned = set()
-    for root in roots:
-        for name in ('evaluation_selection.json','capability_validation.json','capability_per_case.csv'):
-            for path in sorted(root.rglob(name)):
-                if path.resolve() in scanned:
-                    continue
-                scanned.add(path.resolve())
-                ids, hashes = bound_cohort(path)
-                excluded |= ids
-                inputs.update(hashes)
+    # Additional cohorts are authoritative only when directly hash-referenced
+    # by these CURRENT manifests, whose plan/workload, frozen adapters, model,
+    # prompt and selection provenance have already been verified above.
+    # Never discover exclusions from arbitrary sibling directories/manifests.
+    additional = []
+    canonical = {(args.plan_dir/'evaluation_selection.json').resolve(),
+                 (args.adapter_root/'capability_validation.json').resolve()}
+    for owner in (args.plan_dir/'manifest.json',args.adapter_root/'training_manifest.json'):
+        for name, expected_sha in read(owner).get('output_hashes',{}).items():
+            path = Path(name)
+            if not path.is_absolute():path = owner.parent/path
+            if path.name not in (
+                    'evaluation_selection.json','capability_validation.json','capability_per_case.csv'):
+                continue
+            ids, hashes = bound_cohort(path,expected_sha)
+            if path.resolve() in canonical:
+                continue
+            excluded |= ids
+            inputs.update(hashes)
+            additional.append(dict(source=str(path.resolve()),sha256=expected_sha,
+                canonical_manifest=str(owner.resolve()),canonical_manifest_sha256=sha(owner),
+                excluded_conversation_count=len(ids)))
     for user in USERS:
         for p in (args.adapter_root/user).rglob('*'):
             if p.is_file(): inputs[str(p.resolve())]=sha(p)
@@ -133,7 +138,15 @@ def load_provenance(args):
         all_excluded_conversation_ids=sorted(excluded), input_hashes=inputs,
         adapter_paths={u:str((args.adapter_root/u).resolve()) for u in USERS}, adapter_hashes=WEIGHTS,
         model=MODEL, model_revision=REVISION, tokenizer_revision=REVISION, prompt_version=VERSION,
-        dataset_workload_hashes=provenance, exclusion_schema='B3 hash-bound evaluation_selection/capability_validation/capability_per_case artifacts')
+        dataset_workload_hashes=provenance,
+        frozen32_exclusion_source=str((args.plan_dir/'evaluation_selection.json').resolve()),
+        frozen32_exclusion_sha256=sha(args.plan_dir/'evaluation_selection.json'),
+        frozen32_excluded_conversation_count=len(hold),
+        capability64_exclusion_source=str((args.adapter_root/'capability_validation.json').resolve()),
+        capability64_exclusion_sha256=sha(args.adapter_root/'capability_validation.json'),
+        capability64_excluded_conversation_count=len(caps),additional_exclusion_sources=additional,
+        exclusion_policy='canonical hash-bound B3 cohorts only; no recursive arbitrary capability artifact discovery',
+        exclusion_schema='canonical B3 evaluation_selection/capability_validation; additional known cohorts only via current manifest output_hashes')
 
 
 def build_cohort(rows, pool, provenance, seed=42):

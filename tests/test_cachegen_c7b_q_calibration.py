@@ -78,16 +78,18 @@ def test_infeasible_cohort_rejected(cohort):
     with pytest.raises(ValueError,match='Insufficient'):b0.build_cohort(rows,pool,c['provenance'])
 
 
-def test_hash_bound_extra_cohort_required(tmp_path):
+def test_explicit_hash_binding_required_for_extra_cohort(tmp_path):
     path=tmp_path/'evaluation_selection.json'
     episodes=[{'source_conversation_id':'source','target_conversation_id':'target'}]
     b0.write(path,dict(episodes=episodes,selection_sha256=b0.digest(episodes)))
-    with pytest.raises(ValueError,match='Unbound'):b0.bound_cohort(path)
+    with pytest.raises(ValueError,match='Canonical'):b0.bound_cohort(path,None)
     b0.write(tmp_path/'manifest.json',dict(output_hashes={str(path.resolve()):b0.sha(path)}))
-    cids,hashes=b0.bound_cohort(path)
+    # A neighboring self-manifest alone does not authorize a cohort.
+    with pytest.raises(ValueError,match='Canonical'):b0.bound_cohort(path,None)
+    cids,hashes=b0.bound_cohort(path,b0.sha(path))
     assert cids=={'source','target'} and str(path.resolve()) in hashes
-    path.write_text('{}')
-    with pytest.raises(ValueError):b0.bound_cohort(path)
+    expected=b0.sha(path);path.write_text('{}')
+    with pytest.raises(ValueError):b0.bound_cohort(path,expected)
 
 
 def test_native_total_q_capture_only_owns_w3():
@@ -251,7 +253,8 @@ def test_capture_artifact_validation_and_tampering(tmp_path,cohort):
     with pytest.raises(ValueError,match='changed'):b1.load_capture(root)
 
 
-def test_b0_provenance_replays_saved_training_and_excludes_other_cohorts(tmp_path,cohort,monkeypatch):
+@pytest.fixture
+def canonical_b3(tmp_path,cohort,monkeypatch):
     """Known B3 schemas with integrity checks; no tokenizer/model execution."""
     rows,_,c=cohort
     by_id={r['source_id']:r for r in rows}
@@ -262,7 +265,9 @@ def test_b0_provenance_replays_saved_training_and_excludes_other_cohorts(tmp_pat
         pool['users'][user]=dict(row_ids=ids,conversation_ids=sorted({by_id[s]['conversation_id'] for s in ids}))
     cap=dict(cohort='capability64',examples=[dict(conversation_id=cid) for cid in c['provenance']['capability64_conversation_ids']],
              conversation_ids=c['provenance']['capability64_conversation_ids'])
-    frozen={'episodes':[dict(source_conversation_id=cid,target_conversation_id=cid) for cid in c['provenance']['frozen32_conversation_ids']]}
+    held=c['provenance']['frozen32_conversation_ids']
+    frozen={'episodes':[dict(source_conversation_id=held[i%8],target_conversation_id=held[8+i%8])
+        for i in range(32)]}
     frozen['selection_sha256']=b0.digest(frozen['episodes'])
     plan=tmp_path/'b3/plan';adapter=tmp_path/'b3/b1_full';plan.mkdir(parents=True);adapter.mkdir()
     b0.write(plan/'evaluation_selection.json',frozen)
@@ -275,6 +280,7 @@ def test_b0_provenance_replays_saved_training_and_excludes_other_cohorts(tmp_pat
     source=tmp_path/'source.jsonl';semantic=tmp_path/'semantic.jsonl';source.write_text('source');semantic.write_text('semantic')
     provenance={'source_sha256':b0.sha(source)}
     trained=dict(**b0.b3.SCOPE,**provenance,capability_validation_file_sha256=b0.sha(adapter/'capability_validation.json'),
+        capability_validation_sha256=b0.digest(cap),
         plan_sha256=b0.digest(saved),train_selection_file_sha256=b0.sha(adapter/'train_selection.json'))
     b0.write(adapter/'training_manifest.json',trained)
     extra=tmp_path/'b3/other_eval';extra.mkdir()
@@ -287,11 +293,81 @@ def test_b0_provenance_replays_saved_training_and_excludes_other_cohorts(tmp_pat
     monkeypatch.setattr(b0.b3,'training_subset',lambda *a:pool)
     monkeypatch.setattr(b0,'verify_adapters',lambda *a:None)
     monkeypatch.setattr(b0,'SELECTION_SHA',b0.sha(plan/'evaluation_selection.json'))
-    loaded,training,proof=b0.load_provenance(SimpleNamespace(plan_dir=plan,adapter_root=adapter,source=source,semantic=semantic))
-    assert extra_cid in proof['all_excluded_conversation_ids']
-    assert extra_cid not in proof['frozen32_conversation_ids']
-    assert str((extra/'evaluation_selection.json').resolve()) in proof['input_hashes']
+    return SimpleNamespace(args=SimpleNamespace(plan_dir=plan,adapter_root=adapter,source=source,semantic=semantic),
+        cap=cap,frozen=frozen,extra=extra,extra_cid=extra_cid,trained=trained)
+
+
+def test_canonical_adapter_capability_verified_and_excluded(canonical_b3):
+    f=canonical_b3
+    _,_,proof=b0.load_provenance(f.args)
+    assert set(proof['capability64_conversation_ids'])==set(f.cap['conversation_ids'])
+    assert set(proof['frozen32_conversation_ids'])=={e[s+'_conversation_id'] for e in f.frozen['episodes'] for s in ('source','target')}
+    assert set(f.cap['conversation_ids'])<=set(proof['all_excluded_conversation_ids'])
+    assert proof['capability64_excluded_conversation_count']==64
+    assert proof['frozen32_excluded_conversation_count']==16
+    for prefix,path in (('capability64',f.args.adapter_root/'capability_validation.json'),
+                        ('frozen32',f.args.plan_dir/'evaluation_selection.json')):
+        assert proof[prefix+'_exclusion_source']==str(path.resolve())
+        assert proof[prefix+'_exclusion_sha256']==b0.sha(path)
+    assert proof['exclusion_policy']=='canonical hash-bound B3 cohorts only; no recursive arbitrary capability artifact discovery'
+    assert f.extra_cid not in proof['all_excluded_conversation_ids']
+    assert str((f.extra/'evaluation_selection.json').resolve()) not in proof['input_hashes']
     assert proof['adapter_hashes']==b0.WEIGHTS
+
+
+@pytest.mark.parametrize('dirname',['b1_full_no','unrelated_snapshot'])
+def test_unrelated_stale_capability_is_ignored(canonical_b3,dirname):
+    f=canonical_b3
+    before=b0.load_provenance(f.args)[2]
+    stale=f.args.adapter_root.parent/dirname;stale.mkdir()
+    (stale/'capability_validation.json').write_text('stale unbound invalid JSON')
+    assert b0.load_provenance(f.args)[2]==before
+
+
+def test_additional_cohort_requires_current_manifest_reference(canonical_b3):
+    f=canonical_b3;path=f.extra/'evaluation_selection.json'
+    assert f.extra_cid not in b0.load_provenance(f.args)[2]['all_excluded_conversation_ids']
+    trained=copy.deepcopy(f.trained)
+    trained['output_hashes']={str(path.resolve()):b0.sha(path)}
+    (f.args.adapter_root/'training_manifest.json').write_text(json.dumps(trained))
+    proof=b0.load_provenance(f.args)[2]
+    assert f.extra_cid in proof['all_excluded_conversation_ids']
+    assert str(path.resolve()) in proof['input_hashes']
+    assert proof['additional_exclusion_sources'][0]['canonical_manifest']==str((f.args.adapter_root/'training_manifest.json').resolve())
+    path.write_text('{}')
+    with pytest.raises(ValueError,match='Canonical B3 exclusion hash'):b0.load_provenance(f.args)
+
+
+def test_canonical_capability_mismatch_fails_even_with_updated_hash(canonical_b3):
+    f=canonical_b3;path=f.args.adapter_root/'capability_validation.json'
+    changed=copy.deepcopy(f.cap);changed['examples'][0]['conversation_id']='different'
+    path.write_text(json.dumps(changed))
+    trained=copy.deepcopy(f.trained)
+    trained['capability_validation_file_sha256']=b0.sha(path)
+    trained['capability_validation_sha256']=b0.digest(changed)
+    (f.args.adapter_root/'training_manifest.json').write_text(json.dumps(trained))
+    with pytest.raises(ValueError,match='Capability64 does not replay'):b0.load_provenance(f.args)
+
+
+@pytest.mark.parametrize('key',['capability_validation_file_sha256','capability_validation_sha256','model_revision'])
+def test_current_training_binding_mismatch_fails(canonical_b3,key):
+    f=canonical_b3;trained=copy.deepcopy(f.trained);trained[key]='different'
+    (f.args.adapter_root/'training_manifest.json').write_text(json.dumps(trained))
+    with pytest.raises(ValueError):b0.load_provenance(f.args)
+
+
+def test_canonical_frozen32_mismatch_fails(canonical_b3):
+    f=canonical_b3;path=f.args.plan_dir/'evaluation_selection.json'
+    changed=copy.deepcopy(f.frozen);changed['episodes'][0]['source_conversation_id']='changed'
+    changed['selection_sha256']=b0.digest(changed['episodes']);path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError,match='Frozen32 file hash differs'):b0.load_provenance(f.args)
+
+
+@pytest.mark.parametrize('key',['frozen32_conversation_ids','capability64_conversation_ids'])
+def test_calibration_canonical_exclusion_overlap_fails(cohort,key):
+    c=copy.deepcopy(cohort[2])
+    c['provenance'][key].append(c['blocks'][0]['conversation_id'])
+    with pytest.raises(ValueError,match='Calibration/evaluation conversation overlap'):b0.validate_cohort(c)
 
 
 def test_seraph_home_cache_rejected(tmp_path,monkeypatch):
