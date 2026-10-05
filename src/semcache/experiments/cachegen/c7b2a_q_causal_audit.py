@@ -33,6 +33,54 @@ def select_cases(episodes):
     return selected
 
 
+def baseline_reference(episode, baseline_by_episode_id):
+    episode_id = episode['episode_id']
+    require(episode_id in baseline_by_episode_id, 'Missing canonical C7-B2 baseline episode: '+episode_id)
+    row = baseline_by_episode_id[episode_id]
+    for key, value in episode.items():
+        require(key in row, 'Canonical B2 baseline metadata missing: '+key)
+        actual = row[key]
+        if isinstance(value, (dict, list)):
+            actual = json.loads(actual) if isinstance(actual, str) else actual
+            matches = actual == value
+        else:
+            matches = ('' if actual is None else str(actual)) == ('' if value is None else str(value))
+        require(matches, 'Canonical B2 baseline metadata disagrees: '+episode_id+' / '+key)
+    return row
+
+
+def canonical_baseline_lookup(rows, episodes):
+    """Bind verified B2 baseline generations by identity, independent of CSV order."""
+    lookup = {}
+    for row in rows:
+        if row['mode'] != runtime.MODES[0]:
+            continue
+        episode_id = row['episode_id']
+        require(episode_id not in lookup, 'Duplicate canonical C7-B2 baseline episode: '+episode_id)
+        tokens = row['generated_token_ids']
+        tokens = json.loads(tokens) if isinstance(tokens, str) else tokens
+        require(isinstance(tokens, list) and all(type(t) is int for t in tokens) and
+                isinstance(row['generated_text'], str), 'Invalid canonical B2 generation: '+episode_id)
+        lookup[episode_id] = dict(row, generated_token_ids=tokens)
+    require(set(lookup) == {e['episode_id'] for e in episodes}, 'Missing/extra canonical C7-B2 baseline episodes')
+    for canonical_index, episode in enumerate(episodes):
+        row = baseline_reference(episode, lookup)
+        require(int(row['episode_index']) == canonical_index, 'Canonical B2 episode index disagrees with selection')
+        row['canonical_episode_index'] = canonical_index
+    return lookup
+
+
+def selected_case_records(episodes, selected, baseline_by_episode_id):
+    records = []
+    for audit_index, canonical_index in enumerate(selected):
+        episode = episodes[canonical_index]
+        reference = baseline_reference(episode, baseline_by_episode_id)
+        require(reference['canonical_episode_index'] == canonical_index, 'Selected canonical episode index disagrees')
+        records.append(dict(episode, audit_case_index=audit_index, canonical_episode_index=canonical_index,
+                            canonical_selection_index=canonical_index))
+    return records
+
+
 def verify_b2(root, prepared, args):
     m = b0.read(root/'manifest.json')
     gate.b3.check_fields(m, dict(stage='C7-B2', status='COMPLETE', baseline_matches_c6b3_2=True,
@@ -57,6 +105,7 @@ def verify_b2(root, prepared, args):
     # selected cases. Reading all CSV rows does not execute all frozen32 cases.
     with (root/'per_case.csv').open(newline='') as stream:
         saved = list(csv.DictReader(stream))
+    prepared.baseline_by_episode_id = canonical_baseline_lookup(saved, prepared.episodes)
     for index in select_cases(prepared.episodes):
         e = prepared.episodes[index]
         canonical = prepared.official[index]['generated_token_ids']
@@ -279,6 +328,7 @@ def safety(counts):
 
 def run(args, prepared, selected, reports, manifest):
     require(selected == select_cases(prepared.episodes), 'Exactly four canonical depth-stratified cases required')
+    manifest['current_stage'] = 'runtime_initialization'
     backend = AuditBackend(args, prepared.profiles, prepared.q_backend)
     backend.rows = prepared.rows
     require(len(backend.adapter.layers) == 32, '32 OPT projection layers required')
@@ -286,10 +336,14 @@ def run(args, prepared, selected, reports, manifest):
         model_tokenizer_provenance=backend.metadata, storage_source=backend.storage_source,
         capture_points=dict(q='mixed projection return before OPT query scaling/head split',
             attention='OPT self_attn.out_proj return before decoder residual/dropout', hidden='OPT decoder layer return'))
-    for index in selected:
+    for audit_index, index in enumerate(selected):
         e = prepared.episodes[index]
+        manifest.update(current_episode_id=e['episode_id'], audit_case_index=audit_index,
+                        canonical_episode_index=index, current_stage='baseline_identity_binding')
+        reference = baseline_reference(e, prepared.baseline_by_episode_id)
         canonical = list(prepared.official[index]['generated_token_ids'])
         require(0 < len(canonical) <= 160, 'Invalid canonical continuation')
+        manifest['current_stage'] = 'baseline_source_and_lookup'
         baseline = backend.prepare(e, runtime.MODES[0])
         raw = backend.raw_source_q
         require(set(raw) == set(range(32)) and all(t.shape == (1, 3, 2560) for t in raw.values()), 'Source TOTAL Q shape changed')
@@ -299,6 +353,7 @@ def run(args, prepared, selected, reports, manifest):
                 'INVALID: raw resident Q differs from captured source TOTAL Q')
         identity = backend.event_identity(baseline, e)
         require(identity == b0.digest(e), 'INVALID: logical HIT changed')
+        manifest['current_stage'] = 'baseline_teacher_and_injection'
         base_logits, base_trace, base_reuse = backend.traced_teacher(baseline, e, canonical)
         case_injection = dict(episode_id=e['episode_id'], modes={})
         case_injection['modes']['KV_BASELINE'] = injection_check(base_trace, base_trace, baseline.hits, base_reuse, base_reuse)
@@ -309,10 +364,15 @@ def run(args, prepared, selected, reports, manifest):
         continuation = dict(episode_id=e['episode_id'], canonical_token_ids=canonical,
             canonical_sha256=b0.digest(canonical), comparisons={})
         reports['continuation_causal_effect']['cases'].append(continuation)
+        manifest['current_stage'] = 'greedy_baseline_reproduction'
         base_greedy = backend.greedy(baseline, e) if args.greedy else None
         if base_greedy:
-            gate.baseline_case_check(dict(generated_token_ids=base_greedy[0], generated_text=base_greedy[1]), prepared.baseline[index])
+            continuation['baseline_greedy'] = dict(generated_token_ids=base_greedy[0], generated_text=base_greedy[1])
+            continuation['baseline_reference_episode_id'] = reference['episode_id']
+            gate.baseline_case_check(dict(generated_token_ids=base_greedy[0], generated_text=base_greedy[1]), reference)
+            continuation['baseline_reproduction_verified'] = True
         for label, mode in zip(MODES[1:3], runtime.MODES[1:]):
+            manifest['current_stage'] = label+'_source_and_lookup'
             context = backend.prepare(e, mode)
             require(backend.event_identity(context, e) == identity and context.entry.q_tensors is None and
                     context.accounting['raw_q_resident_after_insert'] is False, 'INVALID: compressed Q retains raw Q/logical HIT changed')
@@ -321,19 +381,23 @@ def run(args, prepared, selected, reports, manifest):
             require(all(fingerprint(backend.raw_source_q[l]) == fingerprint(raw[l]) for l in raw), 'INVALID: source Q changed between modes')
             decoded = context.hits[0].entry.tensors
             distortion['candidates'][label] = [dict(layer=l, **difference(raw[l], decoded[l][0], fingerprints=True)) for l in raw]
+            manifest['current_stage'] = label+'_teacher_and_injection'
             logits, trace, reuse = backend.traced_teacher(context, e, canonical)
             evidence = injection_check(trace, base_trace, context.hits, reuse, base_reuse)
             evidence.update(raw_q_resident_after_insert=False)
             case_injection['modes'][label] = evidence
             continuation['comparisons'][label] = continuation_effect(base_logits, logits)
             if args.greedy:
+                manifest['current_stage'] = label+'_greedy'
                 tokens, text = backend.greedy(context, e)
                 continuation['comparisons'][label]['greedy'] = dict(generated_token_ids=tokens, generated_text=text,
                     **generation_metrics(base_greedy[0], tokens))
             del trace, logits, context
+        manifest['current_stage'] = 'q_distortion_validation'
         validate_distortion(distortion['candidates'])
         distortion['nonidentical_layer_counts'] = {label: sum(not r['exact_equal'] for r in records)
             for label, records in distortion['candidates'].items()}
+        manifest['current_stage'] = 'q_zero_injection'
         zero = zero_context(baseline)
         require(backend.event_identity(zero, e) == identity, 'INVALID: counterfactual HIT changed')
         zero_logits, zero_trace, reuse = backend.traced_teacher(zero, e, canonical)
@@ -341,10 +405,12 @@ def run(args, prepared, selected, reports, manifest):
         case_injection['q24_injection_verified'] = case_injection['q32_injection_verified'] = case_injection['qzero_injection_verified'] = True
         case_injection.update(hit_mask_equal=True, same_reuse_mask_qkv=True, fresh_q_rows_equal=True,
             k_rows_equal=True, v_rows_equal=True)
+        manifest['current_stage'] = 'q_zero_internal_and_continuation'
         internal = dict(episode_id=e['episode_id'], **internal_effect(base_trace, zero_trace, reuse['hit_positions']))
         reports['internal_causal_effect']['cases'].append(internal)
         effect = continuation_effect(base_logits, zero_logits)
         if args.greedy:
+            manifest['current_stage'] = 'q_zero_greedy'
             tokens, text = backend.greedy(zero, e)
             effect['greedy'] = dict(generated_token_ids=tokens, generated_text=text, **generation_metrics(base_greedy[0], tokens))
             continuation['baseline_greedy'] = dict(generated_token_ids=base_greedy[0], generated_text=base_greedy[1])
@@ -357,6 +423,7 @@ def run(args, prepared, selected, reports, manifest):
                 'INVALID: counterfactual mutated resident baseline')
         del base_trace, zero_trace, base_logits, zero_logits, baseline, zero, raw
         print('Completed C7-B2A '+e['episode_id'], flush=True)
+    manifest['current_stage'] = 'final_validation'
     for label in ('Q24', 'Q32'):
         records = [r for c in reports['q_distortion']['cases'] for r in c['candidates'][label]]
         reports['q_distortion'].setdefault('aggregate', {})[label] = qcodec.aggregate_metrics(records)
@@ -368,32 +435,114 @@ def run(args, prepared, selected, reports, manifest):
     b0.verify_files(prepared.input_hashes)
     manifest.update(status='COMPLETE', causal_isolation_supported=all(c['causal_isolation_supported'] for c in
         reports['continuation_causal_effect']['cases']))
+    manifest.pop('current_stage', None)
+
+
+def record_failure(manifest, exc, stage):
+    """First exception remains authoritative even if final reporting also fails."""
+    if 'failure_type' not in manifest:
+        manifest.update(failure_stage=stage, failure_type=type(exc).__name__,
+                        failure_message=str(exc), error=str(exc))
+    manifest.update(status='INVALID', causal_isolation_supported=None)
+
+
+def write_manifest(root, manifest):
+    (root/'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False)+'\n')
 
 
 def write_reports(root, reports, manifest):
+    failure = {key: manifest[key] for key in ('failure_stage', 'failure_type', 'failure_message') if key in manifest}
     for name, value in reports.items():
-        b0.write(root/(name+'.json'), dict(status=manifest['status'], **value))
-    valid = manifest['status'] == 'COMPLETE'
-    answer = lambda value: str(value) if valid else 'Not established; audit INVALID. See manifest error/partial evidence.'
-    internal = reports['internal_causal_effect']['cases']
-    continuation = reports['continuation_causal_effect']['cases']
+        b0.write(root/(name+'.json'), dict(value, status=manifest['status'], **failure))
+    selected = reports.get('selected_cases', {}).get('cases', [])
+    expected_ids = {c['episode_id'] for c in selected}
+    not_completed = 'NOT_COMPLETED (Not established; see partial evidence and manifest.)'
+
+    def answer(name, extract):
+        cases = reports.get(name, {}).get('cases', [])
+        if not expected_ids or len(cases) != len(expected_ids) or {c['episode_id'] for c in cases} != expected_ids:
+            return not_completed
+        values = [extract(c) for c in cases]
+        return not_completed if any(v is None for v in values) else str(all(values))
+
+    def distortion_complete(case):
+        candidates = case.get('candidates', {})
+        flags = [[r.get('exact_equal') for r in candidates.get(label, [])] for label in ('Q24', 'Q32')]
+        if any(len(f) != 32 or None in f for f in flags):
+            return None
+        return all(any(equal is False for equal in f) for f in flags)
+
+    def injection_complete(case):
+        values = [case.get('modes', {}).get(mode, {}).get('q_injection_verified') for mode in MODES]
+        return None if None in values else all(values)
+
+    def greedy_complete(case):
+        comparisons = case.get('comparisons', {})
+        if 'baseline_greedy' not in case or not case.get('baseline_reproduction_verified'):
+            return None
+        return True if all('greedy' in comparisons.get(mode, {}) for mode in MODES[1:]) else None
+
+    greedy = ('measured in continuation_causal_effect.json' if
+        answer('continuation_causal_effect', greedy_complete) == 'True' else not_completed) if manifest.get('greedy_executed') else \
+        'NOT_RUN (optional --greedy; avoids extra autoregressive forwards).'
     lines = ['# C7-B2A causal sanity audit', '',
+        'Status: '+manifest['status']+'.',
         'Exactly four cases: '+SELECTION_RULE+'.',
-        'Episodes: '+', '.join(c['episode_id'] for c in reports['selected_cases']['cases'])+'.', '',
-        '1. Decoded Q24/Q32 different from raw TOTAL Q in every case? '+answer(True),
-        '2. Decoded tensors actually injected into the selected HIT rows? '+answer(True),
-        '3. Zeroing cached Q changed hit-row attention/internal states? '+answer(True),
-        '4. Fresh-row attention remained numerically unchanged? '+answer(all(c['fresh_attention_numerically_negligible'] for c in internal)),
-        '5. Canonical teacher-forced continuation remained numerically unchanged? '+answer(all(c['comparisons'][MODES[3]]['numerically_negligible'] for c in continuation)),
-        '   Greedy generation: '+('measured in continuation_causal_effect.json' if manifest['greedy_executed'] else 'NOT_RUN (optional --greedy; avoids extra autoregressive forwards).'),
-        '6. Compressed Q is genuinely consumed but causally isolated here? '+answer(manifest.get('causal_isolation_supported')), '',
+        'Episodes: '+', '.join(c['episode_id'] for c in selected)+'.', '',
+        '1. Decoded Q24/Q32 different from raw TOTAL Q in every case? '+answer('q_distortion', distortion_complete),
+        '2. Decoded tensors actually injected into the selected HIT rows? '+answer('injection_audit', injection_complete),
+        '3. Zeroing cached Q changed hit-row attention/internal states? '+answer('internal_causal_effect', lambda c: c.get('hit_row_causal_effect_verified')),
+        '4. Fresh-row attention remained numerically unchanged? '+answer('internal_causal_effect', lambda c: c.get('fresh_attention_numerically_negligible')),
+        '5. Canonical teacher-forced continuation remained numerically unchanged? '+answer('continuation_causal_effect',
+            lambda c: c.get('comparisons', {}).get(MODES[3], {}).get('numerically_negligible')),
+        '   Greedy generation: '+greedy,
+        '6. Compressed Q is genuinely consumed but causally isolated here? '+
+            (str(manifest['causal_isolation_supported']) if manifest['status'] == 'COMPLETE' and
+                manifest.get('causal_isolation_supported') is not None else not_completed), '',
         'If isolation is false after a valid audit, propagation was measured; inspect the per-layer and continuation evidence. If INVALID, the zero downstream difference needs further debugging.',
         'Interpretation is limited to this tested SemCache causal-generation path: perturbing reused cached Q altered hit-row computation and did/did not propagate to fresh continuation under fixed cached K/V.',
         'The exact w=3 HIT and TOTAL Q/K/V payload remain unchanged. This does not justify removing Q. No Q profile is automatically frozen.',
         'Numeric tolerances are declared in manifest.json before execution; fresh-attention rounding noise alone does not invalidate the audit.', '']
+    if failure or manifest.get('error'):
+        lines += ['Primary failure ('+str(manifest.get('failure_stage', 'unknown stage'))+'): '+
+            str(manifest.get('failure_type', 'Exception'))+': '+str(manifest.get('failure_message', manifest.get('error'))), '']
     (root/'summary.md').write_text('\n'.join(lines))
     manifest['output_hashes'] = {p.name: b0.sha(p) for p in root.iterdir() if p.is_file() and p.name != 'manifest.json'}
-    (root/'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False)+'\n')
+    write_manifest(root, manifest)
+
+
+def finish_reports(root, reports, manifest, *, primary_exception=None):
+    for key in SAFETY_COUNTERS:
+        manifest[key] = manifest.get('counters', {}).get(key, 0)
+    try:
+        write_reports(root, reports, manifest)
+    except Exception as reporting_exception:
+        if primary_exception is None:
+            record_failure(manifest, reporting_exception, 'report_writing')
+        manifest['reporting_failure'] = dict(failure_type=type(reporting_exception).__name__,
+                                            failure_message=str(reporting_exception))
+        # Best effort if the filesystem or another unexpected reporting failure
+        # prevents complete output. Never replace the original audit exception.
+        try:
+            write_manifest(root, manifest)
+            (root/'summary.md').write_text('Status: INVALID\n\nChecks: NOT_COMPLETED\n\nPrimary failure: '+
+                manifest['failure_type']+': '+manifest['failure_message']+'\n\nReporting failure: '+str(reporting_exception)+'\n')
+        except Exception as fallback_exception:
+            import sys
+            print('C7-B2A fallback report failure: '+str(fallback_exception), file=sys.stderr)
+        if primary_exception is None:
+            raise
+
+
+def execute_audit(args, prepared, selected, reports, manifest):
+    try:
+        run(args, prepared, selected, reports, manifest)
+    except Exception as exc:
+        record_failure(manifest, exc, manifest.get('current_stage', 'audit_execution'))
+        finish_reports(args.output_root, reports, manifest, primary_exception=exc)
+        raise
+    else:
+        finish_reports(args.output_root, reports, manifest)
 
 
 def main(argv=None):
@@ -422,7 +571,9 @@ def main(argv=None):
     prepared.input_hashes.update(verify_b2(args.c7b2_root, prepared, args))
     reports = {name: dict(cases=[]) for name in ('q_distortion', 'injection_audit', 'internal_causal_effect', 'continuation_causal_effect')}
     reports['selected_cases'] = dict(selection_rule=SELECTION_RULE, frozen32_selection_sha256=gate.b3.SELECTION_SHA,
-        cases=[dict(prepared.episodes[i], canonical_selection_index=i) for i in selected])
+        baseline_source=str((args.c7b2_root/'per_case.csv').resolve()),
+        baseline_source_sha256=b0.sha(args.c7b2_root/'per_case.csv'),
+        cases=selected_case_records(prepared.episodes, selected, prepared.baseline_by_episode_id))
     reports['continuation_causal_effect'].update(canonical_provenance=prepared.provenance['teacher_forced_canonical_source'],
         policy='same C7-B2 imported FULL_RECOMPUTE canonical continuation; prompt + canonical[:-1]',
         greedy_status='REQUESTED' if args.greedy else 'NOT_RUN')
@@ -441,12 +592,4 @@ def main(argv=None):
         counterfactual_policy='zero only cached Q in temporary HIT view immediately before mixed reuse; resident and K/V unchanged',
         source_q_copies='audit CPU working copies only; not resident cache representation', git=b0.git())
     b0.write(args.output_root/'manifest.json', manifest)
-    try:
-        run(args, prepared, selected, reports, manifest)
-    except Exception as exc:
-        manifest.update(status='INVALID', error=str(exc), causal_isolation_supported=None)
-        raise
-    finally:
-        for key in SAFETY_COUNTERS:
-            manifest[key] = manifest.get('counters', {}).get(key, 0)
-        write_reports(args.output_root, reports, manifest)
+    execute_audit(args, prepared, selected, reports, manifest)

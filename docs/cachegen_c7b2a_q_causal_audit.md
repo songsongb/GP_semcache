@@ -2,7 +2,11 @@
 
 This read-only audit uses exactly four frozen32 cases: the first canonical episode
 in stable selection order at each history depth 1–4. `selected_cases.json` records
-the exact IDs and original selection indices after canonical provenance validation.
+the exact IDs, `audit_case_index` (0–3), and `canonical_episode_index` after canonical
+provenance validation. The greedy check resolves the verified C7-B2
+STORAGE_KV_COMP_BASELINE row by `episode_id`; CSV order and local audit position
+never choose the baseline. Missing/duplicate identities or metadata conflicts fail
+closed, and text/token equality remains strict.
 No cases are chosen using quality, distortion, storage savings, or cross-user status.
 
 It reuses C7-B2's model, adapters, Q24/Q32 profiles, unchanged C6 K20/V16 storage,
@@ -28,6 +32,9 @@ fingerprints, verifies exact injection, checks fresh Q and HIT K/V identity, and
 checks the same mask and three skipped native rows for each projection role.
 Nonidentical decoded Q and a positive zero-Q internal effect are mandatory for
 each case. Contradictory evidence produces INVALID with partial reports.
+Unfinished checks are labeled NOT_COMPLETED. The manifest and partial reports
+retain `failure_stage`, `failure_type`, and `failure_message` for the first/root
+exception; any additional reporting failure cannot replace it.
 
 Baseline and zero-Q internal traces compare HIT and fresh positions independently.
 Fresh attention differences are measured, including exact equality, rather than
@@ -64,7 +71,8 @@ artifacts/caches are restricted to `/data/khuss`; Hugging Face loading is offlin
 The default performs 12 source and 16 teacher-forced full-sequence forwards plus
 12 storage encodes/lookups, of which eight use Q compression. Optional `--greedy`
 adds the established bounded greedy helper (up to 160 tokens) for four cases/four
-modes, and checks the baseline against the canonical C6 generations. Wall time
+modes, and checks the baseline against the canonical C7-B2 generations for the
+same episode identity. Wall time
 depends on SERAPH hardware, prompt lengths, and passive host copies; no timing
 benchmark or unsupported minute estimate is supplied.
 

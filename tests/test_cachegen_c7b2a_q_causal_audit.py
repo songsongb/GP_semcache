@@ -227,9 +227,10 @@ def b2_evidence(tmp_path):
     calibration = tmp_path/'calibration'; calibration.mkdir()
     (calibration/'manifest.json').write_text('{}')
     eps = episodes(); canonical = [10, 11]
-    rows = [dict(e, mode=mode, logical_event_hash=audit.b0.digest(e),
+    rows = [dict(e, episode_index=i, mode=mode, logical_event_hash=audit.b0.digest(e),
+        generated_token_ids=json.dumps([i+10, i+11]), generated_text='generation '+e['episode_id'],
         teacher_forced_canonical_token_ids=json.dumps(canonical),
-        teacher_forced_canonical_sha256=audit.b0.digest(canonical)) for e in eps for mode in runtime.MODES]
+        teacher_forced_canonical_sha256=audit.b0.digest(canonical)) for i, e in enumerate(eps) for mode in runtime.MODES]
     import csv
     with (root/'per_case.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
@@ -268,3 +269,151 @@ def test_b2_hash_and_canonical_continuation_binding(tmp_path):
     path.write_bytes(original)
     prepared.official[0]['generated_token_ids'] = [99]
     with pytest.raises(ValueError, match='continuation changed'): audit.verify_b2(root, prepared, args)
+
+
+def grouped_baseline():
+    canonical = [dict(episode_id=f'grouped-{i}', history_depth=i//8+1, token_ids=[10, 11, 12]) for i in range(32)]
+    rows = [dict(e, mode=runtime.MODES[0], episode_index=i,
+                 generated_text=f'canonical response {i}', generated_token_ids=[i+30, 2]) for i, e in enumerate(canonical)]
+    return canonical, rows
+
+
+def test_noncontiguous_selection_bound_by_id_not_local_or_csv_position():
+    canonical, rows = grouped_baseline()
+    selected = audit.select_cases(canonical)
+    assert selected == [0, 8, 16, 24]
+    # A different CSV order is still valid: episode_index is authoritative
+    # metadata, while the row's list position is irrelevant to the lookup.
+    lookup = audit.canonical_baseline_lookup(list(reversed(rows)), canonical)
+    records = audit.selected_case_records(canonical, selected, lookup)
+    assert [r['audit_case_index'] for r in records] == [0, 1, 2, 3]
+    assert [r['canonical_episode_index'] for r in records] == [0, 8, 16, 24]
+    assert [r['history_depth'] for r in records] == [1, 2, 3, 4]
+    for local_index, canonical_index in enumerate(selected):
+        episode = canonical[canonical_index]
+        reference = audit.baseline_reference(episode, lookup)
+        actual = dict(generated_token_ids=rows[canonical_index]['generated_token_ids'],
+                      generated_text=rows[canonical_index]['generated_text'])
+        assert reference['episode_id'] == episode['episode_id']
+        assert audit.gate.baseline_case_check(actual, reference)['generated_text_match']
+        if local_index:
+            with pytest.raises(ValueError, match='baseline generation mismatch'):
+                audit.gate.baseline_case_check(actual, rows[local_index])
+
+
+def test_missing_duplicate_or_disagreeing_baseline_fails_closed():
+    canonical, rows = grouped_baseline()
+    with pytest.raises(ValueError, match='Missing/extra'):
+        audit.canonical_baseline_lookup([r for r in rows if r['episode_id'] != 'grouped-8'], canonical)
+    with pytest.raises(ValueError, match='Duplicate'):
+        audit.canonical_baseline_lookup(rows+[rows[8]], canonical)
+    lookup = audit.canonical_baseline_lookup(rows, canonical)
+    with pytest.raises(ValueError, match='Missing canonical'):
+        audit.baseline_reference(canonical[8], {k: v for k, v in lookup.items() if k != 'grouped-8'})
+    for field, wrong in (('history_depth', 1), ('token_ids', [99]), ('episode_id', 'absent')):
+        selected = dict(canonical[8], **{field: wrong})
+        with pytest.raises(ValueError): audit.baseline_reference(selected, lookup)
+    wrong_rows = copy.deepcopy(rows); wrong_rows[8]['episode_index'] = 1
+    with pytest.raises(ValueError, match='index disagrees'): audit.canonical_baseline_lookup(wrong_rows, canonical)
+
+
+@pytest.mark.parametrize('field,wrong', [('generated_text', 'wrong text'), ('generated_token_ids', [999])])
+def test_identity_bound_greedy_check_remains_exact(field, wrong):
+    canonical, rows = grouped_baseline()
+    lookup = audit.canonical_baseline_lookup(rows, canonical)
+    reference = audit.baseline_reference(canonical[8], lookup)
+    actual = {k: reference[k] for k in ('generated_text', 'generated_token_ids')}
+    assert all(audit.gate.baseline_case_check(actual, reference).values())
+    actual[field] = wrong
+    with pytest.raises(ValueError, match='baseline generation mismatch'):
+        audit.gate.baseline_case_check(actual, reference)
+
+
+def partial_reports():
+    canonical, rows = grouped_baseline()
+    selected = audit.select_cases(canonical)
+    reports = {name: dict(cases=[]) for name in ('q_distortion', 'injection_audit',
+                'internal_causal_effect', 'continuation_causal_effect')}
+    reports['selected_cases'] = dict(cases=audit.selected_case_records(canonical, selected,
+        audit.canonical_baseline_lookup(rows, canonical)))
+    reports['continuation_causal_effect']['cases'] = [dict(episode_id=canonical[0]['episode_id'], comparisons={})]
+    return reports
+
+
+def test_early_failure_reports_partial_evidence_and_original_exception(tmp_path, monkeypatch):
+    reports = partial_reports()
+    primary = ValueError('INVALID: STORAGE_KV_COMP baseline generation mismatch')
+    manifest = dict(status='STARTING', greedy_executed=True)
+    def early_failure(*args):
+        manifest['current_stage'] = 'greedy_baseline_reproduction'
+        raise primary
+    monkeypatch.setattr(audit, 'run', early_failure)
+    with pytest.raises(ValueError) as caught:
+        audit.execute_audit(SimpleNamespace(output_root=tmp_path), None, None, reports, manifest)
+    assert caught.value is primary
+    saved = json.loads((tmp_path/'manifest.json').read_text())
+    assert saved['status'] == 'INVALID'
+    assert saved['failure_type'] == 'ValueError' and saved['failure_message'] == str(primary)
+    assert saved['failure_stage'] == 'greedy_baseline_reproduction'
+    summary = (tmp_path/'summary.md').read_text()
+    assert 'NOT_COMPLETED' in summary and str(primary) in summary
+    assert 'Greedy generation: NOT_COMPLETED' in summary
+    selected = json.loads((tmp_path/'selected_cases.json').read_text())
+    assert selected['failure_message'] == str(primary) and selected['status'] == 'INVALID'
+    assert len(selected['cases']) == 4
+    continuation = json.loads((tmp_path/'continuation_causal_effect.json').read_text())
+    assert continuation['cases'][0]['comparisons'] == {} and continuation['failure_message'] == str(primary)
+    assert len(saved['output_hashes']) == 6
+
+
+def test_missing_zero_comparison_safe_even_with_four_partial_case_records(tmp_path):
+    reports = partial_reports()
+    reports['continuation_causal_effect']['cases'] = [dict(episode_id=c['episode_id'], comparisons={'Q24': {}})
+                                                    for c in reports['selected_cases']['cases']]
+    manifest = dict(status='INVALID', greedy_executed=False, error='earlier failure')
+    audit.write_reports(tmp_path, reports, manifest)
+    assert '5. Canonical teacher-forced continuation remained numerically unchanged? NOT_COMPLETED' in (tmp_path/'summary.md').read_text()
+    assert 'earlier failure' in (tmp_path/'summary.md').read_text()
+    assert manifest['status'] == 'INVALID'
+
+
+def test_reporting_exception_never_masks_primary_failure(tmp_path, monkeypatch):
+    primary = ValueError('root failure'); secondary = KeyError('report failure')
+    def fail_run(*args): raise primary
+    def fail_reports(*args): raise secondary
+    monkeypatch.setattr(audit, 'run', fail_run); monkeypatch.setattr(audit, 'write_reports', fail_reports)
+    manifest = dict(status='STARTING', greedy_executed=True)
+    with pytest.raises(ValueError) as caught:
+        audit.execute_audit(SimpleNamespace(output_root=tmp_path), None, None, partial_reports(), manifest)
+    assert caught.value is primary
+    saved = json.loads((tmp_path/'manifest.json').read_text())
+    assert saved['failure_type'] == 'ValueError' and saved['failure_message'] == str(primary)
+    assert saved['reporting_failure']['failure_type'] == 'KeyError'
+    assert str(primary) in (tmp_path/'summary.md').read_text()
+    audit.record_failure(manifest, secondary, 'later stage')
+    assert manifest['failure_message'] == str(primary)
+
+
+def test_complete_reports_preserve_successful_answers(tmp_path):
+    reports = partial_reports()
+    reports['continuation_causal_effect']['cases'] = []
+    for e in reports['selected_cases']['cases']:
+        episode_id = e['episode_id']
+        reports['q_distortion']['cases'].append(dict(episode_id=episode_id, candidates={
+            label: [dict(layer=l, exact_equal=l != 0) for l in range(32)] for label in ('Q24', 'Q32')}))
+        reports['injection_audit']['cases'].append(dict(episode_id=episode_id,
+            modes={mode: dict(q_injection_verified=True) for mode in audit.MODES}))
+        reports['internal_causal_effect']['cases'].append(dict(episode_id=episode_id,
+            hit_row_causal_effect_verified=True, fresh_attention_numerically_negligible=True))
+        reports['continuation_causal_effect']['cases'].append(dict(episode_id=episode_id,
+            baseline_greedy={}, baseline_reproduction_verified=True,
+            comparisons={mode: dict(numerically_negligible=True, greedy={}) for mode in audit.MODES[1:]}))
+    manifest = dict(status='COMPLETE', greedy_executed=True, causal_isolation_supported=True,
+                    q_profile_frozen=False, selected_q_candidate=None)
+    audit.finish_reports(tmp_path, reports, manifest)
+    saved = json.loads((tmp_path/'manifest.json').read_text())
+    assert saved['status'] == 'COMPLETE' and saved['causal_isolation_supported'] is True
+    assert saved['selected_q_candidate'] is None and not saved['q_profile_frozen']
+    assert 'failure_type' not in saved and len(saved['output_hashes']) == 6
+    summary = (tmp_path/'summary.md').read_text()
+    assert 'NOT_COMPLETED' not in summary and summary.count('? True') == 6
