@@ -33,6 +33,106 @@ def tie_tolerance_ms():
     return 10*time.get_clock_info('perf_counter').resolution*1000
 
 
+def parse_target_condition(condition):
+    """Exact names only: policy underscores are not condition delimiters."""
+    known = {c8.condition(budget, policy): ('B'+str(budget), policy)
+             for budget in BUDGETS for policy in POLICIES}
+    require(type(condition) is str and condition in known,
+        'Unknown/malformed C8 target condition: '+repr(condition))
+    return known[condition]
+
+
+def normalize_target_record(row, stage):
+    """Normalize verified A replay events / B JSON audit rows, not raw CSV text.
+
+    A's hash-verified LOOKUP phase uses ByteLRU.lookup, which never admits a
+    target. Its absent admission flag therefore means False. B records that
+    flag explicitly and must supply it. An absent source is allowed on MISS.
+    """
+    require(stage in ('C8-A', 'C8-B') and isinstance(row, dict),
+        'Malformed '+str(stage)+' target record: '+repr(row))
+    if stage == 'C8-B':
+        budget, policy = parse_target_condition(row.get('condition'))
+    else:
+        budget, policy = row.get('budget'), row.get('policy')
+        require(type(budget) is str and budget in ('B2', 'B8') and type(policy) is str and policy in POLICIES,
+            'Unknown/malformed C8-A target budget/policy: '+repr((budget, policy)))
+    key = budget, policy, row.get('episode_id')
+
+    def valid(ok, field, expectation):
+        require(ok, f'{stage} target validation failed: key={key!r} field={field} '
+            f'value={row.get(field, "<MISSING>")!r} expected={expectation}')
+
+    valid(type(key[2]) is str and bool(key[2]), 'episode_id', 'nonempty canonical episode identity')
+    # Optional redundant identity fields must agree with the condition too.
+    for field, value in (('budget', budget), ('policy', policy)):
+        if field in row: valid(row[field] == value, field, repr(value))
+    if stage == 'C8-A': valid(row.get('phase') == 'LOOKUP', 'phase', 'LOOKUP (no target admission)')
+    valid(type(row.get('hit')) is bool, 'hit', 'boolean')
+    hit = row['hit']
+    if 'event_type' in row: valid(row['event_type'] == ('HIT' if hit else 'MISS'), 'event_type', 'HIT/MISS consistent with hit')
+    source = row.get('resident_source_episode_id')
+    valid((type(source) is str and bool(source)) if hit else source is None,
+        'resident_source_episode_id', 'nonempty source identity on HIT; null/absent on MISS')
+    for field in ('resident_bytes', 'resident_entry_count'):
+        valid(type(row.get(field)) is int and row[field] >= 0, field, 'nonnegative integer')
+    admission = row.get('target_admission_performed', False if stage == 'C8-A' else None)
+    valid(type(admission) is bool, 'target_admission_performed', 'explicit boolean')
+    if stage == 'C8-A': valid(admission is False, 'target_admission_performed', 'False in verified LOOKUP phase')
+    return dict(budget=budget, policy=policy, episode_id=key[2], hit=hit,
+        resident_source_episode_id=source, resident_bytes=row['resident_bytes'],
+        resident_entry_count=row['resident_entry_count'], target_admission_performed=admission)
+
+
+def verify_target_records(prepared, rows):
+    """Compare canonical keys/semantic values; retain raw B rows for reuse proofs."""
+    require(isinstance(rows, list), 'Malformed C8-B hit audit: cases must be a list')
+    ids = [episode.get('episode_id') for episode in prepared.episodes]
+    require(len(ids) == 32 and all(type(i) is str and i for i in ids) and len(set(ids)) == 32,
+        'C8-A requires exactly32 unique canonical target identities')
+    require(set(prepared.expected) == set(CONDITIONS[1:]), 'Missing/extra C8-A budget-policy conditions')
+    expected_keys = {(budget, policy, episode_id) for name in CONDITIONS[1:]
+                     for budget, policy in (parse_target_condition(name),) for episode_id in ids}
+
+    def index(records, stage):
+        normalized, originals = {}, {}
+        for row in records:
+            record = normalize_target_record(row, stage)
+            key = record['budget'], record['policy'], record['episode_id']
+            require(key not in normalized, f'Duplicate {stage} canonical target key: {key!r}')
+            normalized[key], originals[key] = record, row
+        missing, extra = expected_keys-set(normalized), set(normalized)-expected_keys
+        require(not missing and not extra,
+            f'{stage} canonical target keys differ: missing={sorted(missing)!r} extra={sorted(extra)!r}')
+        return normalized, originals
+
+    a_rows = []
+    for name, saved in prepared.expected.items():
+        lookups = saved.get('lookups')
+        require(isinstance(lookups, list) and len(lookups) == 32, 'C8-A requires32 target lookups: '+name)
+        for row in lookups:
+            record = normalize_target_record(row, 'C8-A')
+            require((record['budget'], record['policy']) == parse_target_condition(name),
+                'C8-A target condition differs from its bound replay: '+name)
+        a_rows.extend(lookups)
+    a, _ = index(a_rows, 'C8-A')
+    b, originals = index(rows, 'C8-B')
+    for key in sorted(expected_keys):
+        for field in ('hit', 'resident_source_episode_id', 'resident_bytes',
+                      'resident_entry_count', 'target_admission_performed'):
+            require(a[key][field] == b[key][field], f'C8-B provenance mismatch: key={key!r} '
+                f'field={field} C8-A={a[key][field]!r} C8-B={b[key][field]!r}')
+    for budget in BUDGETS:
+        for policy, asserted_hits in zip(POLICIES, c8.EXPECTED_HITS[budget]):
+            name = c8.condition(budget, policy)
+            keys = [('B'+str(budget), policy, episode_id) for episode_id in ids]
+            authoritative = prepared.expected[name].get('summary', {}).get('target_hits')
+            require(type(authoritative) is int and
+                sum(a[key]['hit'] for key in keys) == sum(b[key]['hit'] for key in keys) == authoritative == asserted_hits,
+                'C8-A/C8-B aggregate HIT count differs: '+name)
+    return originals
+
+
 def verify_c8b(args, prepared):
     root = args.c8b_root
     expected = dict(stage='C8-B', status='COMPLETE', recommendation='C8_B_SUPPORTS_Q24_KV_FOR_C9',
@@ -47,26 +147,33 @@ def verify_c8b(args, prepared):
     for name in ('manifest.json', 'summary.json', 'residency_trace.json', 'per_event.csv'):
         expected['c8a_'+name.rsplit('.', 1)[0]+'_sha256'] = provenance.sha(args.c8a_root/name)
     manifest, hashes = provenance.load_manifest(root, expected, required=('hit_audit.json',))
-    provenance.verify_files(manifest['input_hashes'])
-    require(all(manifest['input_hashes'].get(p) == h for p, h in prepared.input_hashes.items()), 'C8-B upstream chain differs')
-    hashes.update(manifest['input_hashes'])
-    rows = provenance.read(root/'hit_audit.json')['cases']
-    require(len(rows) == 6*32, 'C8-B requires192 audited target conditions')
-    by_pair = provenance.unique([dict(r, pair=r['condition']+'/'+r['episode_id']) for r in rows], 'pair')
-    for name, saved in prepared.expected.items():
-        for episode, event in zip(prepared.episodes, saved['lookups']):
-            pair = name+'/'+episode['episode_id']
-            require(pair in by_pair, 'Missing C8-B HIT audit: '+pair)
-            row = by_pair[pair]
-            require(all(row[k] == event[k] for k in event), 'C8-B HIT/resident source differs: '+pair)
+    input_hashes = manifest.get('input_hashes')
+    require(isinstance(input_hashes, dict), 'Missing/malformed C8-B input hash bindings')
+    provenance.verify_files(input_hashes)
+    require(all(input_hashes.get(p) == h for p, h in prepared.input_hashes.items()), 'C8-B upstream chain differs')
+    hashes.update(input_hashes)
+    artifact = provenance.read(root/'hit_audit.json')
+    require(isinstance(artifact, dict), 'Malformed C8-B hit audit: expected object with cases')
+    by_key = verify_target_records(prepared, artifact.get('cases'))
+    for name in CONDITIONS[1:]:
+        budget, policy = parse_target_condition(name)
+        for episode in prepared.episodes:
+            key = budget, policy, episode['episode_id']
+            row = by_key[key]
             provenance.fields(row, dict(c8a_hit_exact_match=True, same_reuse_mask_qkv=True,
                 target_admission_performed=False, reused_projection_rows_per_role_per_layer=3 if row['hit'] else 0,
                 native_rows_skipped_per_role_per_layer=3 if row['hit'] else 0), 'C8-B HIT execution')
-            require(len(row['reuse_audits']) == (2 if row['hit'] else 0), 'C8-B missing mixed reuse evidence')
-            for audit in row['reuse_audits']:
+            audits = row.get('reuse_audits')
+            require(isinstance(audits, list) and len(audits) == (2 if row['hit'] else 0),
+                'C8-B missing mixed reuse evidence: '+repr(key))
+            for audit in audits:
+                require(isinstance(audit, dict), 'Malformed C8-B reuse proof: '+repr(key))
                 provenance.fields(audit, dict(same_reuse_mask_qkv=True,
                     hit_positions=list(range(episode['target_start'], episode['target_start']+3))), 'C8-B reuse mask')
-                layers = provenance.unique(audit['per_layer'], 'layer')
+                per_layer = audit.get('per_layer')
+                require(isinstance(per_layer, list) and all(isinstance(l, dict) and type(l.get('layer')) is int for l in per_layer),
+                    'Missing/malformed C8-B layer reuse proof: '+repr(key))
+                layers = provenance.unique(per_layer, 'layer')
                 require(set(layers) == set(range(32)), 'C8-B reuse must cover all32 layers')
                 for layer in layers.values():
                     provenance.fields(layer, {role+'_'+suffix: 3 for role in 'qkv'

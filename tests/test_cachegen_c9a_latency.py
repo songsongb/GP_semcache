@@ -26,7 +26,10 @@ def upstream(replay):
             layers = [dict(layer=l, **{role+'_'+suffix: 3 for role in 'qkv'
                 for suffix in ('reused_projection_rows', 'native_projection_rows_skipped')}) for l in range(32)]
             audit = dict(same_reuse_mask_qkv=True, hit_positions=list(range(episode['target_start'], episode['target_start']+3)), per_layer=layers)
-            rows.append(dict(event, condition=name, episode_id=episode['episode_id'],
+            # Match C8-B's producer: ByteLRU.lookup fields, not A's replay wrapper.
+            lookup = {k: event[k] for k in ('hit', 'event_type', 'resident_bytes',
+                'resident_entry_count', 'resident_source_episode_id')}
+            rows.append(dict(lookup, condition=name, episode_id=episode['episode_id'],
                 c8a_hit_exact_match=True, same_reuse_mask_qkv=True, target_admission_performed=False,
                 reused_projection_rows_per_role_per_layer=3 if event['hit'] else 0,
                 native_rows_skipped_per_role_per_layer=3 if event['hit'] else 0,
@@ -40,7 +43,7 @@ def upstream(replay):
         frozen32_selection_sha256=provenance.SELECTION_SHA, q24_profile_sha256=provenance.Q_SHA,
         kv_profile_sha256=provenance.KV_SHA, **prepared.frozen['model_namespace'],
         **{k: 0 for k in c8.SAFETY}, transport_compression_enabled=False,
-        input_hashes=prepared.input_hashes, output_hashes={'hit_audit.json': provenance.sha(root/'hit_audit.json')})
+        input_hashes=dict(prepared.input_hashes), output_hashes={'hit_audit.json': provenance.sha(root/'hit_audit.json')})
     for name in ('manifest.json', 'summary.json', 'residency_trace.json', 'per_event.csv'):
         m['c8a_'+name.rsplit('.', 1)[0]+'_sha256'] = provenance.sha(args.c8a_root/name)
     put(root/'manifest.json', m)
@@ -77,6 +80,121 @@ def test_c7_c8_provenance_and_vectors_bound_without_quality_rerun(upstream, monk
     assert str((args.c8b_root/'manifest.json').resolve()) in prepared.input_hashes
     assert str((args.c8b_root/'hit_audit.json').resolve()) in prepared.input_hashes
     assert prepared.c8b_manifest['recommendation'] == 'C8_B_SUPPORTS_Q24_KV_FOR_C9'
+
+
+def test_actual_a_wrapper_b_condition_only_schema_regression(upstream):
+    _, args, prepared, _ = upstream
+    a = prepared.expected['B2_RAW_QKV']['lookups'][0]
+    b = provenance.read(args.c8b_root/'hit_audit.json')['cases'][0]
+    assert a['budget'] == 'B2' and a['policy'] == 'RAW_QKV'
+    assert b['condition'] == 'B2_RAW_QKV' and 'budget' not in b and 'policy' not in b
+    # This is exactly the positional raw-schema assumption that broke SERAPH.
+    with pytest.raises(KeyError, match='policy'):
+        all(b[k] == a[k] for k in a)
+    assert latency.normalize_target_record(a, 'C8-A') == latency.normalize_target_record(b, 'C8-B')
+    latency.verify_c8b(args, prepared)
+
+
+@pytest.mark.parametrize('budget', ('B2', 'B8'))
+@pytest.mark.parametrize('policy', ('RAW_QKV', 'KV_COMP', 'Q24_KV_COMP'))
+def test_exact_condition_parsing_preserves_full_policy_suffix(budget, policy):
+    assert latency.parse_target_condition(budget+'_'+policy) == (budget, policy)
+
+
+@pytest.mark.parametrize('condition', ('B4_RAW_QKV', 'B16_KV_COMP', 'B8_Q32_KV_COMP',
+    'B2_QKV', 'B2_Q24_KV_COMP_extra', 'FULL_RECOMPUTE', 'B2', None, ['B2_RAW_QKV']))
+def test_unknown_malformed_condition_fails_closed(condition):
+    with pytest.raises(ValueError, match='Unknown/malformed C8 target condition'):
+        latency.parse_target_condition(condition)
+
+
+def save_hit_audit(args, manifest, data):
+    put(args.c8b_root/'hit_audit.json', data)
+    manifest['output_hashes']['hit_audit.json'] = provenance.sha(args.c8b_root/'hit_audit.json')
+    put(args.c8b_root/'manifest.json', manifest)
+
+
+@pytest.mark.parametrize('damage', ('missing', 'duplicate', 'extra', 'unknown_condition', 'hit',
+    'source', 'bytes', 'entry_count', 'target_admission', 'redundant_identity'))
+def test_normalized_target_mismatch_fails_with_explicit_validation(upstream, damage):
+    _, args, prepared, manifest = upstream
+    data = provenance.read(args.c8b_root/'hit_audit.json')
+    row = next(r for r in data['cases'] if r['hit'])
+    if damage == 'missing': data['cases'].remove(row)
+    elif damage == 'duplicate': data['cases'].append(dict(row))
+    elif damage == 'extra': row['episode_id'] = 'unexpected-episode'
+    elif damage == 'unknown_condition': row['condition'] = 'B4_RAW_QKV'
+    elif damage == 'hit': row.update(hit=False, event_type='MISS', resident_source_episode_id=None)
+    elif damage == 'source': row['resident_source_episode_id'] = 'wrong-source'
+    elif damage == 'bytes': row['resident_bytes'] += 1
+    elif damage == 'entry_count': row['resident_entry_count'] += 1
+    elif damage == 'target_admission': row['target_admission_performed'] = True
+    elif damage == 'redundant_identity': row['policy'] = 'Q24_KV_COMP'
+    save_hit_audit(args, manifest, data)
+    with pytest.raises(ValueError) as exc:
+        latency.verify_c8b(args, prepared)
+    message = str(exc.value)
+    if damage in ('hit', 'source', 'bytes', 'entry_count', 'target_admission'):
+        field = dict(hit='hit', source='resident_source_episode_id', bytes='resident_bytes',
+            entry_count='resident_entry_count', target_admission='target_admission_performed')[damage]
+        assert f'field={field}' in message and 'key=' in message
+        assert 'C8-A=' in message and 'C8-B=' in message
+    elif damage == 'missing': assert 'missing=' in message
+    elif damage == 'duplicate': assert 'Duplicate C8-B canonical target key' in message
+    elif damage == 'extra': assert 'extra=' in message
+
+
+@pytest.mark.parametrize('field', ('condition', 'episode_id', 'hit', 'resident_bytes',
+    'resident_entry_count', 'target_admission_performed', 'reuse_audits'))
+def test_missing_b_target_fields_raise_value_error_not_raw_key_error(upstream, field):
+    _, args, prepared, manifest = upstream
+    data = provenance.read(args.c8b_root/'hit_audit.json')
+    del data['cases'][0][field]
+    save_hit_audit(args, manifest, data)
+    with pytest.raises(ValueError): latency.verify_c8b(args, prepared)
+
+
+def test_miss_source_absence_normalized_but_nonnull_source_rejected(upstream):
+    _, args, prepared, manifest = upstream
+    data = provenance.read(args.c8b_root/'hit_audit.json')
+    row = next(r for r in data['cases'] if not r['hit'])
+    del row['resident_source_episode_id']
+    save_hit_audit(args, manifest, data)
+    latency.verify_c8b(args, prepared)
+    row['resident_source_episode_id'] = 'unexpected-source-on-miss'
+    save_hit_audit(args, manifest, data)
+    with pytest.raises(ValueError, match='field=resident_source_episode_id'):
+        latency.verify_c8b(args, c8.verify_capacity(args))
+
+
+@pytest.mark.parametrize('damage', ('missing_cases', 'nondict_row', 'missing_layers', 'missing_layer_id', 'missing_bindings'))
+def test_malformed_audit_or_proof_fails_explicitly_without_key_error(upstream, damage):
+    _, args, prepared, manifest = upstream
+    data = provenance.read(args.c8b_root/'hit_audit.json')
+    row = next(r for r in data['cases'] if r['hit'])
+    if damage == 'missing_cases': del data['cases']
+    elif damage == 'nondict_row': data['cases'][0] = None
+    elif damage == 'missing_layers': del row['reuse_audits'][0]['per_layer']
+    elif damage == 'missing_layer_id': del row['reuse_audits'][0]['per_layer'][0]['layer']
+    elif damage == 'missing_bindings': del manifest['input_hashes']
+    save_hit_audit(args, manifest, data)
+    with pytest.raises(ValueError): latency.verify_c8b(args, prepared)
+
+
+def test_incidental_b_fields_and_row_order_do_not_change_semantic_verification(upstream):
+    _, args, prepared, manifest = upstream
+    data = provenance.read(args.c8b_root/'hit_audit.json')
+    data['cases'].reverse()
+    for row in data['cases']: row.update(phase='audit-only', event_index=-1)
+    save_hit_audit(args, manifest, data)
+    latency.verify_c8b(args, prepared)
+
+
+def test_bound_a_aggregate_hit_assertion_preserved(upstream):
+    _, args, prepared, _ = upstream
+    prepared.expected['B2_RAW_QKV']['summary']['target_hits'] = 3
+    with pytest.raises(ValueError, match='aggregate HIT count differs: B2_RAW_QKV'):
+        latency.verify_c8b(args, prepared)
 
 
 @pytest.mark.parametrize('damage', ('recommendation', 'fitting', 'transport', 'hash', 'hit', 'source', 'mask', 'profile'))
