@@ -20,7 +20,8 @@ class SemCacheEngine:
     def __init__(self, model, tokenizer, adapter, encoder, clusterer, cache, *, window_size=3,
                  storage_device='cpu', rho=0.8, history_lambda=100, frequency_window=100,
                  metadata=None, seed=42, impact_reducer=None, pbr_interval_queries=None,
-                 verbose_impact_events=False):
+                 verbose_impact_events=False, impact_execution='legacy_blockwise',
+                 capture_impact_values=False):
         self.model, self.tokenizer, self.adapter = model, tokenizer, adapter
         self.encoder, self.clusterer, self.cache = encoder, clusterer, cache
         self.extractor, self.matcher = SubsequenceExtractor(window_size), ExactTokenMatcher()
@@ -28,6 +29,16 @@ class SemCacheEngine:
         self.metrics = CacheMetricManager(cache, rho, history_lambda, frequency_window)
         self.impact_reducer = (make_impact_reducer(impact_reducer) if isinstance(impact_reducer, str)
                                else impact_reducer or make_impact_reducer())
+        from .cache.impact_execution import EXECUTIONS
+        if impact_execution not in EXECUTIONS:
+            raise ValueError('Unknown attention impact execution algorithm')
+        if impact_execution != 'legacy_blockwise':
+            from .cache.attention_impact import PaperRowL2SumReducer
+            # Custom reducer subclasses may override reduce(); never bypass them.
+            if type(self.impact_reducer) is not PaperRowL2SumReducer:
+                raise ValueError('Optimized execution requires the unmodified paper_row_l2_sum reducer')
+        self.impact_execution = impact_execution
+        self.capture_impact_values = capture_impact_values
         if pbr_interval_queries is not None and pbr_interval_queries < 1:
             raise ValueError('PBR interval must be positive or None')
         self.pbr_interval_queries = pbr_interval_queries
@@ -173,10 +184,16 @@ class SemCacheEngine:
         attention_impact_timer.__enter__()
         impacts = defaultdict(list)
         span_impacts = {}
+        batched_values = None
+        if self.impact_execution != 'legacy_blockwise':
+            from .cache.impact_execution import compute_window_values
+            batched_values = iter(compute_window_values(output.attentions, windows,
+                self.impact_execution.upper(), torch.ones(len(ids), dtype=torch.bool)))
         for w in windows:
-            impact = actual_attention_impact(output.attentions, w.start, w.end,
+            impact = (actual_attention_impact(output.attentions, w.start, w.end,
                                              torch.ones(len(ids), dtype=torch.bool),
-                                             self.impact_reducer)
+                                             self.impact_reducer) if batched_values is None
+                      else next(batched_values))
             span_impacts[w.start] = impact
             impacts[self.matcher.key(cluster, w)].append(impact)
         # A query contributes one observation per key; repeated occurrences mean.
@@ -389,6 +406,13 @@ class SemCacheEngine:
             projection_skip_used=projection_skip_used,
             timing=timing_values, timing_scopes=timing_scopes,
             metric_source='measured except logical capacity and paper_estimated analytical savings', safe_reuse_claimed=False)
+        if self.impact_execution != 'legacy_blockwise' or self.capture_impact_values:
+            row['impact_execution'] = self.impact_execution
+        if self.capture_impact_values:
+            # Already-computed Python values; audit packaging is outside timing.
+            row['impact_wall_ms'] = attention_impact_timer.elapsed_ms
+            row['impact_windows'] = [dict(start=w.start, end=w.end, token_ids=list(w.token_ids),
+                                         value=span_impacts[w.start]) for w in windows]
         return dict(summary=row, events=self.events[event_start:], logits=logits, projection_audit=audit.records)
 
     def logical_query(self, query_text, user_id, query_id, *, logical_block_bytes):

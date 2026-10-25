@@ -19,7 +19,7 @@ from semcache.metrics.r1 import (MODES, ENGINE_MODES, atomic_json, digest,
     audit_projection_records, raw_only_guard, write_reports, timing_scopes)
 
 
-def parse_args(argv=None):
+def parse_args(argv=None, extension=None):
     from semcache.metrics.alignment import add_alignment_arguments, validate_alignment_arguments
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", choices=("facebook/opt-125m", "facebook/opt-2.7b"), default="facebook/opt-125m")
@@ -42,6 +42,8 @@ def parse_args(argv=None):
     p.add_argument("--output-dir", type=Path, required=True, help="New isolated directory under results/r1 recommended")
     p.add_argument("--resume", action="store_true", help="Resume atomic completed pairing groups; rewarm after restart")
     add_alignment_arguments(p)
+    if extension:
+        extension.add_arguments(p)
     args = p.parse_args(argv)
     validate_alignment_arguments(args)
     try:
@@ -61,6 +63,8 @@ def parse_args(argv=None):
         p.error("Use >=3 warmups and >=10 measured repeats, or explicitly --smoke")
     if any(not math.isfinite(v) or v < 0 for v in (args.atol, args.rtol)):
         p.error("Parity tolerances must be nonnegative")
+    if extension:
+        extension.validate(args, p)
     return args
 
 
@@ -85,7 +89,7 @@ def source_signature(engine):
                    for _, e in sorted(engine.cache.entries.items())])
 
 
-def run(args, manifest, guard):
+def run(args, manifest, guard, extension=None):
     import torch
     from semcache.models.loader import load_model
     from semcache.models.lora_fixtures import create_controlled_users
@@ -149,14 +153,18 @@ def run(args, manifest, guard):
             return SemCacheEngine(model, tokenizer, adapter, encoder, clusterer, GlobalCache(capacity),
                 storage_device=storage, metadata=metadata, seed=args.seed, impact_reducer=args.impact_reducer,
                 rho=args.rho, history_lambda=args.history_lambda,
-                pbr_interval_queries=args.pbr_interval if args.pbr_mode == "interval" else None)
+                pbr_interval_queries=args.pbr_interval if args.pbr_mode == "interval" else None,
+                **(extension.engine_options(variant) if extension else {}))
         for phase, repeat in schedule:
             # Alternate pass/storage order across repetitions; rotate mode order.
-            conditions = [(s, p) for s in args.storages for p in passes]
+            variants = extension.variants(args) if extension else [None]
+            conditions = [(s, p, v) for s in args.storages for p in passes for v in variants]
             if repeat % 2:
                 conditions.reverse()
-            for storage_name, instrumentation in conditions:
+            for storage_name, instrumentation, variant in conditions:
                 name = f"{length}-{phase}-{repeat}-{storage_name}-{instrumentation}"
+                if extension:
+                    name += f"-{variant}"
                 checkpoint = args.output_dir / "checkpoints" / (name + ".json")
                 if phase == "measured" and checkpoint.exists():
                     print("RESUME completed", name, flush=True)
@@ -188,6 +196,8 @@ def run(args, manifest, guard):
                                     admitted_blocks=source["summary"]["admitted_block_count"],
                                     resident_bytes=semcache.cache.physical_tensor_bytes,
                                     admission_audit=source["summary"]["admission_audit"])
+                                if extension:
+                                    build['policy_snapshot'] = extension.snapshot(semcache, source)
                                 del source
                             signature = source_signature(semcache)
                             raw_storage_audit(semcache.cache, storage)
@@ -248,6 +258,8 @@ def run(args, manifest, guard):
                             cache_event_counts={k: sum(e.get("event_type") == k for e in result.get("events", [])) for k in ("INSERT", "EVICT", "DENY")},
                             safe_reuse_claimed=False, use_cache=False, output_attentions=True, attention_implementation="eager")
                         batch.append(row)
+                        if extension:
+                            extension.decorate(row, variant, semcache, result)
                         if mode == "FULL_RECOMPUTE":
                             for metric in ("native_qkv_host_ms", "native_qkv_gpu_ms"):
                                 if metric in row["timing_scopes"]:
@@ -258,7 +270,10 @@ def run(args, manifest, guard):
                 # All four modes for every request are atomically committed together.
                 atomic_json(checkpoint, dict(identity=manifest["identity"], rows=batch))
                 rows = [r for r in rows if not r["pair_id"].startswith(name + "-")] + batch
-                write_reports(args.output_dir, rows)
+                if extension:
+                    extension.write_reports(args.output_dir, rows)
+                else:
+                    write_reports(args.output_dir, rows)
                 print("COMPLETE", name, "rows", len(batch), flush=True)
     manifest.update(status="COMPLETE", raw_only=guard.evidence(), rows=len(rows),
         strict_parity_failures=sum(not r["correctness"]["allclose"] for r in rows
@@ -271,14 +286,19 @@ def run(args, manifest, guard):
         and r["condition"] == "same_user_exact" and r["correctness"]["nonzero_reuse_validated"] for r in rows)
     if not manifest["strict_nonzero_validated_measured_cases"] and manifest["status"] == "COMPLETE":
         manifest["status"] = "NO_VALIDATED_REUSE"
+    if extension:
+        extension.finalize(args, manifest, rows)
     atomic_json(args.output_dir / "manifest.json", manifest)
     return 0 if manifest["status"] == "COMPLETE" else 2
 
 
-def main(argv=None):
-    args = parse_args(argv)
+def main(argv=None, extension=None):
+    args = parse_args(argv, extension=extension)
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k not in ("resume", "output_dir")}
     provenance = code_provenance()
+    if extension:
+        for p in extension.provenance_files(ROOT):
+            provenance['files'][str(p.relative_to(ROOT))] = hashlib.sha256(p.read_bytes()).hexdigest()
     identity = digest(dict(config=config, files=provenance["files"]))
     path = args.output_dir / "manifest.json"
     if args.resume:
@@ -299,10 +319,15 @@ def main(argv=None):
                 minimal="legacy CPU timers, audit and events retained; no added inner CUDA events; minimal engine prefill omitted",
                 pass_comparison="breakdown vs minimal includes timing and detailed-executor control overhead, not just CUDA event cost"))
     manifest["status"] = "RUNNING"
+    if extension:
+        manifest['experiment'] = extension.name
+        extension.initialize_manifest(manifest)
     for old_failure in ("failure_type", "failure", "oom"):
         manifest.pop(old_failure, None)
     atomic_json(path, manifest)
     groups = len(args.lengths) * len(args.storages) * (2 if args.instrumentation == "both" else 1) * (args.warmup_runs + args.measured_runs)
+    if extension:
+        groups *= len(extension.variants(args))
     manifest["planned_forward_counts_fresh_run"] = dict(target=groups*16, reference=groups*4, source=groups*9,
         note="4 conditions x 4 modes; source only for 3 non-cold conditions x 3 engine modes; resumes rewarm")
     print(f"R1 work: {groups} pairing groups; {groups*16} targets, {groups*4} references, {groups*9} source forwards; smoke={args.smoke}", flush=True)
@@ -311,7 +336,7 @@ def main(argv=None):
         if missing:
             raise RuntimeError("NOT EXECUTED: missing dependencies: " + ", ".join(missing))
         with raw_only_guard() as guard:
-            return run(args, manifest, guard)
+            return run(args, manifest, guard, extension=extension)
     except Exception as exc:
         manifest.update(status="FAILED", failure_type=type(exc).__name__, failure=str(exc),
                         oom=("out of memory" in str(exc).lower() or isinstance(exc, MemoryError)))
