@@ -221,8 +221,8 @@ python scripts/78_aggregate_r1b3_b21.py \
 ```
 
 For a CPU cache ablation, set `--cache-device cpu` while leaving model `--device
-cuda:0`. Use one coverage per run; run separate output directories for other
-coverage points. No Slurm files are created. Likely pilot duration can exceed an
+cuda:0`. Multiple coverages are supported, for example `--coverages 0,.5,max`. Each
+coverage has a separate source snapshot, checkpoint and parity-report group. No Slurm files are created. Likely pilot duration can exceed an
 hour; launch it with the user's existing scheduler procedure.
 
 Every run writes `manifest.json`, `mapping_parity.json`, `executor_parity.json`,
@@ -247,3 +247,75 @@ checkpoint collision/resume, failure artifacts and independent-run aggregation.
 Optional tensor tests exercise Legacy/V1/V2/contiguous QKV exactness, partial/no/max
 reuse, row audits, mapping cache hits, stale backing, and CPU/GPU cache. They skip
 clearly when Torch/CUDA is absent. No local test result is a GPU benchmark.
+
+
+## Smoke runtime stabilization
+
+The original runner created a V1 `PositionMapping` in the executor closure's local
+`plan`, but saved only V2 plans to `selected['prepared']`. The evidence path then
+read that V2-only slot for V1 and called `.evidence()` on `None`. Simply saving V1
+there would still fail later: V1 does not have V2's `cpu_index_bytes` or
+`index_tensors` attributes. Both timed and validation closures also called
+`clone_source_engine` on script 76 even though script 75 owns that function.
+
+The runner now resolves and checks script 76 → script 75 → script 74 interfaces
+before loading the model. Both forwards use the same `RequestMapping` lifecycle:
+
+| Executor | Mapping creation | Evidence and memory |
+|---|---|---|
+| Legacy, positive reuse | No additional plan; original selected hits | Explicit `LEGACY_WINDOW_LOOP`, no mapping-only bytes |
+| V1, positive reuse | `PositionMapping` at context entry, retained by request | V1 `.evidence()`, Python bytes; unsupported mapping index bytes are null |
+| V2 / contiguous, positive reuse | `PreparedMappingCache` after Fast Selection | Typed V2 serializer and cached index accounting |
+| Any executor, zero selected hits | No plan; unchanged Legacy context projects all positions | Explicit `NO_REUSE_NATIVE`; row audit still required |
+
+Missing or invalid positive-reuse mappings raise an error. Evidence is generated
+only after successful context completion and validates the executed plan against
+the selected hit sequence, Target IDs, adapter, mask and coverage. The zero-reuse
+branch depends on **actual selected hits**, not a requested percentage. It does
+not discard hits or suppress mapping failures.
+
+A further V2 runtime incompatibility was found in snapshot validation:
+`tensor_stamp()` stores device as a string, whereas FastIndex view stamps contain
+`torch.device`. Comparison now normalizes that representation; pointer, shape,
+stride, dtype, device and owner-version guards remain in force. No executor,
+selector, policy, projection, or FP16 tolerance algorithm was changed.
+
+Failures print the complete traceback and preserve it in the manifest and summary,
+with length, coverage, executor, instrumentation, phase, repeat and mapping state.
+Exceptions cannot produce a successful manifest. Coverage/length parity reports
+are retained by group instead of overwriting earlier groups. Resume preserves
+existing reports and excludes variable initialization time from runtime identity
+comparison. Code-hash changes still require a **new output directory**.
+
+Rerun all twelve smoke combinations on SERAPH (offline HF cache configured above):
+
+```bash
+python scripts/77_benchmark_r1b3_b21_setup.py --profile smoke \
+  --model facebook/opt-125m --dtype float32 --device cuda:0 --cache-device cuda \
+  --prompt-lengths 32 --coverages 0,.5,max --executor all \
+  --instrumentation minimal \
+  --output-dir results/r1b3/b21_setup/debug_smoke_v2
+```
+
+`mapping_parity.json` and `executor_parity.json` now use a `groups` dictionary keyed
+by run/length/storage/instrumentation/coverage. All validation forwards and all
+measured rows must pass before using their timings as an executor comparison.
+FULL-vs-reuse strict correctness remains a separate result.
+
+Offline regression tests exercise the real runner's mapping lifecycle for 0/0.5/MAX
+and every executor in both forward phases, V1 missing/invalid plans, V2 cache
+hit/miss, contiguous/fallback geometry, JSON serialization, module ownership,
+traceback persistence and device-stamp normalization. These are control-flow
+checks using metadata fixtures, **not numerical QKV or GPU parity evidence**.
+The optional Torch tests use the same runner lifecycle for exact QKV/row audits
+on CPU/GPU, including noncontiguous and multiple-source groups. Actual OPT logits
+are checked by the smoke runner; local Torch/Transformers/PEFT absence means that
+model/GPU validation must be marked NOT EXECUTED.
+
+Local stabilization verification: 123 tests collected, 82 passed and 41 skipped
+(Torch/CUDA-dependent cases); no failures. The focused B2.1 suite has 17 tests,
+14 passed and 3 skipped. Syntax compilation, CLI help and whitespace checks pass.
+The real smoke CLI accepts `0,.5,max` and passes module-interface preflight, then
+exits with `FAILED / ModuleNotFoundError: torch` in this local environment. Its
+traceback and initialization context are preserved. This is not a completed model
+smoke and provides no numerical parity or GPU performance result.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """R1-B3-B2.1: paired setup/mapping reproducibility; ORACLE diagnostic only."""
-import argparse, hashlib, importlib.util, itertools, json, math, os, random, subprocess, sys
+import argparse, hashlib, importlib.util, itertools, json, math, os, random, subprocess, sys, traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,9 +14,9 @@ from semcache.diagnostics.r1b3_fast_selection import FastOccurrenceIndex,compare
 from semcache.edgelora.batched_mixed_projection import (PositionMapping,ExecutorBook,observe_legacy,
     batched_mixed_projection_path,compare_projections)
 from semcache.edgelora.batched_mapping_optimized import (SetupBook,SourceBackingDescriptors,
-    PreparedMappingCache,batched_v2_projection_path,balanced_orders,paired_statistics)
+    PreparedMapping,PreparedMappingCache,batched_v2_projection_path,balanced_orders,paired_statistics)
 
-def load_b2(name='r1b2_runtime'):
+def load_b2(name='r1b3_b2_runtime'):
     path=ROOT/'scripts/76_benchmark_r1b3_batched_executor.py'
     spec=importlib.util.spec_from_file_location(name,path); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
 
@@ -41,7 +41,6 @@ def args(argv=None):
     a.modes=['legacy','v1','v2','contiguous'] if a.executor=='all' else [a.executor]
     a.scheduled_modes=[*a.modes,'full']
     a.coverage_values=[coverage_value(x) for x in a.coverages.split(',')]
-    if len(a.coverage_values)!=1: p.error('Use one coverage per run; combine independent output directories for sweeps')
     a.warmup_runs=a.warmup_runs if a.warmup_runs is not None else (1 if a.profile=='smoke' else 3)
     a.measured_runs=a.measured_runs if a.measured_runs is not None else (2 if a.profile=='smoke' else 30)
     if (not a.lengths or min(a.lengths)<4 or len(set(a.lengths))!=len(a.lengths) or not a.independent_run_id
@@ -61,6 +60,11 @@ def checkpoint_rows(root,identity):
             if row['row_id'] in seen: raise ValueError('Duplicate B2.1 row id')
             seen.add(row['row_id']); rows.append(row)
     return rows
+
+def update_group_report(path,group,value):
+    report=json.loads(path.read_text()) if path.exists() else {}
+    report.setdefault('groups',{})[group]=value
+    atomic_json(path,report)
 
 def csv_reports(root,rows):
     common=('row_id','source_snapshot_id','independent_run_id','phase','repeat','order','length','storage','coverage','mode','instrumentation')
@@ -168,6 +172,136 @@ def gpu_snapshot(device):
 
 def load_context(): return load_b2()
 
+def runtime_helpers():
+    """Resolve function owners once, before importing Torch or loading a model."""
+    def require(module, name):
+        value=getattr(module,name,None)
+        if not callable(value):
+            raise RuntimeError(f"Runtime interface missing: {getattr(module,'__file__',module)}.{name}")
+        return value
+    b2=load_context()
+    b1=require(b2,'b1')()
+    clone=require(b1,'clone_source_engine')
+    a3=require(b1,'a3')()
+    require(a3,'quality')
+    r1b2=require(a3,'b2')()
+    require(r1b2,'provenance')
+    return clone,a3
+
+
+class RequestMapping:
+    """One request's mapping object, shared by timing and validation forwards.
+
+    V1 builds at executor entry; V2 builds/looks up after selection. A request
+    with zero selected hits uses the unchanged native-only Legacy context.
+    Evidence is generated outside timing from the exact executed plan.
+    """
+    def __init__(self,mode,index,cache,namespace,weights,device,dtype,diagnostic,
+                 setup_book=None,executor_book=None):
+        if mode not in ('legacy','v1','v2','contiguous'): raise ValueError('Unknown executor mode')
+        self.mode=mode; self.index=index; self.cache=cache
+        self.namespace=namespace; self.weights=weights; self.device=device; self.dtype=dtype
+        self.setup_book=setup_book; self.executor_book=executor_book; self.diagnostic=diagnostic
+        self.plan=None; self.hits=None; self.ids=None; self.user=None; self.audit=None
+        self.mapping_ms=0.; self.cache_hit=None; self.setup_ms=None; self.cleanup_ms=None
+        self.completed=False; self.diagnostic.update(state='AWAITING_SELECTION',mapping_type=None)
+
+    def select(self,hits,ids,user):
+        if self.hits is not None: raise RuntimeError('Selection called twice for one request')
+        self.hits=tuple(hits); self.ids=tuple(ids); self.user=user
+        self.diagnostic.update(state='SELECTED',selected_windows=len(hits),length=len(ids))
+        if self.mode in ('v2','contiguous') and self.hits:
+            self.diagnostic['state']='BUILDING_OR_LOOKING_UP_MAPPING'
+            start=perf_counter_ns()
+            self.plan,self.cache_hit=self.cache.get(hits,ids,user,self.namespace,self.weights,
+                self.device,self.dtype,self.setup_book,
+                mode='contiguous' if self.mode=='contiguous' else 'gather',validate=False)
+            self.mapping_ms=(perf_counter_ns()-start)/1e6
+            self.require_plan()
+        self.diagnostic.update(state='MAPPING_READY' if self.plan is not None else
+            'NO_REUSE_NATIVE' if not self.hits else 'V1_BUILD_AT_ENTRY' if self.mode=='v1' else 'LEGACY_WINDOW_LOOP',
+            mapping_type=type(self.plan).__name__ if self.plan is not None else None,cache_hit=self.cache_hit)
+
+    def require_plan(self):
+        expected=PositionMapping if self.mode=='v1' else PreparedMapping
+        if not isinstance(self.plan,expected):
+            raise RuntimeError(f'{self.mode}: required {expected.__name__} missing or invalid; '
+                               f'selected_windows={len(self.hits or ())}, actual={type(self.plan).__name__}')
+        return self.plan
+
+    @contextmanager
+    def context(self,original,adapter,user,hits,length,**kwargs):
+        if (self.hits is None or user!=self.user or length!=len(self.ids)
+            or len(hits)!=len(self.hits) or any(a is not b for a,b in zip(hits,self.hits))):
+            raise RuntimeError(f'{self.mode}: executor input differs from selected request')
+        if self.completed: raise RuntimeError('Executor context reused across forwards')
+        if not hits or self.mode=='legacy':
+            if self.plan is not None: raise RuntimeError('Unexpected mapping in native/Legacy path')
+            ctx=original(adapter,user,hits,length,**kwargs)
+        elif self.mode=='v1':
+            self.diagnostic['state']='BUILDING_V1_MAPPING'
+            start=perf_counter_ns()
+            self.plan=PositionMapping(self.index,hits,self.ids,user,self.namespace,self.weights)
+            self.mapping_ms=(perf_counter_ns()-start)/1e6
+            ctx=batched_mixed_projection_path(adapter,user,hits,length,mapping=self.require_plan(),
+                book=self.executor_book,**kwargs)
+        else:
+            if kwargs.get('measure_cuda') or kwargs.get('fresh_projection') is not None:
+                raise ValueError('B2.1 uses ExecutorBook and unchanged native projection')
+            ctx=batched_v2_projection_path(adapter,user,hits,length,mapping=self.require_plan(),
+                setup_book=self.setup_book,executor_book=self.executor_book,contiguous=self.mode=='contiguous')
+        self.diagnostic.update(state='ENTERING_EXECUTOR',mapping_type=type(self.plan).__name__ if self.plan is not None else None)
+        start=perf_counter_ns()
+        legacy_path=self.mode=='legacy' or not hits
+        observed=observe_legacy(self.executor_book) if legacy_path and self.executor_book else _null_context()
+        timed=measured_context(ctx,self.setup_book) if self.setup_book and (legacy_path or self.mode=='v1') else ctx
+        with observed:
+            with timed as audit:
+                self.setup_ms=(perf_counter_ns()-start)/1e6
+                self.diagnostic['state']='FORWARD_ACTIVE'
+                yield audit
+                self.diagnostic['state']='CONTEXT_CLEANUP'
+                cleanup=perf_counter_ns()
+        self.cleanup_ms=(perf_counter_ns()-cleanup)/1e6
+        self.audit=audit; self.completed=True; self.diagnostic['state']='EXECUTOR_COMPLETE'
+
+    def report(self):
+        """Typed evidence/metadata; never interpret missing positive-reuse plans as success."""
+        if not self.completed or self.hits is None: raise RuntimeError('Mapping evidence requires a completed executor')
+        memory=dict(mapping_python_bytes=None,mapping_cpu_index_bytes=None,mapping_index_tensor_bytes=None)
+        if not self.hits or self.mode=='legacy':
+            if self.plan is not None: raise RuntimeError('Unexpected mapping in native/Legacy evidence')
+            evidence=dict(status='NO_REUSE_NATIVE' if not self.hits else 'LEGACY_WINDOW_LOOP',
+                mapping_required=False,length=len(self.ids),selected_windows=len(self.hits),
+                reused_tokens=sum(h.window.end-h.window.start for h in self.hits))
+        else:
+            plan=self.require_plan()
+            mask=[False]*len(self.ids)
+            for h in self.hits:
+                start,end=h.window.start,h.window.end
+                if not 0<=start<end<=len(mask) or any(mask[start:end]): raise RuntimeError('Invalid selected windows')
+                mask[start:end]=[True]*(end-start)
+            if (plan.length!=len(self.ids) or tuple(plan.target_ids)!=self.ids or
+                list(map(bool,plan.mask))!=mask or plan.reused!=sum(mask)):
+                raise RuntimeError('Executed mapping/selection coverage mismatch')
+            if self.mode=='v1':
+                if plan.adapter_name!=self.user or len(plan.hits)!=len(self.hits) or any(a is not b for a,b in zip(plan.hits,self.hits)):
+                    raise RuntimeError('V1 mapping provenance mismatch')
+                evidence=plan.evidence()
+            else:
+                expected=tuple((h.entry.qkv_metadata['source_query_id'],*h.entry.positions,
+                    h.window.start,h.window.end,h.entry.token_ids,id(h.entry)) for h in self.hits)
+                if plan.adapter!=self.user or plan.selected_sequence!=expected: raise RuntimeError('V2 mapping provenance mismatch')
+                evidence=dict(selected_sequence=list(plan.selected_sequence),
+                    groups=[dict(query=g['query'],source=g['source'],target=g['target'],contiguous=g['is_contiguous']) for g in plan.groups],
+                    reused_tokens=plan.reused,length=plan.length,cache_key_exact=True)
+                memory.update(mapping_cpu_index_bytes=plan.cpu_index_bytes,
+                    mapping_index_tensor_bytes=sum(t.numel()*t.element_size() for t in plan.index_tensors.values()))
+            memory['mapping_python_bytes']=plan.python_bytes_estimate
+            evidence.update(status='VALIDATED_EXECUTED_MAPPING',mapping_required=True,mapping_type=type(plan).__name__)
+        evidence['classification']='ORACLE_DIAGNOSTIC'
+        return evidence,memory
+
 @contextmanager
 def measured_context(context,book):
     """Measure only context enter/exit; never time the model forward as setup."""
@@ -185,8 +319,9 @@ def measured_context(context,book):
 
 
 def execute(a,manifest,raw_guard):
+    clone_source_engine,a3=runtime_helpers()
+    manifest["module_interface_preflight"]="PASS"
     import torch
-    b=load_context(); a3=b.a3()
     from semcache.models.loader import load_model
     from semcache.models.lora_fixtures import create_controlled_users
     from semcache.models.model_adapter import OPTModelAdapter
@@ -213,17 +348,21 @@ def execute(a,manifest,raw_guard):
     runtime=dict(model=meta,lora=lora,encoder=encoder.metadata,namespace=namespace,weight_identity=weights,torch=torch.__version__,cuda=torch.version.cuda,
         gpu=torch.cuda.get_device_name(a.device) if a.device.startswith('cuda') else None,gpu_uuid=gpu_snapshot(a.device).get('gpu_uuid'),
         initialization_ms=(perf_counter_ns()-init)/1e6)
-    if manifest.get('runtime') and manifest['runtime']!=runtime: raise ValueError('Resume runtime/provenance mismatch')
+    stable_runtime=lambda value: {k:v for k,v in value.items() if k!='initialization_ms'}
+    if manifest.get('runtime') and stable_runtime(manifest['runtime'])!=stable_runtime(runtime): raise ValueError('Resume runtime/provenance mismatch')
     manifest['runtime']=runtime
-    gpu_records=[]
+    gpu_file=a.output_dir/'gpu_state.json'
+    gpu_records=json.loads(gpu_file.read_text()) if a.resume and gpu_file.exists() else []
+    if not isinstance(gpu_records,list): gpu_records=[]
     for length in a.lengths:
         trace=controlled_length_trace(tokenizer,length); ids=trace[1]['token_ids']; text=trace[1]['text']; user='user_a'
         if len(ids)!=length: raise ValueError('TOKEN_LENGTH_MISMATCH')
         manifest.setdefault('fixtures',{})[str(length)]=dict(token_ids=ids,token_hash=digest(ids))
         anchors=encoder.encode([trace[0]['text'],trace[-1]['text']])
-        for store in [a.cache_device]:
+        for store,coverage in itertools.product([a.cache_device],a.coverage_values):
             storage=str(next(model.parameters()).device) if store=='cuda' else 'cpu'
-            group=f"{a.independent_run_id}-{length}-{store}-{a.instrumentation}"
+            group=f"{a.independent_run_id}-{length}-{store}-{a.instrumentation}-cov{coverage}"
+            manifest["active_request"]=dict(length=length,coverage=coverage,mode="source",instrumentation=a.instrumentation,phase="source_build",repeat=None,mapping_state={"state":"NOT_APPLICABLE"})
             checkpoint=a.output_dir/'checkpoints'/f'{group}.json'
             old=[]
             if a.resume and checkpoint.exists():
@@ -232,7 +371,6 @@ def execute(a,manifest,raw_guard):
                     raise ValueError('Checkpoint identity/checksum invalid')
                 if saved['status']=='COMPLETE': continue
                 old=[r for r in saved['rows'] if r.get('phase')!='warmup']
-                if saved['status']=='COMPLETE': old=saved['rows']
             try: manifest['memory_preflight']=memory_preflight(model,length,(a.cache_capacity_mib+a.catalog_capacity_mib)*1024**2,storage,a.device)
             except MemoryError: manifest['status']='MEMORY_PREFLIGHT_FAILED'; raise
             atomic_json(a.output_dir/'manifest.json',manifest)
@@ -262,11 +400,12 @@ def execute(a,manifest,raw_guard):
                 if (phase,repeat) in done: continue
                 pair=[]; pair_logits={}; pair_selections={}
                 for mode in order:
+                    manifest['active_request']=dict(length=length,coverage=coverage,mode=mode,instrumentation=a.instrumentation,phase=phase,repeat=repeat,mapping_state={'state':'NOT_STARTED'})
                     if mode=='full':
                         full_result=native_request(model,tokenizer,adapter,text,user,False)
                         pair.append(dict(row_id=f'{group}:{phase}:{repeat}:full',source_snapshot_id=group,
                             independent_run_id=a.independent_run_id,phase=phase,repeat=repeat,order=order,length=length,
-                            storage=storage,coverage=a.coverage_values[0],mode='full',instrumentation=a.instrumentation,
+                            storage=storage,coverage=coverage,mode='full',instrumentation=a.instrumentation,
                             classification='FULL_RECOMPUTE',selection_ms=None,mapping_ms=None,context_setup_ms=None,mapping_setup_ms=None,
                             target_warm_ms=full_result['timing']['request_wall_ms'],full_request_ms=full_result['timing']['request_wall_ms'],
                             speedup_vs_full=1.,source_prefill_ms=source_ms,catalog_build_ms=catalog_ms,fast_index_build_ms=index_ms,
@@ -282,43 +421,20 @@ def execute(a,manifest,raw_guard):
                         del full_result
                         continue
                     setup_book=SetupBook() if a.instrumentation=='breakdown' else None
-                    validation=False
                     for key,values in source_state.items():
                         e=catalog.entries[key]; e.frequency,e.impact,e.created_at,e.last_access,e.updated_at=values
-                    target=b.clone_source_engine(engine); selected={}; held={}; executor_book=ExecutorBook(a.device) if a.instrumentation=='breakdown' else None
+                    target=clone_source_engine(engine); selected={}
+                    executor_book=ExecutorBook(a.device) if a.instrumentation=='breakdown' else None
+                    flow=RequestMapping(mode,index,map_cache,namespace,weights,a.device,getattr(torch,a.dtype),
+                        manifest['active_request']['mapping_state'],setup_book,executor_book)
                     def select(hits,n,target_ids,target_user):
                         cid=next(x['cluster_id'] for x in reversed(target.events) if x['event_type']=='CLUSTER_ASSIGN')
-                        st=perf_counter_ns(); answer=index.select(target_ids,cid,target_user,namespace,weights,layout,a.coverage_values[0])
+                        st=perf_counter_ns(); answer=index.select(target_ids,cid,target_user,namespace,weights,layout,coverage)
                         selected['selection_ms']=(perf_counter_ns()-st)/1e6; selected['result']=answer
-                        selected['mapping_started']=perf_counter_ns()
-                        if mode in ('v2','contiguous'):
-                            prepared,hit=map_cache.get(answer[0],target_ids,target_user,namespace,weights,a.device,torch.get_default_dtype() if a.dtype=='float32' else torch.float16,
-                                setup_book,mode='contiguous' if mode=='contiguous' else 'gather',validate=False)
-                            selected['prepared']=prepared; selected['mapping_cache_hit']=hit
+                        flow.select(answer[0],target_ids,target_user)
                         return answer[:2]
-                    @contextmanager
                     def chosen_executor(ad,ad_name,hits,n,**kwargs):
-                        plan=None
-                        if mode=='legacy': ctx=b_original(ad,ad_name,hits,n,**kwargs)
-                        elif mode=='v1':
-                            map_start=perf_counter_ns(); plan=PositionMapping(index,hits,ids,ad_name,namespace,weights)
-                            selected['mapping_ms']=(perf_counter_ns()-map_start)/1e6
-                            ctx=batched_mixed_projection_path(ad,ad_name,hits,n,mapping=plan,book=executor_book,**kwargs)
-                        else:
-                            plan=selected['prepared']; ctx=batched_v2_projection_path(ad,ad_name,hits,n,mapping=plan,
-                                setup_book=setup_book,executor_book=executor_book,contiguous=(mode=='contiguous'))
-                            selected['mapping_ms']=(perf_counter_ns()-selected['mapping_started'])/1e6
-                        ctx_start=perf_counter_ns()
-                        observed=observe_legacy(executor_book) if mode=='legacy' and executor_book else _null_context()
-                        timed=measured_context(ctx,setup_book) if setup_book and mode in ('legacy','v1') else ctx
-                        with observed:
-                            with timed as audit:
-                                selected['context_before_forward_ms']=(perf_counter_ns()-ctx_start)/1e6
-                                yield audit
-                                cleanup_start=perf_counter_ns()
-                        selected['context_cleanup_ms']=(getattr(audit,'context_cleanup_ms',None) if mode in ('v2','contiguous') else (perf_counter_ns()-cleanup_start)/1e6)
-                        if validation: held['projections']=audit.projections
-                        held['memory']=getattr(audit,'memory',{})
+                        return flow.context(b_original,ad,ad_name,hits,n,**kwargs)
                     synchronize(a.device)
                     if a.device.startswith('cuda'): torch.cuda.reset_peak_memory_stats(a.device)
                     mem_before=memory_snapshot(a.device)
@@ -334,40 +450,38 @@ def execute(a,manifest,raw_guard):
                     if descriptor_book and mode in ('v2','contiguous') and repeat==0 and phase=='warmup':
                         setup_export['source_backing_descriptor_preparation']=dict(host_ms=descriptor.build_ms,cuda_ms=None,calls=1,status='SOURCE_ONLY_ONCE_PER_SNAPSHOT')
                     setup_export['warm_request']=dict(host_ms=result['summary']['timing']['request_wall_ms'],calls=1,status='ENCLOSING_REQUEST')
-                    setup_export['mapping_setup_total']=dict(host_ms=selected.get('mapping_ms',0.)+selected.get('context_before_forward_ms',0.)+selected.get('context_cleanup_ms',0.),
+                    setup_export['mapping_setup_total']=dict(host_ms=flow.mapping_ms+flow.setup_ms+flow.cleanup_ms,
                         calls=1,status='INCLUSIVE_TARGET_MAPPING_PLUS_CONTEXT; HOST STOPWATCH')
-                    mapping=selected.get('prepared')
-                    map_evidence=(mapping.evidence() if mode=='v1' else dict(selected_sequence=list(mapping.selected_sequence),
-                        groups=[dict(query=g['query'],source=g['source'],target=g['target'],contiguous=g['is_contiguous']) for g in mapping.groups],
-                        reused=mapping.reused,cache_key_exact=True) if mapping else None)
+                    map_evidence,mapping_memory=flow.report()
                     cache_state=map_cache.stats() if map_cache else dict(hits=0,misses=0,hit_rate=None,entries=0,estimated_memory_bytes=0,evictions=0)
                     row=dict(row_id=f'{group}:{phase}:{repeat}:{mode}',source_snapshot_id=group,independent_run_id=a.independent_run_id,
-                        phase=phase,repeat=repeat,order=order,length=length,storage=storage,coverage=a.coverage_values[0],mode=mode,
+                        phase=phase,repeat=repeat,order=order,length=length,storage=storage,coverage=coverage,mode=mode,
                         instrumentation=a.instrumentation,classification='ORACLE_DIAGNOSTIC',selection_ms=selected['selection_ms'],
-                        mapping_ms=selected.get('mapping_ms',0.),context_setup_ms=selected.get('context_before_forward_ms'),
+                        mapping_ms=flow.mapping_ms,context_setup_ms=flow.setup_ms,
                         mapping_setup_ms=setup_export['mapping_setup_total'].get('host_ms'),
                         target_warm_ms=result['summary']['timing']['request_wall_ms'],full_request_ms=reference['timing']['request_wall_ms'],
                         speedup_vs_full=reference['timing']['request_wall_ms']/result['summary']['timing']['request_wall_ms'],
                         source_prefill_ms=source_ms,catalog_build_ms=catalog_ms,fast_index_build_ms=index_ms,
                         descriptor_build_ms=descriptor.build_ms if descriptor else None,descriptor_memory_bytes=descriptor.python_bytes_estimate if descriptor else None,
-                        mapping_cache_hit=selected.get('mapping_cache_hit'),mapping_cache_hits=cache_state['hits'],mapping_cache_rate=cache_state['hit_rate'],
+                        mapping_cache_hit=flow.cache_hit,mapping_cache_hits=cache_state['hits'],mapping_cache_rate=cache_state['hit_rate'],
                         mapping_cache=cache_state,catalog_physical_bytes=catalog.resident_bytes,source_policy_bytes=engine.cache.physical_tensor_bytes,
-                        descriptor_python_bytes=descriptor.python_bytes_estimate if descriptor else None,mapping_python_bytes=mapping.python_bytes_estimate if mapping else None,
-                        mapping_cpu_index_bytes=mapping.cpu_index_bytes if mapping else None,
-                        mapping_index_tensor_bytes=sum(x.numel()*x.element_size() for x in mapping.index_tensors.values()) if mapping else None,
-                        temporary_memory=held['memory'],gpu_memory=dict(before=mem_before,after=mem_after),mapping=map_evidence,
+                        descriptor_python_bytes=descriptor.python_bytes_estimate if descriptor else None,**mapping_memory,
+                        temporary_memory=getattr(flow.audit,'memory',{}),gpu_memory=dict(before=mem_before,after=mem_after),mapping=map_evidence,
                         actual_coverage=sum(mask)/length,reused_tokens=sum(mask),native_rows=row_audit['native_projection_rows_all_layers_roles'],
                         skipped_rows=row_audit['skipped_projection_rows_all_layers_roles'],projection_audit=row_audit,
                         selected_provenance=[dict(query=h.entry.qkv_metadata['source_query_id'],source=list(h.entry.positions),target=[h.window.start,h.window.end],tokens=list(h.window.token_ids)) for h in hits],
                         full_correctness=a3.quality(reference['logits'],result['logits']),executor_parity=dict(passed=None,status='PENDING_PAIRED_GATE'),
                         setup_breakdown=setup_export,executor_breakdown=breakdown)
-                    if validation: row['_validation_projections']=held['projections']
-                    pair.append(row); pair_logits[mode]=result['logits']; pair_selections[mode]=selected['result']; del target,result
+                    pair.append(row); pair_logits[mode]=result['logits']; pair_selections[mode]=selected['result']
+                    # Passive QKV captures are only retained by untimed validation.
+                    # Do not keep the previous request's GPU projections through FULL.
+                    del flow,target,result
                 # Paired exact comparison of selections/logits for each repeat.
                 by={r['mode']:r for r in pair}; base=by.get('legacy')
                 for r in pair:
                     if r['mode']=='full':
                         r['executor_parity']=dict(passed=None,status='FULL_RECOMPUTE_REFERENCE')
+                        rows.append(r)
                         continue
                     r['full_request_ms']=pair_full_ms; r['speedup_vs_full']=pair_full_ms/r['target_warm_ms']
                     r['full_correctness']=a3.quality(pair_logits['full'],pair_logits[r['mode']])
@@ -389,40 +503,37 @@ def execute(a,manifest,raw_guard):
             atomic_json(a.output_dir/'gpu_state.json',gpu_records)
             atomic_json(checkpoint,dict(identity=manifest['identity'],status='RUNNING',rows=rows,checksum=digest(rows)))
             # Exact QKV and final-logit validation is separate from all latency samples.
-            validation_rows=[]; val_ids=[r['repeat'] for r in rows if r['phase']=='measured']; validation=False
+            validation_rows=[]
             # Run one additional validation pass per mode using the same immutable source.
             # This closure reuses the already-built exact-target mapping cache.
             val_outputs={}; val_projections={}; val_selections={}; val_projection_audits={}; val_masks={}
-            validation_repeat='validation'
             for mode in a.modes:
                 setup_book=None
                 for key,values in source_state.items():
                     e=catalog.entries[key]; e.frequency,e.impact,e.created_at,e.last_access,e.updated_at=values
-                target=b.clone_source_engine(engine); selected={}; held={}; executor_book=None; validation=True
+                manifest['active_request']=dict(length=length,coverage=coverage,mode=mode,instrumentation=a.instrumentation,
+                    phase='validation',repeat=None,mapping_state={'state':'NOT_STARTED'})
+                target=clone_source_engine(engine); selected={}
+                flow=RequestMapping(mode,index,map_cache,namespace,weights,a.device,getattr(torch,a.dtype),
+                    manifest['active_request']['mapping_state'])
                 def select_validation(hits,n,target_ids,target_user):
                     cid=next(x['cluster_id'] for x in reversed(target.events) if x['event_type']=='CLUSTER_ASSIGN')
-                    answer=index.select(target_ids,cid,target_user,namespace,weights,layout,a.coverage_values[0]); selected['result']=answer
-                    if mode in ('v2','contiguous'):
-                        selected['prepared'],_=map_cache.get(answer[0],target_ids,target_user,namespace,weights,a.device,torch.float16 if a.dtype=='float16' else torch.float32,mode='contiguous' if mode=='contiguous' else 'gather',validate=False)
+                    answer=index.select(target_ids,cid,target_user,namespace,weights,layout,coverage); selected['result']=answer
+                    flow.select(answer[0],target_ids,target_user)
                     return answer[:2]
-                @contextmanager
                 def validation_executor(ad,ad_name,hits,n,**kwargs):
-                    if mode=='legacy': ctx=b_original(ad,ad_name,hits,n,**kwargs)
-                    elif mode=='v1':
-                        plan=PositionMapping(index,hits,ids,ad_name,namespace,weights); ctx=batched_mixed_projection_path(ad,ad_name,hits,n,mapping=plan)
-                    else: ctx=batched_v2_projection_path(ad,ad_name,hits,n,mapping=selected['prepared'],contiguous=mode=='contiguous')
-                    with ctx as audit: yield audit
-                    held['projections']=audit.projections
+                    return flow.context(b_original,ad,ad_name,hits,n,**kwargs)
                 with patch.object(em,'select_position_aligned_diagnostic',select_validation),patch.object(mm,'mixed_projection_path',validation_executor):
                     res=engine_request(target,text,user,'target-validation','SEMCACHE_POSITION_ALIGNED_DIAGNOSTIC',False)
-                val_outputs[mode]=res['logits']; val_projections[mode]=held.pop('projections'); val_selections[mode]=selected['result']; val_masks[mode]=selected['result'][1]
+                val_outputs[mode]=res['logits']; val_projections[mode]=flow.audit.projections; val_selections[mode]=selected['result']; val_masks[mode]=selected['result'][1]
                 val_audit=audit_projection_records(list(res['projection_audit'].values()),length,len(adapter.layers),sum(selected['result'][1]),
                     [p for h in selected['result'][0] for p in range(h.window.start,h.window.end)])
                 val_projection_audits[mode]=val_audit
-                val_summary=dict(mode=mode,coverage=sum(selected['result'][1])/length,projection_audit=val_audit,
+                validation_mapping,_=flow.report()
+                val_summary=dict(mode=mode,coverage=sum(selected['result'][1])/length,projection_audit=val_audit,mapping=validation_mapping,
                     full_correctness=a3.quality(reference['logits'],res['logits']))
                 validation_rows.append(val_summary)
-                del target,res
+                del flow,target,res
             executor_validation=[]; selection_validation={}
             if 'legacy' in val_outputs:
                 for mode in a.modes:
@@ -444,16 +555,16 @@ def execute(a,manifest,raw_guard):
                     projection_rows_equal=next((x['projection_rows_equal'] for x in executor_validation if x['mode']==r['mode']),False),
                     paired_sample_consistency=r['executor_parity'])
                 else: r['executor_parity']=dict(passed=None,status='UNPAIRED_NO_LEGACY_REFERENCE')
-            atomic_json(checkpoint,dict(identity=manifest['identity'],status='COMPLETE',rows=rows,checksum=digest(rows)))
-            live_rows=checkpoint_rows(a.output_dir,manifest['identity'])
-            atomic_json(a.output_dir/'executor_parity.json',dict(validation=executor_validation,coverage=validation_rows))
-            atomic_json(a.output_dir/'mapping_parity.json',dict(validation=validation_rows,selector_parity=selection_validation,
+            update_group_report(a.output_dir/'executor_parity.json',group,dict(validation=executor_validation,coverage=validation_rows))
+            update_group_report(a.output_dir/'mapping_parity.json',group,dict(validation=validation_rows,selector_parity=selection_validation,
                 cache=map_cache.stats() if map_cache else None,descriptor_build_ms=descriptor.build_ms if descriptor else None,
                 descriptor_memory_bytes=descriptor.python_bytes_estimate if descriptor else None))
             atomic_json(checkpoint,dict(identity=manifest['identity'],status='COMPLETE',rows=rows,checksum=digest(rows)))
             live_rows=checkpoint_rows(a.output_dir,manifest['identity'])
             atomic_json(a.output_dir/'gpu_state.json',gpu_records)
             csv_reports(a.output_dir,live_rows); atomic_json(a.output_dir/'summary.json',summarize(live_rows,a.seed))
+            val_outputs.clear(); val_projections.clear(); val_selections.clear(); selected.clear()
+            hits=None; e=None
             del catalog,index,descriptor,map_cache,engine,reference
     atomic_json(a.output_dir/'gpu_state.json',gpu_records)
     allrows=checkpoint_rows(a.output_dir,manifest['identity'])
@@ -482,19 +593,26 @@ def main(argv=None):
         manifest=dict(experiment='R1-B3-B2.1',identity=identity,config=cfg,code=prov,status='READY',
             classification='ORACLE_DIAGNOSTIC',settings=dict(use_cache=False,output_attentions=True,attention='eager',atol=1e-3,rtol=1e-3),
             historical_reference_reproduced=False,run_tag=a.output_dir.name)
-    manifest.setdefault('attempts',[]).append(dict(previous_status=manifest.get('status'),failure=manifest.get('failure')))
-    manifest.pop('failure',None); manifest.pop('failure_type',None)
+    manifest.setdefault('attempts',[]).append(dict(previous_status=manifest.get('status'),
+        **{k:manifest.get(k) for k in ('failure','failure_type','failure_context','traceback')}))
+    for key in ('failure','failure_type','failure_context','traceback'): manifest.pop(key,None)
     manifest['status']='RUNNING'; atomic_json(manifest_path,manifest)
     # Required empty/report schemas exist even if Torch or a model is missing.
-    for name in ('mapping_parity.json','executor_parity.json','gpu_state.json','summary.json'): atomic_json(a.output_dir/name,{})
+    for name in ('mapping_parity.json','executor_parity.json','gpu_state.json','summary.json'):
+        if not (a.output_dir/name).exists(): atomic_json(a.output_dir/name,{})
     for name in ('setup_breakdown.csv','latency_comparison.csv','paired_differences.csv','memory_accounting.csv','correctness_comparison.csv'):
         if not (a.output_dir/name).exists(): csv_write(a.output_dir/name,[])
+    manifest['active_request']=dict(length=None,coverage=None,mode=None,instrumentation=a.instrumentation,
+        phase='initialization',repeat=None,mapping_state={'state':'NOT_STARTED'})
     try:
         with raw_only_guard() as guard: execute(a,manifest,guard)
     except (Exception,KeyboardInterrupt) as exc:
         status='INTERRUPTED' if isinstance(exc,KeyboardInterrupt) else 'MEMORY_PREFLIGHT_FAILED' if manifest.get('status')=='MEMORY_PREFLIGHT_FAILED' else 'OOM' if 'out of memory' in str(exc).lower() else 'FAILED'
-        manifest.update(status=status,failure_type=type(exc).__name__,failure=str(exc)); atomic_json(manifest_path,manifest)
-        atomic_json(a.output_dir/'summary.json',dict(status=status,failure_type=type(exc).__name__,failure=str(exc),classification='ORACLE_DIAGNOSTIC'))
-        print(status,str(exc),file=sys.stderr); return 1
+        details=dict(status=status,failure_type=type(exc).__name__,failure=str(exc),
+            failure_context=manifest.get('active_request'),traceback=traceback.format_exc())
+        manifest.update(details); atomic_json(manifest_path,manifest)
+        atomic_json(a.output_dir/'summary.json',dict(**details,classification='ORACLE_DIAGNOSTIC'))
+        traceback.print_exc()
+        print(status,json.dumps(details['failure_context'],sort_keys=True),str(exc),file=sys.stderr); return 1
     return 0 if manifest['status']=='COMPLETE' else 2
 if __name__=='__main__': raise SystemExit(main())

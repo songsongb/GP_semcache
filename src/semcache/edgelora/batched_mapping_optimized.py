@@ -73,7 +73,11 @@ class SourceBackingDescriptors:
             for qkv in e.tensors.values():
                 for tensor in qkv:
                     expected=self.view_stamps.get(id(tensor))
-                    if expected is None or tensor_stamp(tensor)[:5]!=expected[:5]: raise ValueError('Selected QKV view rebound or changed')
+                    # FastOccurrenceIndex stores torch.device, tensor_stamp stores
+                    # its string form. Normalize representation, retaining every
+                    # pointer/shape/stride/dtype/device check.
+                    if expected is None or tensor_stamp(tensor)[:5]!=(*expected[:4],str(expected[4])):
+                        raise ValueError('Selected QKV view rebound or changed')
         elapsed=(perf_counter_ns()-start)/1e6
         if book:
             book.values['source_snapshot_validation']=book.values.get('source_snapshot_validation',0.)+elapsed

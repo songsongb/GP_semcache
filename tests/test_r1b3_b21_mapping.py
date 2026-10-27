@@ -96,7 +96,6 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(d.additional_qkv_bytes,0); self.assertGreaterEqual(d.build_ms,0); self.assertGreater(d.python_bytes_estimate,0)
         d.validate(hits)
 
-if __name__=='__main__': unittest.main()
 
 TORCH=__import__('importlib').util.find_spec('torch') is not None
 @unittest.skipUnless(TORCH,'NOT EXECUTED: Torch absent; real tensor gather/scatter parity unavailable')
@@ -121,22 +120,32 @@ class TensorParityTests(unittest.TestCase):
             def get_base_layer(self): return self
         modules={r:Projection(4,4,bias=False).to(device).eval() for r in 'qkv'}
         adapter=NS(layers=[object()],projection_modules=lambda _:modules); hidden=torch.randn(1,n,4,device=device)
-        saved_validate=(legacy_mod.validate_projection,v1_mod.validate_projection,v2_mod.validate_projection)
-        legacy_mod.validate_projection=v1_mod.validate_projection=v2_mod.validate_projection=lambda *a,**k:None
+        import semcache.models.lora_decomposition as decomposition
+        runner=RunnerAndAggregateTests().load('77_benchmark_r1b3_b21_setup.py','tensor_runner77')
+        saved_validate=(legacy_mod.validate_projection,v1_mod.validate_projection,decomposition.validate_projection)
+        legacy_mod.validate_projection=v1_mod.validate_projection=decomposition.validate_projection=lambda *a,**k:None
         try:
-            for coverage in (0,.25,'max'):
-                hits,mask,_=index.select(ids,0,'a','model','weights',layout,coverage)
+            for coverage in (0,.5,'max','noncontiguous','multiple'):
+                selected_coverage='max' if coverage in ('noncontiguous','multiple') else coverage
+                hits,mask,_=index.select(ids,0,'a','model','weights',layout,selected_coverage)
+                if coverage=='noncontiguous': hits=hits[::2]
+                if coverage=='multiple':
+                    h=hits[0]; identity=(0,h.entry.token_ids,'second',h.window.start,h.window.end,'a','model')
+                    hits=[CacheHit(h.window,catalog.entries[identity]),*hits[1:]]
+                mask=[any(h.window.start<=i<h.window.end for h in hits) for i in range(n)]
                 plans={}; audits={}
                 for mode in ('legacy','v1','v2','contiguous'):
-                    if mode=='legacy': ctx=legacy_mod.mixed_projection_path(adapter,'a',hits,n)
-                    elif mode=='v1':
-                        plan=V1Map(index,hits,ids,'a','model','weights'); ctx=V1(adapter,'a',hits,n,mapping=plan); plans[mode]=plan
-                    else:
-                        plan,cache_hit=cache.get(hits,ids,'a','model','weights',device,torch.float32,mode='contiguous' if mode=='contiguous' else 'gather')
-                        plans[mode]=plan
-                        ctx=V2(adapter,'a',hits,n,mapping=plan,contiguous=mode=='contiguous')
-                    with ctx as audit:
+                    flow=runner.RequestMapping(mode,index,cache,'model','weights',device,torch.float32,{})
+                    flow.select(hits,ids,'a')
+                    with flow.context(legacy_mod.mixed_projection_path,adapter,'a',hits,n) as audit:
                         for role in 'qkv': modules[role](hidden)
+                    evidence,memory=flow.report()
+                    __import__('json').dumps((evidence,memory))
+                    plans[mode]=flow.plan
+                    self.assertEqual(evidence['reused_tokens'],sum(mask))
+                    for rec in audit.records.values():
+                        self.assertEqual(rec['native_projection_rows'],n-sum(mask))
+                        self.assertEqual(rec['reused_projection_rows'],sum(mask))
                     audits[mode]=audit
                 for mode in ('v1','v2','contiguous'):
                     self.assertEqual(audits['legacy'].records,audits[mode].records)
@@ -148,13 +157,13 @@ class TensorParityTests(unittest.TestCase):
                 if coverage=='max': self.assertEqual(sum(mask),30)
                 if coverage==0: self.assertEqual(sum(mask),0)
             # Recreated CacheHit wrappers retain a cache hit by occurrence sequence.
-            again,hit=index.select(ids,0,'a','model','weights',layout,'max')
+            again,mask,_=index.select(ids,0,'a','model','weights',layout,'max')
             value,cached=cache.get(again,ids,'a','model','weights',device,torch.float32)
             self.assertTrue(cached); self.assertEqual(value.reused,30)
             with torch.no_grad(): catalog.sources['source']['qkv'][0][0].add_(1)
             with self.assertRaises(ValueError): cache.get(again,ids,'a','model','weights',device,torch.float32)
         finally:
-            legacy_mod.validate_projection,v1_mod.validate_projection,v2_mod.validate_projection=saved_validate
+            legacy_mod.validate_projection,v1_mod.validate_projection,decomposition.validate_projection=saved_validate
     def test_cpu_raw(self): self.run_device('cpu','cpu')
     def test_cuda_gpu_raw(self):
         import torch
@@ -212,3 +221,129 @@ class RunnerAndAggregateTests(unittest.TestCase):
             self.assertEqual(result['independent_run_count'],3); self.assertAlmostEqual(result['mean_difference_ms'],3.)
             self.assertTrue(result['reproducible_warm_improvement']); self.assertTrue((out/'overall_summary.csv').exists())
             with self.assertRaises(FileExistsError): agg.main(command)
+
+
+class RunnerMappingFlowTests(unittest.TestCase):
+    """Exercise real runner plumbing with metadata tensors; numerical tests above need Torch."""
+    def setUp(self):
+        self.runner=RunnerAndAggregateTests().load('77_benchmark_r1b3_b21_setup.py','flow_runner77')
+        self.ids=[i%7 for i in range(32)]
+        self.catalog,self.layout=fixture([('source',self.ids,'a')])
+        self.index=FastOccurrenceIndex(self.catalog,self.layout)
+        self.cache=PreparedMappingCache(SourceBackingDescriptors(self.index))
+
+    def flow(self,mode):
+        return self.runner.RequestMapping(mode,self.index,self.cache,'model','weights','cpu','fp32',{})
+
+    def contexts(self):
+        from contextlib import contextmanager
+        @contextmanager
+        def fake(adapter,user,hits,length,**kwargs):
+            self.dispatched.append(kwargs.get('mapping'))
+            yield NS(records={},projections={},reused_mask=[],memory={})
+        return fake
+
+    def test_all_coverage_executor_and_validation_mapping_routes(self):
+        import json
+        self.dispatched=[]; fake=self.contexts()
+        with patch.dict(sys.modules,{'torch':TorchStub}), patch.object(self.runner,'batched_mixed_projection_path',fake), patch.object(self.runner,'batched_v2_projection_path',fake):
+            for coverage in (0,.5,'max'):
+                hits,mask,_=self.index.select(self.ids,0,'a','model','weights',self.layout,coverage)
+                for mode in ('legacy','v1','v2','contiguous'):
+                    reports=[]
+                    for phase in ('measured','validation'):
+                        with self.subTest(coverage=coverage,mode=mode,phase=phase):
+                            flow=self.flow(mode); flow.select(hits,self.ids,'a')
+                            with flow.context(fake,None,'a',hits,len(self.ids)): pass
+                            evidence,memory=flow.report(); json.dumps((evidence,memory))
+                            self.assertIs(self.dispatched[-1],flow.plan)
+                            self.assertEqual(evidence['reused_tokens'],sum(mask))
+                            if not hits or mode=='legacy': self.assertIsNone(flow.plan)
+                            else:
+                                self.assertIsInstance(flow.plan,self.runner.PositionMapping if mode=='v1' else PreparedMapping)
+                                self.assertEqual(list(map(bool,flow.plan.mask)),mask)
+                                self.assertEqual(len(flow.plan.fresh),len(mask)-sum(mask))
+                            if mode=='v1': self.assertIsNone(memory['mapping_cpu_index_bytes'])
+                            reports.append(evidence)
+                    self.assertEqual(reports[0]['status'],reports[1]['status'])
+
+    def test_required_mapping_missing_invalid_and_incomplete_fail_closed(self):
+        self.dispatched=[]; fake=self.contexts()
+        hits,_,_=self.index.select(self.ids,0,'a','model','weights',self.layout,'max')
+        with patch.dict(sys.modules,{'torch':TorchStub}), patch.object(self.runner,'batched_mixed_projection_path',fake):
+            for mode in ('v1','v2','contiguous'):
+                for corrupt in (None,{'evidence':'not a mapping'}):
+                    with self.subTest(mode=mode,corrupt=corrupt):
+                        flow=self.flow(mode); flow.select(hits,self.ids,'a')
+                        if mode=='v1':
+                            with flow.context(fake,None,'a',hits,len(self.ids)): pass
+                            flow.plan=corrupt
+                            with self.assertRaisesRegex(RuntimeError,'required PositionMapping'): flow.report()
+                        else:
+                            flow.plan=corrupt
+                            with self.assertRaisesRegex(RuntimeError,'required PreparedMapping'):
+                                with flow.context(fake,None,'a',hits,len(self.ids)): pass
+            flow=self.flow('legacy'); flow.select([],self.ids,'a')
+            with self.assertRaisesRegex(RuntimeError,'completed executor'): flow.report()
+            class MissingV1(self.runner.PositionMapping):
+                def __new__(cls,*args,**kwargs): return None
+            with patch.object(self.runner,'PositionMapping',MissingV1):
+                flow=self.flow('v1'); flow.select(hits,self.ids,'a')
+                with self.assertRaisesRegex(RuntimeError,'required MissingV1'):
+                    with flow.context(fake,None,'a',hits,len(self.ids)): pass
+
+    def test_v2_cache_miss_hit_and_contiguous_fallback_geometry(self):
+        self.dispatched=[]; fake=self.contexts()
+        hits,_,_=self.index.select(self.ids,0,'a','model','weights',self.layout,'max')
+        with patch.dict(sys.modules,{'torch':TorchStub}), patch.object(self.runner,'batched_v2_projection_path',fake):
+            first=self.flow('v2'); first.select(hits,self.ids,'a'); self.assertFalse(first.cache_hit)
+            second=self.flow('v2'); second.select(hits,self.ids,'a'); self.assertTrue(second.cache_hit)
+            self.assertIs(first.plan,second.plan)
+            for subset,contiguous in ((hits,True),(hits[::2],False)):
+                flow=self.flow('contiguous'); flow.select(subset,self.ids,'a')
+                with flow.context(fake,None,'a',subset,len(self.ids)): pass
+                self.assertEqual(flow.report()[0]['groups'][0]['contiguous'],contiguous)
+
+    def test_real_module_owners_and_missing_clone_preflight(self):
+        clone,a3=self.runner.runtime_helpers()
+        self.assertEqual(Path(clone.__code__.co_filename).name,'75_benchmark_r1b3_selection.py')
+        self.assertTrue(callable(a3.quality))
+        engine=NS(model=object(),tokenizer=object(),adapter=object(),encoder=object(),cache=NS(entries={}))
+        copied=clone(engine); self.assertIsNot(copied,engine); self.assertIs(copied.model,engine.model)
+        with patch.object(self.runner,'load_context',return_value=NS(b1=lambda:NS())):
+            with self.assertRaisesRegex(RuntimeError,'clone_source_engine'): self.runner.runtime_helpers()
+
+    def test_device_stamp_representation_normalization_preserves_guard(self):
+        class Device:
+            def __str__(self): return 'cpu'
+        hits,_,_=self.index.select(self.ids,0,'a','model','weights',self.layout,'max')
+        self.index.view_guards=[(t,(*stamp[:4],Device())) for t,stamp in self.index.view_guards]
+        descriptor=SourceBackingDescriptors(self.index)
+        descriptor.validate(hits)
+        t=hits[0].entry.tensors[0][0]; old=descriptor.view_stamps[id(t)]
+        descriptor.view_stamps[id(t)]=(*old[:4],'cuda:0')
+        with self.assertRaisesRegex(ValueError,'view rebound'): descriptor.validate(hits)
+
+    def test_smoke_multicoverage_cli_and_failure_traceback_context(self):
+        import json,tempfile,io
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as directory:
+            args=['--profile','smoke','--coverages','0,.5,max','--executor','all','--output-dir',str(Path(directory)/'run')]
+            parsed=self.runner.args(args); self.assertEqual(parsed.coverage_values,[0.,.5,'max'])
+            def fail(a,manifest,guard):
+                manifest['active_request']=dict(length=32,coverage=.5,mode='v1',instrumentation='minimal',
+                    phase='validation',repeat=1,mapping_state={'state':'BUILDING_V1_MAPPING'})
+                raise RuntimeError('v1 required mapping missing')
+            err=io.StringIO()
+            with patch.object(self.runner,'execute',side_effect=fail),redirect_stderr(err):
+                self.assertEqual(self.runner.main(args),1)
+            manifest=json.loads((parsed.output_dir/'manifest.json').read_text())
+            self.assertEqual(manifest['status'],'FAILED')
+            self.assertEqual(manifest['failure_context']['mode'],'v1')
+            self.assertEqual(manifest['failure_context']['coverage'],.5)
+            self.assertIn('Traceback (most recent call last)',err.getvalue())
+            self.assertIn('required mapping missing',manifest['traceback'])
+            self.assertEqual(manifest['failure_type'],'RuntimeError')
+
+
+if __name__=='__main__': unittest.main()
