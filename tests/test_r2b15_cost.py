@@ -92,6 +92,48 @@ class CostContracts(unittest.TestCase):
         self.assertEqual(rows['kv_clone']['parent'],'cache_materialize')
         self.assertIsNone(rows['native_forward']['host_ms']); self.assertIsNone(rows['kv_clone']['cuda_interval_ms'])
         self.assertEqual(rows['return_cleanup']['status'],'UNSUPPORTED_ISOLATED_BOUNDARY')
+    def test_breakdown_export_metadata_all_modes(self):
+        """Execute the failed PREPARE_ONLY row construction with real CostBook exports."""
+        import csv
+        m=runner(); exported=[]
+        runtime=NS(device='cpu',check=lambda:None,model=NS(modules=lambda:[]),
+            forward=lambda path:{'logits':7})
+        identity={'case':'L32_P16','source_identity':'source','prefix_length':16}
+        def populate(book):
+            book.host={'cache_materialize':2.5,'kv_clone':1.25}
+            book.calls={'cache_materialize':1,'kv_clone':2}; book.clone_bytes=128
+            exported.append(book.export())
+        def call(rt,mode,book=None):
+            if book is not None: populate(book)
+            return {'logits':7,'wall_ms':4.5},None
+        def prepare(rt,book):
+            populate(book)
+            return {'wall_ms':3.5,'scope':'isolated materialize'}
+        with patch.dict('sys.modules',{'torch':NS(equal=lambda a,b:a==b)}),patch.object(m,'invoke',call),patch.object(m,'prepare_only',prepare),patch('semcache.metrics.r1_runtime.synchronize',lambda d:None),patch('semcache.metrics.r1_runtime.memory_snapshot',lambda d:{}):
+            rows=m.breakdown_case(runtime,NS(warmup_runs=3,instrumented_repeats=2),identity)
+        modes=(*REQUEST_MODES,'PREPARE_ONLY')
+        for repeat in range(2):
+            for offset,mode in enumerate(modes):
+                expected=exported[repeat*4+offset]
+                actual=[r for r in rows if r['repeat']==repeat and r['mode']==mode]
+                self.assertEqual(len(actual),len(expected)+1)
+                for row,part in zip(actual,expected):
+                    for key,value in identity.items(): self.assertEqual(row[key],value)
+                    for key,value in part.items(): self.assertEqual(row[key],value)
+                    self.assertEqual(row['instrumentation'],'breakdown')
+                    wall='component_wall_ms' if mode=='PREPARE_ONLY' else 'instrumented_request_wall_ms'
+                    self.assertEqual(row[wall],3.5 if mode=='PREPARE_ONLY' else 4.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'component_boundaries.csv'; m.csv_write(path,rows)
+            with path.open() as f:
+                reader=csv.DictReader(f); saved=list(reader)
+                self.assertTrue({'case','repeat','mode','instrumentation','component_wall_ms',
+                    'instrumented_request_wall_ms','component','host_ms','cuda_interval_ms',
+                    'parent','nesting','status','clone_bytes','clock_definition'}<=set(reader.fieldnames))
+            self.assertEqual(len(saved),len(rows))
+            clones=[r for r in saved if r['component']=='kv_clone']
+            self.assertEqual(len(clones),8)
+            self.assertTrue(all(float(r['host_ms'])==1.25 and r['clone_bytes']=='128' for r in clones))
     def test_monitoring_is_optional_and_excludes_self(self):
         import os
         from semcache.diagnostics.r2b15_cost import monitoring

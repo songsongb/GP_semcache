@@ -139,7 +139,10 @@ def breakdown_case(runtime,a,identity):
                 nesting='inclusive wrapper incl setup/audits/CPU output; Prepared also includes excluded prebuild; never minimal request'))
             runtime.check(); del result
         book=CostBook(runtime.device); measured=prepare_only(runtime,book)
-        rows.extend(dict(identity,repeat=repeat,mode='PREPARE_ONLY',instrumentation='breakdown',component_wall_ms=measured['wall_ms'],**part) for part in book.export())
+        # Same merge as request components above: export owns component metadata.
+        # Both instrumentation fields mean breakdown (not separate clock types).
+        common=dict(identity,repeat=repeat,mode='PREPARE_ONLY',instrumentation='breakdown',component_wall_ms=measured['wall_ms'])
+        rows.extend(dict(common,**part) for part in book.export())
         rows.append(dict(identity,repeat=repeat,mode='PREPARE_ONLY',component='prepare_only_enclosing',host_ms=measured['wall_ms'],
             instrumentation='breakdown',status='MEASURED',parent=None,nesting=measured['scope'],native_forward_calls=0))
     return rows
