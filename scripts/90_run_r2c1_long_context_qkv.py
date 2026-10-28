@@ -7,6 +7,7 @@ import gc
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -25,6 +26,8 @@ from semcache.diagnostics.r2b3_capacity import memory,failure_record
 from semcache.metrics.r1 import atomic_json,digest,raw_only_guard
 from semcache.metrics.r1b2 import csv_write
 from semcache.diagnostics.r1b3_break_even import code_identity
+from semcache.diagnostics.r2c2_profile_memory import (GIB, PilotPeakRecorder,
+    ProfileMemoryRejected, pilot_evidence, preflight as profile_preflight, failure_status)
 
 
 def parse_args(argv=None):
@@ -43,9 +46,17 @@ def parse_args(argv=None):
     p.add_argument('--pilot-inputs',type=Path,nargs='+',help='C1 exact length/coverage approvals; also required for >1024 capacity extension')
     p.add_argument('--inputs',type=Path,nargs='+',help='complete independent C1 latency run directories')
     p.add_argument('--max-trace-mib',type=int,default=64)
+    p.add_argument('--profile-memory-policy',choices=('conservative','pilot_guarded'),default='conservative',
+        help='profile-only opt-in: use compatible completed Pilot allocated-memory evidence')
+    p.add_argument('--profile-memory-allowance-gib',type=float,default=1.,help='provisional additional profiler budget (default 1 GiB)')
+    p.add_argument('--profile-memory-safety-gib',type=float,default=2.,help='provisional free-memory safety reserve (default 2 GiB)')
     p.add_argument('--output-dir',type=Path,required=True)
     a=p.parse_args(argv)
     try:
+        if (a.profile_memory_policy!='conservative' or a.profile_memory_allowance_gib!=1. or a.profile_memory_safety_gib!=2.) and a.phase!='profile':
+            raise ValueError('profile memory options are profile-only')
+        if any(not math.isfinite(v) or v<=0 for v in (a.profile_memory_allowance_gib,a.profile_memory_safety_gib)):
+            raise ValueError('profile memory margins must be finite and positive')
         if a.phase=='analyze':
             if not a.inputs or any(v is not None for v in (a.model,a.dtype,a.prompt_lengths,a.pilot_inputs)): raise ValueError('analyze derives experimental configuration from --inputs')
             return a
@@ -58,6 +69,7 @@ def parse_args(argv=None):
         if a.warmup_runs<(1 if a.phase=='pilot' else 3) or a.measured_runs<(20 if a.phase=='latency' else 3) or min(a.capacity_mib,a.max_trace_mib)<1: raise ValueError('invalid counts/capacity; latency >=3 warmups/20 pairs')
         if a.phase=='smoke' and (a.model!='facebook/opt-125m' or a.dtype!='float32'): raise ValueError('smoke requires OPT-125M FP32')
         if a.cache_device=='cuda' and not a.device.startswith('cuda'): raise ValueError('CUDA cache requires CUDA model')
+        if a.profile_memory_policy=='pilot_guarded' and not a.device.startswith('cuda'): raise ValueError('pilot_guarded requires actual CUDA memory evidence')
         if (a.phase in ('latency','profile') or max(a.lengths)>1024) and not a.pilot_inputs: raise ValueError('matching --pilot-inputs required')
         if a.phase=='profile' and (len(a.lengths)>2 or len(a.coverage_values)>2): raise ValueError('targeted profile only: <=2 lengths/coverages')
         if os.environ.get('CUDA_LAUNCH_BLOCKING')=='1': raise ValueError('CUDA_LAUNCH_BLOCKING invalidates timing')
@@ -78,6 +90,7 @@ def initialize(a):
         if isinstance(v,(list,tuple)): return [serial(x) for x in v]
         return v
     paths=[ROOT/'scripts/90_run_r2c1_long_context_qkv.py',*sorted((ROOT/'src/semcache/diagnostics').glob('r2c1_*.py')),
+        ROOT/'src/semcache/diagnostics/r2c2_profile_memory.py',
         *sorted((ROOT/'tests').glob('test_r2c1_*.py')),ROOT/'docs/R2C1_LONG_CONTEXT_QKV_BOTTLENECK.md']
     start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19] if Path('/proc/self/stat').exists() else datetime.now(timezone.utc).isoformat()
     m=dict(experiment='R2-C1',execution_status='RUNNING',implementation_status='IMPLEMENTED_LOCAL_ONLY',
@@ -139,7 +152,14 @@ def run(a,m,environment):
         versions=m['process_environment']['versions'],cuda=runtime.provenance.get('cuda'),hardware=m['hardware_identity'],backend=backend,settings=m['settings']))
     initial=monitor(a.device); environment['monitoring']=[dict(phase='initial',state=initial)]
     m['environment_verified']=initial['status']=='GPU_MONITOR_VERIFIED'
-    pilots=[load(p/'capacity_pilot.json') for p in (a.pilot_inputs or [])]
+    guarded=a.phase=='profile' and a.profile_memory_policy=='pilot_guarded'
+    pilots=[]
+    for directory in a.pilot_inputs or []:
+        try: pilots.append(load(directory/'capacity_pilot.json'))
+        except (OSError,ValueError,TypeError):
+            if not guarded: raise
+            # Guarded mode records missing/malformed input files with both
+            # memory budgets in the per-case rejection rather than using zero.
     def approved(length,coverage):
         key=f'L{length}_cov{coverage}'
         for p in pilots:
@@ -167,26 +187,49 @@ def run(a,m,environment):
             csv_write(a.output_dir/'bottleneck_breakdown.csv',cpu); csv_write(a.output_dir/'profiler_kernel_summary.csv',kernels)
             atomic_json(a.output_dir/'profiling_status.json',profiles)
     persist()
-    if a.phase in ('latency','profile'):
+    if a.phase in ('latency','profile') and not guarded:
         for n,cov in plan: approved(n,cov)
     if max(a.lengths)>1024:
         for n in (512,1024):
             for cov in a.coverage_values: approved(n,cov)
-    current=None
+    current=None; length_baseline=None; length_peak=None
     for key,c in m['conditions'].items():
+        peak_recorder=None
         try:
             n,cov=c['length'],c['requested_coverage']; persist(dict(case=key,phase='preflight'))
             lengths(str(n),a.phase,runtime.model.config.max_position_embeddings)
-            if current!=n:
+            needs_prepare=current!=n
+            if needs_prepare:
                 release_source(runtime); current=None
                 c['memory_before']=memory(a.device,reset=True)
+                length_baseline=c['memory_before']; length_peak=None
+            elif guarded:
+                c['memory_before']=memory(a.device)
+            if needs_prepare or guarded:
                 estimate=memory_estimate(runtime.model.config,n,next(runtime.model.parameters()).element_size(),a.capacity_mib*1024**2,a.phase=='profile')
                 estimate['model_lora_resident_bytes']=sum(p.numel()*p.element_size() for p in runtime.model.parameters())
                 estimate['semantic_encoder_resident_bytes']=sum(p.numel()*p.element_size() for p in runtime.encoder.model.parameters())
                 c['preflight']=estimate
                 if estimate['source_qkv_backing_bytes']>a.capacity_mib*1024**2: raise MemoryError('RAW source QKV exceeds requested Catalog capacity; explicit larger-capacity pilot required')
                 gpu=c['memory_before']['gpu']
-                if a.device.startswith('cuda') and estimate['estimated_additional_bytes']>gpu['free_bytes']+gpu['reserved_bytes']-gpu['allocated_bytes']: raise MemoryError('C1 estimated live allocations exceed GPU headroom')
+                if guarded:
+                    evidence=None; evidence_errors=[]
+                    for directory in a.pilot_inputs:
+                        try:
+                            evidence=pilot_evidence(directory,m,n,cov); break
+                        except (OSError,ValueError,KeyError,TypeError) as exc: evidence_errors.append(f'{directory}: {exc}')
+                    audit=profile_preflight('pilot_guarded',estimate,gpu,evidence,
+                        int(a.profile_memory_allowance_gib*GIB),int(a.profile_memory_safety_gib*GIB),
+                        evidence_error='; '.join(evidence_errors) if evidence is None else None)
+                    c['memory_preflight_audit']=audit; persist()
+                    if not audit['approved']: raise ProfileMemoryRejected(audit)
+                elif a.device.startswith('cuda'):
+                    c['memory_preflight_audit']=profile_preflight('conservative',estimate,gpu)
+                    # Preserve C1's default estimate and exact rejection rule.
+                    if estimate['estimated_additional_bytes']>gpu['free_bytes']+gpu['reserved_bytes']-gpu['allocated_bytes']: raise MemoryError('C1 estimated live allocations exceed GPU headroom')
+            if a.phase=='pilot' and a.device.startswith('cuda'):
+                peak_recorder=PilotPeakRecorder(a.device); peak_recorder.begin(length_baseline,length_peak)
+            if needs_prepare:
                 runtime.prepare(n); current=n
             runtime.coverage=cov
             semantic_ids=runtime.encoder.tokenizer(runtime.text,truncation=False)['input_ids']
@@ -197,7 +240,9 @@ def run(a,m,environment):
                 input_policy='existing exact tokenizer roundtrip per length, includes BOS/special tokens')
             artifacts['workload_audit'][key]=artifact
             c['condition_identity']=digest(dict(ids=runtime.ids,source_hashes=runtime.source_hashes,weights=runtime.weights,namespace=runtime.namespace,coverage=cov,storage=runtime.storage))
-            if a.phase in ('latency','profile') and approved(n,cov)['condition_identity']!=c['condition_identity']: raise ValueError('pilot source/token identity mismatch')
+            if a.phase in ('latency','profile'):
+                expected=(c['memory_preflight_audit']['pilot'] if guarded else approved(n,cov))
+                if expected['condition_identity']!=c['condition_identity']: raise ValueError('pilot source/token identity mismatch')
             persist(dict(case=key,phase='untimed_gate'))
             g=validate(runtime); artifacts['correctness_and_gates'][key]=g
             artifacts['coverage_audit'][key]=g['audits']['RAW_SEMCACHE_QKV']['coverage']
@@ -225,16 +270,22 @@ def run(a,m,environment):
                     profiles[key+'_'+mode]=detail
                     cpu.extend(dict(identity,mode=mode,**r) for r in cr); kernels.extend(dict(identity,mode=mode,**r) for r in kr); persist()
             runtime.guard(True); c['memory_after']=memory(a.device)
+            if peak_recorder:
+                length_peak=peak_recorder.finish(); c['pilot_memory']=length_peak
             observation=monitor(a.device); environment['monitoring'].append(dict(case=key,phase='after',state=observation))
             m['environment_verified']=m['environment_verified'] and observation['status']=='GPU_MONITOR_VERIFIED'
             c['status']='CAPACITY_VALIDATED' if a.phase=='pilot' else 'VALID'; persist()
         except Exception as exc:
             c.update(failure_record(exc,m.get('active_context')))
+            c['status']=failure_status(exc)
+            if isinstance(exc,ProfileMemoryRejected): c['memory_preflight_audit']=exc.audit
             try: c['memory_at_failure']=memory(a.device)
             except Exception as memory_error: c['memory_at_failure']=dict(status='UNAVAILABLE',reason=str(memory_error))
             persist()
             if c['status'] not in ('MEMORY_PREFLIGHT_FAILED','OOM'): raise
             exc.__traceback__=None; release_source(runtime,failed=True); current=None
+        finally:
+            if peak_recorder: peak_recorder.close()
     runtime.model_guard(True); m['final_weights_verified']=True
     valid=all(c['status'] in ('VALID','CAPACITY_VALIDATED') for c in m['conditions'].values())
     any_valid=any(c['status'] in ('VALID','CAPACITY_VALIDATED') for c in m['conditions'].values())
@@ -252,7 +303,8 @@ def main(argv=None):
             finally: m['raw_only']=guard.evidence()
         atomic_json(a.output_dir/'manifest.json',m); return 0
     except (Exception,KeyboardInterrupt) as exc:
-        failure=failure_record(exc,m.get('active_context')); m.update(execution_status='FAILED',failure=failure,correctness_qualified_speedup=False)
+        failure=failure_record(exc,m.get('active_context')); failure['status']=failure_status(exc)
+        m.update(execution_status='FAILED',failure=failure,correctness_qualified_speedup=False)
         atomic_json(a.output_dir/'manifest.json',m); atomic_json(a.output_dir/'decision_summary.json',dict(execution_status='FAILED',**failure,correctness_qualified_speedup=False))
         traceback.print_exc(); return 1
 
