@@ -1,0 +1,32 @@
+usage: 97_attribute_r3a_cpu_delta.py [-h]
+                                     [--phase {dry-run,audit,gpu-intervention}]
+                                     [--prepared PREPARED]
+                                     [--pilot-inputs PILOT_INPUTS]
+                                     [--forensic-inputs FORENSIC_INPUTS]
+                                     [--output-dir OUTPUT_DIR]
+                                     [--device DEVICE] [--enable-gpu-probes]
+                                     [--capture-logits]
+                                     [--capture-comparison-tensors]
+                                     [--cpu-fp64-control]
+
+Read-only R3-A causal intervention: all-layer local CPU deltas versus real TCP
+replay.
+
+options:
+  -h, --help            show this help message and exit
+  --phase {dry-run,audit,gpu-intervention}
+  --prepared PREPARED
+  --pilot-inputs PILOT_INPUTS
+  --forensic-inputs FORENSIC_INPUTS
+                        immutable COMPLETE script-96 diagnostic for the same
+                        prepare/pilot
+  --output-dir OUTPUT_DIR
+  --device DEVICE
+  --enable-gpu-probes
+  --capture-logits      opt-in bounded raw FP32 logits; hashes/strict metrics
+                        are always recorded
+  --capture-comparison-tensors
+                        opt-in <=128 MiB local tensors for first-difference
+                        magnitudes
+  --cpu-fp64-control    same-native-hidden FP64 counterfactual only; never
+                        changes the CPU oracle

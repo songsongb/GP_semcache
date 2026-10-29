@@ -1,0 +1,13 @@
+R3A_PARITY_DIAGNOSTIC
+PRIMARY_PERFORMANCE_ELIGIBLE=false
+Execution: COMPLETE
+GPU findings: NOT_RUN
+Conclusion: UNRESOLVED
+Reason: none
+Sufficiency established: false
+Full serialized logits matched: NOT_ESTIMABLE
+QKV hashes matched / 96: NOT_ESTIMABLE
+No causal numerical result without verified original evidence and explicit GPU execution.
+Old replay without a full-logit SHA cannot be proved bitwise identical from strict metrics.
+Local CPU oracle is a diagnostic intervention; no benchmark, production fix or threshold relaxation.
+Layer>=1 arithmetic attribution requires matching actual hidden bytes.

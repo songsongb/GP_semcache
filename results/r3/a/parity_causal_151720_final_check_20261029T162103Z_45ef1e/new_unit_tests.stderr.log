@@ -1,0 +1,31 @@
+test_cleanup_kills_ud_like_descendant_after_es_like_group_leader_exit (test_parity_causal.CLIAndLifecycle) ... ok
+test_dry_run_missing_audit_and_no_overwrite (test_parity_causal.CLIAndLifecycle) ... ok
+test_help_and_model_free_import (test_parity_causal.CLIAndLifecycle) ... ok
+test_nested_input_output_rejected_and_explicit_gpu_opt_in_parsing (test_parity_causal.CLIAndLifecycle) ... ok
+test_new_diagnostics_do_not_expand_original_source_glob_or_thresholds (test_parity_causal.CLIAndLifecycle) ... ok
+test_process_cleanup_reaps_isolated_and_inherited_groups (test_parity_causal.CLIAndLifecycle) ... ok
+test_bitwise_differences_flips_strict_failure_sufficiency_are_separate_gates (test_parity_causal.CausalGates) ... ok
+test_changed_identity_uuid_model_dtype_adapter_tokens_reference_and_thresholds_rejected (test_parity_causal.CausalGates) ... ok
+test_full_logits_hash_difference_is_not_hidden_by_equal_strict_metrics (test_parity_causal.CausalGates) ... ok
+test_gpu_reconstruction_is_a_distinct_failure (test_parity_causal.CausalGates) ... ok
+test_later_hidden_mismatch_is_downstream_not_matched_input_arithmetic (test_parity_causal.CausalGates) ... ok
+test_matched_magnitude_is_kept_separate_from_unmatched_downstream_magnitude (test_parity_causal.CausalGates) ... ok
+test_missing_duplicate_out_of_order_and_extra_roles_rejected (test_parity_causal.CausalGates) ... ok
+test_native_control_drift_stops_attribution_even_if_gate_passes (test_parity_causal.CausalGates) ... ok
+test_original_replay_or_pilot_difference_prevents_original_failure_attribution (test_parity_causal.CausalGates) ... ok
+test_process_cpu_runtime_placement_assembly_counts_fail_closed (test_parity_causal.CausalGates) ... ok
+test_same_hidden_first_cpu_delta_difference_localized_without_magnitude_invention (test_parity_causal.CausalGates) ... ok
+test_shape_endianness_noncanonical_logit_metadata_rejected (test_parity_causal.CausalGates) ... ok
+test_synthetic_positive_requires_all96_and_full_logits_but_not_old_unrecorded_logits (test_parity_causal.CausalGates) ... ok
+test_original_all_layer_causal_diagnostic (test_parity_causal.GPUOptIn) ... skipped 'explicit original-evidence SERAPH GPU diagnostic opt-in required'
+test_different_prepare_and_diagnostic_source_hash_rejected (test_parity_causal.PriorAudit) ... ok
+test_original_hashes_checked_and_missing_logit_sha_not_invented (test_parity_causal.PriorAudit) ... ok
+test_required_worker_hash_cannot_be_omitted (test_parity_causal.PriorAudit) ... ok
+test_stored_worker_tamper_rejected (test_parity_causal.PriorAudit) ... ok
+test_fp32_tiny_delta_can_flip_fp16_without_itself_proving_full_logits_failure (test_parity_causal.SyntheticArithmetic) ... ok
+test_nonzero_all32_scalar_local_vs_serialization_roundtrip_and_negative_delta_intervention (test_parity_causal.SyntheticArithmetic) ... ok
+
+----------------------------------------------------------------------
+Ran 26 tests in 1.212s
+
+OK (skipped=1)

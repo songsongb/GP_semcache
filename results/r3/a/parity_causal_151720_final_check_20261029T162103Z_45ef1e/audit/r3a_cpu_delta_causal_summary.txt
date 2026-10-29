@@ -1,0 +1,13 @@
+R3A_PARITY_DIAGNOSTIC
+PRIMARY_PERFORMANCE_ELIGIBLE=false
+Execution: FAILED
+GPU findings: NOT_RUN
+Conclusion: UNRESOLVED
+Reason: FileNotFoundError: [Errno 2] No such file or directory: '/data/khuss/repos/GP_semcache/results/r3/a/physical_no_reuse_repro_151720_20261029T154408Z/prepare/r3a_prepare_manifest.json'
+Sufficiency established: false
+Full serialized logits matched: NOT_ESTIMABLE
+QKV hashes matched / 96: NOT_ESTIMABLE
+No causal numerical result without verified original evidence and explicit GPU execution.
+Old replay without a full-logit SHA cannot be proved bitwise identical from strict metrics.
+Local CPU oracle is a diagnostic intervention; no benchmark, production fix or threshold relaxation.
+Layer>=1 arithmetic attribution requires matching actual hidden bytes.
