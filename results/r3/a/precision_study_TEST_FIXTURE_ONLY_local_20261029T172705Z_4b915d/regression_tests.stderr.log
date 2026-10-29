@@ -1,0 +1,151 @@
+test_actual_baseline_bitwise_equals_original_cpu_path (test_cpu_precision_study.ActualTorchCPU) ... skipped 'Torch absent: actual CPU BLAS/GEMM tests NOT_RUN'
+test_actual_fp64_candidates_equal_exact_explicit_operation_specs (test_cpu_precision_study.ActualTorchCPU) ... skipped 'Torch absent: actual CPU BLAS/GEMM tests NOT_RUN'
+test_one_shot (test_cpu_precision_study.AllocatedGPU) ... skipped 'explicit new-allocation GPU study opt-in required; GPU NOT_RUN'
+test_failed_run_is_reported_without_imputed_results (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_help_dry_run_and_no_overwrite_without_model_imports (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_one_shot_schedule_fixed_three_and_native_failure_blocks_them (test_cpu_precision_study.CLIAndLifecycle)
+Mock orchestration only; never launches model/GPU/reference preparation. ... ok
+test_prepare_like_separate_group_descendant_is_cleaned (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_run_opt_in_and_historical_inputs_rejected (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_sequential_child_exit_and_timeout_cleanup (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_source_glob_frozen_and_new_launcher_has_one_allocation_no_node_pin (test_cpu_precision_study.CLIAndLifecycle) ... ok
+test_all96_and_first_actual_divergence_accounting (test_cpu_precision_study.ReportGates) ... ok
+test_full_logit_bytes_sha_shape_dtype_and_frozen_metrics (test_cpu_precision_study.ReportGates) ... ok
+test_matched_numeric_metrics_only_after_component_hash_binding (test_cpu_precision_study.ReportGates) ... ok
+test_strict_failure_stop_and_local_pass_never_promote_tcp_or_production (test_cpu_precision_study.ReportGates) ... ok
+test_all_candidates_preserve_original_hidden_and_fp32_matrices (test_cpu_precision_study.ScalarOperationTests) ... ok
+test_baseline_calls_actual_frozen_function_and_identical_output (test_cpu_precision_study.ScalarOperationTests) ... ok
+test_full_and_staged_have_exact_predeclared_rounding_order (test_cpu_precision_study.ScalarOperationTests) ... ok
+test_wrong_dtype_shape_device_zero_weights_nonfinite_and_unknown_method_fail (test_cpu_precision_study.ScalarOperationTests) ... ok
+test_zero_hidden_is_valid_but_does_not_permit_zero_adapter (test_cpu_precision_study.ScalarOperationTests) ... ok
+test_cleanup_kills_ud_like_descendant_after_es_like_group_leader_exit (test_parity_causal.CLIAndLifecycle) ... ok
+test_dry_run_missing_audit_and_no_overwrite (test_parity_causal.CLIAndLifecycle) ... ok
+test_help_and_model_free_import (test_parity_causal.CLIAndLifecycle) ... ok
+test_nested_input_output_rejected_and_explicit_gpu_opt_in_parsing (test_parity_causal.CLIAndLifecycle) ... ok
+test_new_diagnostics_do_not_expand_original_source_glob_or_thresholds (test_parity_causal.CLIAndLifecycle) ... ok
+test_process_cleanup_reaps_isolated_and_inherited_groups (test_parity_causal.CLIAndLifecycle) ... ok
+test_bitwise_differences_flips_strict_failure_sufficiency_are_separate_gates (test_parity_causal.CausalGates) ... ok
+test_changed_identity_uuid_model_dtype_adapter_tokens_reference_and_thresholds_rejected (test_parity_causal.CausalGates) ... ok
+test_full_logits_hash_difference_is_not_hidden_by_equal_strict_metrics (test_parity_causal.CausalGates) ... ok
+test_gpu_reconstruction_is_a_distinct_failure (test_parity_causal.CausalGates) ... ok
+test_later_hidden_mismatch_is_downstream_not_matched_input_arithmetic (test_parity_causal.CausalGates) ... ok
+test_matched_magnitude_is_kept_separate_from_unmatched_downstream_magnitude (test_parity_causal.CausalGates) ... ok
+test_missing_duplicate_out_of_order_and_extra_roles_rejected (test_parity_causal.CausalGates) ... ok
+test_native_control_drift_stops_attribution_even_if_gate_passes (test_parity_causal.CausalGates) ... ok
+test_original_replay_or_pilot_difference_prevents_original_failure_attribution (test_parity_causal.CausalGates) ... ok
+test_process_cpu_runtime_placement_assembly_counts_fail_closed (test_parity_causal.CausalGates) ... ok
+test_same_hidden_first_cpu_delta_difference_localized_without_magnitude_invention (test_parity_causal.CausalGates) ... ok
+test_shape_endianness_noncanonical_logit_metadata_rejected (test_parity_causal.CausalGates) ... ok
+test_synthetic_positive_requires_all96_and_full_logits_but_not_old_unrecorded_logits (test_parity_causal.CausalGates) ... ok
+test_original_all_layer_causal_diagnostic (test_parity_causal.GPUOptIn) ... skipped 'explicit original-evidence SERAPH GPU diagnostic opt-in required'
+test_different_prepare_and_diagnostic_source_hash_rejected (test_parity_causal.PriorAudit) ... ok
+test_original_hashes_checked_and_missing_logit_sha_not_invented (test_parity_causal.PriorAudit) ... ok
+test_required_worker_hash_cannot_be_omitted (test_parity_causal.PriorAudit) ... ok
+test_stored_worker_tamper_rejected (test_parity_causal.PriorAudit) ... ok
+test_fp32_tiny_delta_can_flip_fp16_without_itself_proving_full_logits_failure (test_parity_causal.SyntheticArithmetic) ... ok
+test_nonzero_all32_scalar_local_vs_serialization_roundtrip_and_negative_delta_intervention (test_parity_causal.SyntheticArithmetic) ... ok
+test_original_seraph_probe (test_parity_forensics.AllocatedGPUProbe) ... skipped 'GPU forensics NOT_RUN; requires original artifacts and explicit SERAPH opt-in'
+test_evidence_reader_detects_input_changed_during_analysis (test_parity_forensics.AuditTests) ... ok
+test_metrics_keep_negative_values_and_reference_norm (test_parity_forensics.AuditTests) ... ok
+test_pilot_tamper_is_rejected (test_parity_forensics.AuditTests) ... ok
+test_source_hash_mismatch_fail_closed_without_altering_sources (test_parity_forensics.AuditTests) ... ok
+test_source_identity_and_thresholds_unchanged_by_new_module_names (test_parity_forensics.AuditTests) ... ok
+test_unrecorded_shutdown_causality_is_not_assumed (test_parity_forensics.AuditTests) ... ok
+test_verified_fixture_failure_remains_unresolved_and_localizes_only_a_range (test_parity_forensics.AuditTests) ... ok
+test_cpu_audit_cli_exports_two_reports_and_never_mutates_inputs (test_parity_forensics.CLITests) ... ok
+test_dry_run_is_explicitly_no_model_and_unaudited (test_parity_forensics.CLITests) ... ok
+test_gpu_requires_explicit_opt_in_without_loading_torch (test_parity_forensics.CLITests) ... ok
+test_help_and_no_benchmark_in_cli (test_parity_forensics.CLITests) ... ok
+test_missing_original_is_visible_not_substituted (test_parity_forensics.CLITests) ... ok
+test_assembly_mismatch_requires_actual_observed_vs_assembled_difference (test_parity_forensics.ConclusionTests) ... ok
+test_multiple_objective_failure_classes_retained (test_parity_forensics.ConclusionTests) ... ok
+test_no_gpu_or_argmax_only_is_unresolved (test_parity_forensics.ConclusionTests) ... ok
+test_observer_drift_is_a_reference_control_failure (test_parity_forensics.ConclusionTests) ... ok
+test_adapter_safe_blob_actual_nonzero_shapes_scales_and_identity (test_r3a_contracts.ContractTests) ... ok
+test_artifact_tamper_and_wrong_prepared_identity_rejected (test_r3a_contracts.ContractTests) ... ok
+test_cli_exact_launcher_contract_and_rejected_options (test_r3a_contracts.ContractTests) ... ok
+test_matrix_shape_offset_hash_and_zero_rejected (test_r3a_contracts.ContractTests) ... ok
+test_predeclared_parity_detects_fail_and_nonfinite (test_r3a_contracts.ContractTests) ... ok
+test_projection_coordinator_rejects_stale_layer_duplicate_and_mutated_input (test_r3a_contracts.ContractTests) ... ok
+test_c4_rejects_rehashed_wrong_raw_endpoint_duplicate_reps_and_correctness (test_r2d_evidence.EvidenceTests) ... ok
+test_c4_required_hashes_and_decision_copy_rejection (test_r2d_evidence.EvidenceTests) ... ok
+test_c4_wrong_branch_adapter_model_endpoint_length_and_duplicate_session (test_r2d_evidence.EvidenceTests) ... ok
+test_c4_zero_control_cannot_claim_removed_work_and_reference_manifest_tamper (test_r2d_evidence.EvidenceTests) ... ok
+test_different_head_allowed_and_relative_breakdown_is_repo_relative (test_r2d_evidence.EvidenceTests) ... ok
+test_m9a_source_tampering_missing_evidence_and_nonfinite (test_r2d_evidence.EvidenceTests) ... ok
+test_m9a_summary_provenance_sign_units_duplicate_and_eligibility (test_r2d_evidence.EvidenceTests) ... ok
+test_proxy_is_never_promoted_to_strict (test_r2d_evidence.EvidenceTests) ... ok
+test_valid_original_schemas_separate_cohorts_and_strict_fail_retained (test_r2d_evidence.EvidenceTests) ... ok
+test_wrong_m9a_source_adapter_length_endpoint_model_and_prior_gate (test_r2d_evidence.EvidenceTests) ... ok
+test_directional_per_layer_boundaries_and_different_widths (test_r2d_network.PayloadTests) ... ok
+test_explicit_hypothetical_rtt_counts_are_not_tensor_counts (test_r2d_network.PayloadTests) ... ok
+test_invalid_values_and_bandwidth_rejected (test_r2d_network.PayloadTests) ... ok
+test_modeled_components_and_negative_speedup_not_clipped (test_r2d_network.PayloadTests) ... ok
+test_zero_and_full_reuse_keep_boundaries_exactly_once (test_r2d_network.PayloadTests) ... ok
+test_both_tradeoff_signs_and_signed_rtt (test_r2d_network.RootTests) ... ok
+test_no_root_always_win_lose_tied_and_zero_bytes (test_r2d_network.RootTests) ... ok
+test_bandwidth_winners_negative_results_roots_and_out_of_domain (test_r2d_analysis.AnalysisTests) ... ok
+test_cli_help_and_invalid_grids_without_gpu_phases (test_r2d_analysis.AnalysisTests) ... ok
+test_exact_cli_contract_all_artifacts_hashes_no_heavy_imports_or_network (test_r2d_analysis.AnalysisTests) ... ok
+test_failed_evidence_exports_failed_manifest_and_visible_invalid_row (test_r2d_analysis.AnalysisTests) ... ok
+test_no_cross_cohort_addition_strict_failure_oracle_and_copy_counters (test_r2d_analysis.AnalysisTests) ... ok
+test_separate_nested_cpu_gpu_timers_never_summed_into_totals (test_r2d_analysis.AnalysisTests) ... ok
+test_zero_reuse_noise_and_no_invented_distributed_savings (test_r2d_analysis.AnalysisTests) ... ok
+test_exact_length_calibration_and_zero_work (test_m9a_cost_model.CalibrationTest) ... ok
+test_thread_affinity_limit_and_restore_on_error (test_m9a_cost_model.CalibrationTest) ... ok
+test_200_mbps_and_other_supported_rates (test_m9a_cost_model.NetworkMemoryTest) ... ok
+test_directional_layer_request_and_boundary_accounting (test_m9a_cost_model.NetworkMemoryTest) ... ok
+test_logical_8_gib_capacity_and_no_allocation (test_m9a_cost_model.NetworkMemoryTest) ... ok
+test_correctness_rejection_and_explicit_unsafe_override (test_m9a_cost_model.ProvenanceProfileTest) ... ok
+test_json_and_jsonl_input_and_local_config_only (test_m9a_cost_model.ProvenanceProfileTest) ... ok
+test_matching_identity_and_missing_or_duplicate_rows (test_m9a_cost_model.ProvenanceProfileTest) ... ok
+test_provenance_validation (test_m9a_cost_model.ProvenanceProfileTest) ... ok
+test_cli_end_to_end_only_fixture_artifacts_and_no_torch (test_m9a_cost_model.SystemModelTest) ... ok
+test_every_latency_is_tagged_and_timers_not_double_counted (test_m9a_cost_model.SystemModelTest) ... ok
+test_explicit_proxy_and_base_only_measurement (test_m9a_cost_model.SystemModelTest) ... ok
+test_no_input_mutation_or_inference_behavior_changes (test_m9a_cost_model.SystemModelTest) ... ok
+test_positive_negative_and_tie_decisions (test_m9a_cost_model.SystemModelTest) ... ok
+test_only_fresh_rows_reach_plain_linear_and_forwards_are_restored (test_m9a1_base_profile.BaseProjectionDispatchTest)
+Exercise actual context manager with shape-only stubs, not torch/models. ... ok
+test_base_measured_provenance_and_ud_added_exactly_once (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_control_plane_is_separate_and_nonoverlapping (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_default_inference_path_is_not_replaced (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_fresh_driver_pins_paper_settings_and_has_no_download_flag (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_no_lora_guard_rejects_disabled_merged_and_other_layer_lora (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_profile_identity_dtype_cache_and_skipped_rows_must_match (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_proxy_totals_cannot_be_primary (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_span_plan_and_savings_use_only_physical_reuse (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_strict_cost_cli_roundtrip_with_fixture_profiles (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_strict_rejects_peft_and_legacy_self_declared_base_fields (test_m9a1_base_profile.StrictESProfileTest) ... ok
+test_coverage_sensitivity_reports_measured_positions_only (test_r2c3_analysis.AnalysisTests) ... ok
+test_negative_signs_strict_fail_and_no_service_qualification (test_r2c3_analysis.AnalysisTests) ... ok
+test_pilot_compatibility_and_uuid (test_r2c3_analysis.AnalysisTests) ... ok
+test_reject_incomplete_duplicate_incompatible_sessions_and_missing_evidence (test_r2c3_analysis.AnalysisTests) ... ok
+test_session_weights_bootstrap_reproducibility_outliers_not_deleted (test_r2c3_analysis.AnalysisTests) ... ok
+test_cpu_only_analyze_uses_input_provenance_never_loads_opt (test_r2c3_analysis.RunnerTests) ... ok
+test_five_arm_order_complete_samples_and_raw_strict_failure_preserved (test_r2c3_analysis.RunnerTests) ... ok
+test_launcher_cli_contract_default_six_conditions (test_r2c3_analysis.RunnerTests) ... ok
+test_missing_reference_does_not_generate_one_inside_measured_request (test_r2c3_analysis.RunnerTests) ... ok
+test_model_loading_failure_keeps_failed_manifest_and_pilot (test_r2c3_analysis.RunnerTests) ... ok
+test_runner_pilot_latency_and_failure_artifacts (test_r2c3_analysis.RunnerTests) ... ok
+test_equal_session_weights_outliers_and_seeded_bootstrap (test_r2c4_analysis.AnalysisTests) ... ok
+test_interaction_signed_values_and_strict_fail_not_qualified (test_r2c4_analysis.AnalysisTests) ... ok
+test_pilot_fail_closed_and_compatibility (test_r2c4_analysis.AnalysisTests) ... ok
+test_reject_incomplete_duplicate_gpu_code_or_diagnostic_mismatch (test_r2c4_analysis.AnalysisTests) ... ok
+test_zero_reuse_noise_is_not_attributed_to_removed_work (test_r2c4_analysis.AnalysisTests) ... ok
+test_analyze_cpu_only_input_identity_and_failed_startup (test_r2c4_analysis.RunnerTests) ... ok
+test_balanced_six_arm_schedule_and_complete_counts (test_r2c4_analysis.RunnerTests) ... ok
+test_cli_contract_all_phases (test_r2c4_analysis.RunnerTests) ... ok
+test_gpu_runner_orchestration_artifacts_with_scalar_fixture (test_r2c4_analysis.RunnerTests) ... ok
+test_breakdown_nested_accounting_no_unsupported_zero (test_r2c4_cache_path.PathTests) ... ok
+test_failure_restores_scoped_methods_and_timer (test_r2c4_cache_path.PathTests) ... ok
+test_mapping_oracle_rejects_wrong_selection_and_adapter_namespace (test_r2c4_cache_path.PathTests) ... ok
+test_mutated_source_content_stamps_and_indices_rejected (test_r2c4_cache_path.PathTests) ... ok
+test_oracle_call_isolation_exact_boundary_zero_controls_and_restore (test_r2c4_cache_path.PathTests) ... ok
+test_policy_impact_qkv_logits_parity_fail_closed (test_r2c4_cache_path.PathTests) ... ok
+test_actual_cpu_qkv_index_and_source_corruption (test_r2c4_cache_path.TensorTests) ... skipped 'Torch absent: actual QKV Tensor/executor oracle parity NOT_RUN'
+
+----------------------------------------------------------------------
+Ran 144 tests in 14.164s
+
+OK (skipped=6)

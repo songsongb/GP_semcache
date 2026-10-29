@@ -1,0 +1,15 @@
+usage: 98_explore_r3a_cpu_precision.py [-h] [--phase {run,dry-run}]
+                                       [--output-dir OUTPUT_DIR]
+                                       [--device DEVICE] [--seed SEED]
+                                       [--enable-gpu-probes]
+
+Fresh one-allocation native preparation and exactly three CPU precision
+diagnostics.
+
+options:
+  -h, --help            show this help message and exit
+  --phase {run,dry-run}
+  --output-dir OUTPUT_DIR
+  --device DEVICE
+  --seed SEED
+  --enable-gpu-probes

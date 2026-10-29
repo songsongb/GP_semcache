@@ -1,0 +1,14 @@
+R3A_PARITY_DIAGNOSTIC
+PRIMARY_PERFORMANCE_ELIGIBLE=false
+Execution: COMPLETE
+GPU findings: NOT_RUN
+Conclusion: NOT_RUN
+Reason: none
+Original job151730 evidence loaded/verified: false
+New cohort GPU UUID: NOT_RUN
+Native exact: NOT_RUN
+CPU_FP32_BASELINE: NOT_RUN null
+CPU_FP64_FULL: NOT_RUN null
+CPU_FP64_STAGED: NOT_RUN null
+A local candidate PASS does not validate physical CPU-UD/TCP parity or performance.
+Three strict failures end this study; no automatic sweep or production modification.
