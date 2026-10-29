@@ -1,0 +1,13 @@
+R3A_PARITY_DIAGNOSTIC
+PRIMARY_PERFORMANCE_ELIGIBLE=false
+Execution: FAILED
+GPU findings: NOT_RUN
+Conclusions: UNRESOLVED
+Original audit: NOT_RUN
+Reason: FileNotFoundError: [Errno 2] No such file or directory: '/data/khuss/repos/GP_semcache/results/r3/a/physical_no_reuse_151665_20261029T140923Z/prepare/r3a_prepare_manifest.json'
+First original hidden bitwise divergence: NOT_ESTIMABLE
+Original root failure: NOT_ESTIMABLE
+Shutdown symptom: NOT_ESTIMABLE
+SHA differences have no error magnitude. Matched argmax/low KL do not satisfy the strict gate.
+No original artifacts, adapter weights, thresholds, production semantics or benchmark eligibility were changed.
+GPU NOT_RUN means no numerical H1-H5 conclusion has been established. See JSON for measured-versus-inferred scope.
