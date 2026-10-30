@@ -63,7 +63,7 @@ def output_dir(path,protected):
 def gpu_preflight():
     require(os.environ.get('SLURM_JOB_ID') and os.environ.get('CUDA_VISIBLE_DEVICES') and
         len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))==1,'one explicit Slurm GPU allocation required')
-    require(source_identity()['git_branch']=='exp/raw-semcache-r3','wrong branch')
+    require(source_identity()['git_branch']=='exp/raw-semcache-r4','wrong branch: R4-A requires exp/raw-semcache-r4')
     missing=[n for n in ('torch','numpy','transformers','peft','sacrebleu') if importlib.util.find_spec(n) is None]
     require(not missing,'MISSING_DEPENDENCY: '+', '.join(missing)+'; no automatic installation or GPU fallback')
     try:__import__('sacrebleu.metrics')
