@@ -76,6 +76,7 @@ def store_generation(row,driver,output,meta):
 
 def native_prepare(plan,output):
     pm,ref,am,driver,tokenizer,gpu=setup(plan,native=True);output=Path(output)
+    driver.diagnostics_path=output/'r4a_logit_diagnostics.jsonl'
     if not driver.fixture:driver.model_tokenizer=tokenizer
     suite=make_suite(tokenizer,fixture=driver.fixture,scope=plan['scope'],policy_mode=plan['policy']);write(output/'r4a_suite.json',suite)
     original_prompt=dict(token_ids=pm['identity']['token_ids'],attention_mask=[1]*pm['identity']['length'])
@@ -140,6 +141,7 @@ def native_prepare(plan,output):
 def execute(plan,output):
     prepared,suite,pm,ref,am=load_prepared(plan['prepared']);pm,ref,am,driver,tokenizer,gpu=setup(plan,native=False)
     output=Path(output)
+    driver.diagnostics_path=output/'r4a_logit_diagnostics.jsonl'
     if not driver.fixture:
         driver.model_tokenizer=tokenizer
         require(digest(tokenizer.get_vocab())==prepared['native_result']['tokenizer_vocab_sha256'] and

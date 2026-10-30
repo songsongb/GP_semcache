@@ -8,11 +8,19 @@ from .r3a_artifacts import ROOT,read,sha,validate_prepared
 from .r3a_evidence import jsonl
 from .r4a_session import positions
 
-TEXTS=(
+# Retain the exact short source texts from the failed padded pilot for evidence.
+FAILED_PADDED_PILOT_TEXTS=(
     'The lighthouse keeper watched the sea and wrote a short note about the approaching storm.',
     'A student planted a small garden beside the library and described what happened in spring.',
     'The engineer inspected the bridge before explaining the repair plan to the nearby residents.',
     'Two musicians arrived at the station carrying instruments and discussed their evening concert.')
+DETAILS=(
+    'The keeper recorded wind direction, checked the lantern, and compared the tide with the harbor chart.',
+    'The student measured the garden beds, watered the seedlings, and recorded the new leaves in a notebook.',
+    'The engineer measured the bridge supports, checked the inspection notes, and mapped the repair sequence.',
+    'The musicians checked their instruments, reviewed the concert program, and rehearsed the opening melody.')
+TEXTS=tuple(text+' '+' '.join(f'Observation {j:02d}: {detail}' for j in range(1,17))
+    for text,detail in zip(FAILED_PADDED_PILOT_TEXTS,DETAILS))
 MODES=('NO_REUSE','COLD_MISS','WARM_HIT')
 CELLS=((32,8),(32,16),(128,8),(128,16))
 
@@ -37,18 +45,42 @@ def make_suite(tokenizer=None,*,fixture=False,scope='pilot',policy_mode='fixed')
             tokenization_start=time.monotonic_ns()
             if fixture:ids=[1+(j+i)%5 for j in range(length)];mask=[1]*length
             else:
-                tokenizer.padding_side='left'
-                encoded=tokenizer(text,add_special_tokens=True,truncation=True,padding='max_length',max_length=length)
+                tokenizer.truncation_side='right'
+                source=tokenizer(text,add_special_tokens=False,truncation=False,padding=False)
+                source_ids=list(source['input_ids'])
+                require(len(source_ids)>=length and list(source['attention_mask'])==[1]*len(source_ids),
+                    'controlled source text does not supply the declared real-token budget')
+                encoded=tokenizer(text,add_special_tokens=False,truncation=True,padding=False,max_length=length)
                 ids=list(encoded['input_ids']);mask=list(encoded['attention_mask'])
-            require(len(ids)==len(mask)==length,'tokenized prompt length changed');positions(mask)
+                require(ids==source_ids[:length] and not set(ids).intersection(special.values()),
+                    'controlled token prefix changed or contains special/pad IDs')
+            require(len(ids)==len(mask)==length and mask==[1]*length,'controlled prompts require exactly L real tokens and zero padding');positions(mask)
             prompts.append(dict(sample_id=f'text_{i}_L{length}',source_text=text,token_ids=ids,attention_mask=mask,
-                length=length,prompt_sha256=digest(dict(tokens=ids,mask=mask)),tokenization_outside_request_wall=True,
+                length=length,nonpadding_tokens=len(ids),padding_tokens=0,source_token_count=None if fixture else len(source_ids),
+                prompt_sha256=digest(dict(tokens=ids,mask=mask)),tokenization_outside_request_wall=True,
                 tokenization_ms=None if fixture else (time.monotonic_ns()-tokenization_start)/1e6))
     require(len({p['prompt_sha256'] for p in prompts})==len(prompts),'distinct prompt suite collapsed after tokenization')
     for c in cells:c['policy']=generation_policy(special,policy_mode,c['new_tokens'])
-    return dict(schema='r4a_suite_v1',scope='TEST_FIXTURE_ONLY' if fixture else scope,cells=cells,prompts=prompts,
-        repeat_blocks=[101,202],special_tokens=special,padding='left',position_rule='cumsum(attention_mask)*attention_mask-1',
+    suite=dict(schema='r4a_suite_v2',scope='TEST_FIXTURE_ONLY' if fixture else scope,cells=cells,prompts=prompts,
+        repeat_blocks=[101,202],special_tokens=special,padding='none',real_token_budget=True,
+        add_special_tokens=False,truncation_side='right',position_rule='cumsum(attention_mask)*attention_mask-1',
         gold_references='NOT_SUPPLIED',adapter_training='untrained_controlled_fixture')
+    validate_controlled_suite(suite);return suite
+
+
+def validate_controlled_suite(suite):
+    require(suite['schema']=='r4a_suite_v2' and suite['padding']=='none' and suite['real_token_budget'] is True and
+        suite['add_special_tokens'] is False and suite['truncation_side']=='right','exact real-token controlled suite required')
+    require(suite['prompts'] and len({p['prompt_sha256'] for p in suite['prompts']})==len(suite['prompts']),
+        'distinct controlled token prompts required')
+    for p in suite['prompts']:
+        n=p['length'];require(n in (32,128) and len(p['token_ids'])==n and p['attention_mask']==[1]*n and
+            p['nonpadding_tokens']==n and p['padding_tokens']==0 and all(type(t) is int and t>=0 for t in p['token_ids']),
+            'controlled L32/L128 prompt has missing real tokens or padding')
+        require(p['prompt_sha256']==digest(dict(tokens=p['token_ids'],mask=p['attention_mask'])),'controlled token identity changed')
+        if suite['scope']!='TEST_FIXTURE_ONLY':
+            require(p['source_token_count']>=n and not set(p['token_ids']).intersection(suite['special_tokens'].values()),
+                'controlled source budget/special IDs invalid')
 
 
 def schedule(suite,cell):
@@ -94,7 +126,7 @@ def load_prepared(directory):
     require(m['native_result']['identity_sha256']==pm['identity_sha256'] and
         m['native_result']['adapter_matrix_sha256']==am['matrix_sha256'] and
         m['native_result']['native_peft_executed']==(not m['TEST_FIXTURE_ONLY']), 'Native reference matrix/model identity mismatch')
-    suite=read(directory/'r4a_suite.json');planned_counts(suite)
+    suite=read(directory/'r4a_suite.json');validate_controlled_suite(suite);planned_counts(suite)
     return m,suite,pm,ref,am
 
 
@@ -117,6 +149,26 @@ def audit_request(row,token_rows,identity,heads=None,device=None):
                 l['dtype']==identity['hidden_dtype'] and l['device']==device for j,l in enumerate(s['past']['layers'])),
                 'actual KV layer shape/dtype/device ledger changed')
         require(s['selected_token_id']==row['generated_token_ids'][i] and len(s['qkv_sha256'])==96,'token selection/QKV evidence incomplete')
+        old=0 if i==0 else row['prompt_tokens']+i-1
+        require(s['cache_positions']==list(range(old,row['prompt_tokens']+i)) and
+            (s['input_past'] is None if i==0 else s['input_past']['sequence_length']==old),
+            'actual input KV/cache positions inconsistent across prefill/decode')
+        observed=s['position_observation']
+        require(observed['positions']==s['positions'] and observed['past_length']==old,'observed OPT positions differ from step ledger')
+        if not row['TEST_FIXTURE_ONLY']:
+            require(observed['source']=='ACTUAL_OPT_POSITION_MODULE' and observed['lookup_output_equal'] is True,
+                'actual OPT positional lookup not verified')
+        diagnostic=s['logit_diagnostic'];n=s['context']['input_length'];width=row['logits_shape'][-1]
+        require(diagnostic['sample_id']==row['sample_id'] and diagnostic['request_id']==row['request_id'] and
+            diagnostic['generation_step']==i and diagnostic['total_input_length']==row['prompt_tokens']+i and
+            diagnostic['nonpadding_tokens']==row['nonpadding_prompt_tokens']+i and diagnostic['padding_tokens']==0 and
+            diagnostic['input_length']==n and diagnostic['logits_shape']==[1,n,width] and
+            diagnostic['native'] is False and diagnostic['TEST_FIXTURE_ONLY']==row['TEST_FIXTURE_ONLY'] and
+            diagnostic['input_past']==s['input_past'] and diagnostic['output_past']==s['past'] and
+            diagnostic['position_observation']==observed,'per-step logit diagnostic context changed')
+        for name,count in (('all_logits',n),('valid_position_logits',n),('padded_position_logits',0),('last_position_logits',1)):
+            require(diagnostic[name]==dict(positions=count,elements=count*width,finite=count*width,nonfinite=0,nan=0,positive_inf=0,negative_inf=0),
+                'nonfinite or incomplete controlled logit diagnostics')
         if hit:require(s['application_wire_bytes']==s['ud_cpu_lora_ms']==0,'prefill HIT performed UD/socket work')
         else:require(s['application_wire_bytes']>s['hidden_payload_bytes']+s['delta_payload_bytes']>0,'wire/payload ledger invalid')
         require(row['request_start_monotonic_ns']<=s['start_monotonic_ns']<=s['available_monotonic_ns']<=row['request_end_monotonic_ns'],'token outside wall')
@@ -139,6 +191,8 @@ def audit_run(directory,plan,worker):
     require(m['TEST_FIXTURE_ONLY']==fixture and plan['base_prepared']==m['base_prepared'],'cohort input mismatch')
     if not fixture:require(worker['gpu']['uuid']==m['native_result']['gpu']['uuid']!='UNAVAILABLE','Native/ES GPU UUID mismatch')
     rows=jsonl(es/'r4a_requests.jsonl');tokens=jsonl(es/'r4a_tokens.jsonl');outputs=jsonl(es/'r4a_generation_outputs.jsonl')
+    require(jsonl(es/'r4a_logit_diagnostics.jsonl')==[t['logit_diagnostic'] for t in tokens],
+        'missing/reordered independently persisted step logit diagnostics')
     require(rows==outputs and rows and len({r['request_id'] for r in rows})==len(rows)==worker['requests'],'missing/duplicate output rows')
     cells=[c['id'] for c in suite['cells']]
     require(worker['completed_cells']==cells[:len(worker['completed_cells'])] and worker['completed_cells'],'completed cells not a valid prefix')

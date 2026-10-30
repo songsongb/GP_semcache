@@ -18,13 +18,19 @@ class GenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path=prepare_tiny(Path(tmp)/'base');am=read(path/'r3a_adapter_manifest.json');base=read(path/'r3a_tiny_base.json')
             model=TinyBackend(base,load_matrices(path,am,torch_backend=False))
-            prompt=([1,2,3,4]*8);mask=[0,0]+[1]*30
-            prefill=model.forward(prompt,mask);past_summary(prefill.past_key_values,32,32,1,4,'float32','cpu')
-            cached=model.forward([5],mask+[1],prefill.past_key_values)
-            complete=model.forward(prompt+[5],mask+[1])
-            self.assertEqual(cached.logits[-7:],complete.logits[-7:]);self.assertEqual(cached.shape,[1,1,7])
-            past_summary(cached.past_key_values,33,32,1,4,'float32','cpu')
-            with self.assertRaises(ProtocolError):past_summary(cached.past_key_values,34,32,1,4,'float32','cpu')
+            for pads in (0,2):
+                prompt=[0]*pads+[1,2,3,4]*8;mask=[0]*pads+[1]*32
+                prefill=model.forward(prompt,mask);past=prefill.past_key_values
+                past_summary(past,len(prompt),32,1,4,'float32','cpu')
+                # The fixture's valid-token logits are invariant to left padding.
+                if not pads:unpadded=prefill.logits
+                else:self.assertEqual(prefill.logits[pads*7:],unpadded)
+                for token in (5,3,4):
+                    mask.append(1);cached=model.forward([token],mask,past);prompt.append(token)
+                    complete=model.forward(prompt,mask)
+                    self.assertEqual(cached.logits[-7:],complete.logits[-7:]);self.assertEqual(cached.shape,[1,1,7])
+                    past=cached.past_key_values;past_summary(past,len(prompt),32,1,4,'float32','cpu')
+                    with self.assertRaises(ProtocolError):past_summary(past,len(prompt)+1,32,1,4,'float32','cpu')
 
     def test_positions_and_length_transition_32_to_1_and_wrong_mask(self):
         self.assertEqual(positions([0,0,1,1,1]),[-1,-1,0,1,2])

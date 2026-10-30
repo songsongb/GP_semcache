@@ -38,7 +38,7 @@ class AnalysisTests(unittest.TestCase):
         class Tokenizer:
             bos_token_id=2;eos_token_id=2;pad_token_id=1;padding_side='left'
             def __call__(self,text,**kwargs):
-                n=kwargs['max_length'];salt=len(text);return dict(input_ids=[salt]*n,attention_mask=[1]*n)
+                n=kwargs.get('max_length',256);salt=len(text);return dict(input_ids=[salt]*n,attention_mask=[1]*n)
         real=make_suite(Tokenizer(),scope='matrix');self.assertEqual(planned_counts(real)['generation_requests'],108)
         self.assertEqual(planned_counts(real)['max_generation_forward_passes'],1296)
 

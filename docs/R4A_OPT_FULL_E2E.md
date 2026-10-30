@@ -40,8 +40,25 @@ when the loaded OPT API explicitly accepts them; otherwise OPT derives learned
 positions from the full attention mask and past length. The mask/position rule
 matches [HF OPT's positional embedding implementation](https://github.com/huggingface/transformers/blob/v4.56.2/src/transformers/models/opt/modeling_opt.py).
 The actual loaded version/API, rather than that example version, governs the
-runtime. Inputs use declared left padding/truncation so the last prompt token
-is valid. Padding-inclusive prompt length and nonpadding count are separate.
+runtime. The primary controlled workload uses no padding: L32 and L128 mean
+exactly 32 and 128 real source-token IDs, respectively, with all-one masks.
+Tokenization disables automatic BOS/EOS insertion, uses right truncation,
+and validates the retained IDs against the full source prefix. Sources are
+four deterministic, distinct multi-paragraph texts, each checked after actual
+tokenization to contain enough real tokens. A short source, pad/special ID,
+non-one mask, wrong count, or collapsed prompt identity fails preparation.
+The suite records source-token counts, retained real counts and zero pad counts;
+the same contract is checked when loading prepared artifacts. Left-padded inputs
+remain supported by the diagnostic/generation helpers and regression controls.
+
+Each actual forward passively observes the OPT positional embedding module's
+mask, past length and optional position IDs, then checks its returned learned
+embeddings against the expected lookup (including OPT's offset). The hook
+returns None and is removed on success or exception. Input and output actual
+KV tensors are checked for every layer's shape, dtype, device and length;
+cache-reported sequence length is also checked when that API is available.
+Both the logical nonpadding positions and padding-inclusive cache slots are
+recorded. These observations add instrumented serving overhead to all modes.
 
 Greedy selection, BOS/EOS/pad and max-new-token policy are immutable. Fixed
 latency trials explicitly ignore EOS. Separately requested natural-eos runs
@@ -109,9 +126,14 @@ Request start precedes actual cache work. TTFT ends at first selected token-ID
 availability. E2E ends at final response finalization, including actual cold
 admission and text decoding. Tokenization/model loading/handshake are outside.
 Per-step copies, full next-vector/QKV evidence hashing and selection are inside
-these instrumented serving walls on every mode; file exports happen outside.
+these instrumented serving walls on every mode.
+Completed-request/vector exports happen outside; the per-forward diagnostic
+JSONL is written inside the wall so a failed request retains its evidence.
 Only one last-token vector per step is held on CPU (bounded <=16 vectors), not
-all-token-per-step GPU logits. This is instrumented sequential serving, not
+all-token-per-step GPU logits. Per-position NaN/+Inf/-Inf integer reductions
+are copied for diagnostics, bounded to 128 rows; no full vocabulary tensor is
+copied for this check. Diagnostic persistence is inside the instrumented wall.
+This is instrumented sequential serving, not
 concurrent throughput or kernel-only time. CUDA events include host/socket
 idle and are not added to host/UD/transport clocks.
 
@@ -181,18 +203,77 @@ r4a_preflight.json, r4a_audit.json. Native/ES/UD raw vectors, component captures
 frame hashes, timing, process stdout/stderr, identities and lifecycle are retained.
 Failed runs keep partial evidence and do not enter latency/benefit analysis.
 
+`native/r4a_logit_diagnostics.jsonl` (or fixture `prepared/`) and
+`es/r4a_logit_diagnostics.jsonl` persist one bounded record for every generation
+forward, **before** the finite guard and token selection. Records contain
+sample/request IDs, zero-based generation step (0 = prefill), total input/context
+length, current query length, real and pad counts, full mask, positions, actual
+input/output KV summaries and positional observations. `all_logits`,
+`last_position_logits`, `valid_position_logits` and `padded_position_logits`
+each report elements, finite/nonfinite, NaN, positive Inf and negative Inf
+counts. Group masks describe the returned query positions: on decode, cached
+padding contributes to the context pad count but not the one valid query row.
+At most 1500 records per worker are allowed, covering the declared experiment.
+No nonfinite value is masked, clamped, replaced, serialized as a valid logit or
+ignored, including a NaN confined to padding. Any such output still aborts the
+request and blocks completed-reference/cold-admission/performance claims.
+Successful serving audits require these records to match the per-token ledger.
+
+## Pilot 151991 failure attribution
+
+The user supplied these original L32 observations; they are preserved here as
+reported evidence, not a local tokenizer reproduction:
+
+| Original sample | Real tokens | Left pad tokens |
+| --- | ---: | ---: |
+| text_0 | 17 | 15 |
+| text_1 | 17 | 15 |
+| text_2 | 16 | 16 |
+| text_3 | 15 | 17 |
+
+**Confirmed workload defect:** the previous code tokenized short sentences with
+`padding='max_length'`. Its declared length was a padded slot budget rather
+than a real-token budget. The exact previous source sentences remain available
+as `FAILED_PADDED_PILOT_TEXTS`; existing results/logs are not rewritten or reused
+as new experiment output. Fresh v2 preparation is required.
+
+**Confirmed diagnostic limitation:** `last_logits()` checked *all* model logits
+before selecting the final-token vector, and gave no sample/step/group counts.
+The exception establishes that some model logits were nonfinite; it does not
+establish that final-token logits were nonfinite or identify prefill versus
+decode. Both original Native R3-A-input triages completed, according to the
+user's report; those unpadded controls do not reproduce the short padded prompts.
+The historical failing sample ID, step and nonfinite counts cannot be recovered
+from this exception. No raw Pilot 151991 files are present in this checkout.
+
+**Unconfirmed numerical cause:** fully masked left-padding query rows and FP16
+attention arithmetic are plausible candidates; autoregressive cache/position
+or later decode arithmetic remains possible. The exact loaded Transformers
+implementation matters. For example, the pinned
+[HF OPT reference implementation](https://github.com/huggingface/transformers/blob/v4.56.2/src/transformers/models/opt/modeling_opt.py)
+adds its causal/padding bias before softmax and derives logical positions from
+the full mask and past length; this source inspection is not a reproduction
+of the SERAPH runtime. No claim that left padding caused this NaN/Inf failure
+is justified without per-step runtime evidence or a matched padded/unpadded
+comparison on that model/runtime. The primary pilot now removes padding as a
+workload confounder and records any nonfinite outputs without changing the
+strict Native PEFT or distributed fidelity gates.
+
 CPU `--phase fixture --test-fixture-only` uses an explicit tiny scalar causal
 decoder with actual KV storage and TCP: L32, G3, two texts/two blocks, 15
 generation requests plus two triage prefills. It is not OPT/PEFT/CUDA evidence;
 all real R4 pass/benefit flags stay false. Optional GPU tests require explicit
 opt-in and an allocation. No SERAPH access or job submission occurs locally.
 
-Local verification (2026-10-30): new CPU suite 22 PASS / 0 FAIL / 3 SKIP;
-selected frozen R3-A/B/C regressions 70 PASS / 0 FAIL / 4 SKIP. Real SacreBLEU
-perfect/changed-corpus tests are two of the skips because the package is
-absent; no real BLEU value is asserted. Torch/NumPy/Transformers/PEFT are also
-absent. Actual OPT/GPU, matched Native triage and measured GPU TTFT/E2E benefit
-remain NOT_RUN. The tiny fixture and read-only reanalysis validate plumbing,
-not HF CUDA Cache API compatibility or Native equivalence. The next measurement
-decision is the independently gated SERAPH pilot, followed by resource-admitted
-matrix cells only if it passes; no favorable outcome is presumed.
+Local CPU coverage includes finite padded/unpadded last-vector selection,
+padding-only/valid/final NaN/Inf rejection, a successful prefill followed by a
+fatal decode with durable partial diagnostics, multi-step cached versus full
+prefix math, exact real-token workload validation, and the physical TCP fixture
+with independent audit/reanalysis. An optional random-weight actual HF OPT CPU
+test checks padded/unpadded prefill plus two decode steps and observed position
+lookups without downloading a model. It is explicitly skipped when Torch or
+Transformers is absent. The local environment also lacks NumPy, PEFT and
+SacreBLEU. Actual OPT-2.7B FP16/GPU, Native PEFT, the original failing sample,
+and a matched GPU left-padding causal comparison remain NOT_RUN. CPU controls
+validate plumbing and fail-closed behavior, not the numerical cause of Pilot
+151991 or GPU benefit. No Slurm submission or git push is part of this fix.
