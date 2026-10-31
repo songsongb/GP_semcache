@@ -28,6 +28,8 @@ def preflight(a,experiment,block,m,pm):
     require(set(sources())<=tracked, 'commit I5 execution sources before GPU run')
     require(a.semantic_revision==TINYBERT_REVISION and m['stage']=='expanded', 'pinned TinyBERT/three adapters required')
     from semcache.edgelora.r5_i5_data import load_dataset
+    from semcache.edgelora.r5_i5_preflight import installed_opt_check
+    installed_opt_check()  # Required real CPU OPT contract, never optional in GPU preflight.
     datasets=read(a.experiment/'i5_dataset_manifest.json')
     from semcache.edgelora.r5_i5_quality import validate_scorers
     validate_scorers(datasets)

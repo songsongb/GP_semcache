@@ -77,6 +77,7 @@ def summarize(experiment_path, runs, output):
         entry['quality_delta']=dict(delta=distribution([q['absolute_delta'] for q in quality]),confidence_interval=grouped_ci(quality),
             by_target_outcome={label:distribution([q['absolute_delta'] for q in quality if q['hit']==hit]) for label,hit in (('HIT',True),('MISS',False))})
         delta_tables.append(entry)
+    write(out/'i5_scale_semantics.json',dict(scale_semantics=plan.get('scale_semantics'),summary=plan.get('scale_summary'),cache_lifetime_assessment=plan.get('cache_lifetime_assessment'),blocks=[dict(block_id=b['block_id'],scored_targets=b['scored_unique_samples'],physical_requests=len(b['tasks']),continuity_breaks=b.get('continuity_breaks',[])) for b in plan['blocks']],interpretation='Within-block occupancy/HIT statistics; not continuous-session throughput; startup and warmup separate'))
     write(out/'i5_consolidated_tables.json',tables);write(out/'i5_paired_comparisons.json',delta_tables)
     write(out/'i5_break_even.json',dict(points=break_even,interpretation='only measured points; no inferred/interpolated crossing; instrumented localhost timing'))
     write(out/'i5_independent_audit.json',dict(status='PASS',complete_blocks=len(seen),expected_blocks=len(expected),

@@ -14,6 +14,48 @@ BUDGETS = dict(coqa=32, snips=16, multiwoz=64, qasper=32, **{'2wikimqa':32, 'mul
 TEMPLATE = 'I5_PROMPTS_V1'
 
 
+SCALE_SEMANTICS = 'INDEPENDENT_BLOCK_DATASET_SCALE'
+
+
+def routing(sample, seed=42):
+    identity=[sample['dataset'],sample['version'],sample['group_id'] if sample['dataset'] in ('coqa','multiwoz') else sample['id'],seed]
+    user=int(digest(identity),16)%30+1
+    return dict(user_id=f'User_{user:02d}',adapter_id='Adapter_'+'ABC'[(user-1)//10])
+
+
+def turn_order(sample):
+    value=sample.get('turn_id',0)
+    try:return (0,int(value),sample['id'])
+    except (ValueError,TypeError):return (1,str(value),sample['id'])
+
+
+def pack_groups(selected, limit):
+    """Contiguous groups, next-fit whole groups; oversized groups chunk at limit."""
+    require(1<=limit<=20,'packing limit outside existing safety bound')
+    groups={}
+    for p in selected:
+        s=p['sample'];groups.setdefault((s['dataset'],s['version'],s['group_id']),[]).append(p)
+    packed=[];current=[]
+    for group in groups.values():
+        group.sort(key=lambda p:turn_order(p['sample']))
+        if len(group)>limit:
+            if current:packed.append(current);current=[]
+            packed.extend(group[i:i+limit] for i in range(0,len(group),limit))
+        else:
+            if current and len(current)+len(group)>limit:packed.append(current);current=[]
+            current.extend(group)
+    if current:packed.append(current)
+    return packed
+
+
+def continuity(cohorts):
+    locations={}
+    for i,cohort in enumerate(cohorts):
+        for p in cohort:locations.setdefault(p['sample']['group_id'],set()).add(i)
+    return [dict(group_id=g,block_ordinals=sorted(bs),reason='GROUP_EXCEEDS_BLOCK_LIMIT',cache_survives=False)
+            for g,bs in locations.items() if len(bs)>1]
+
+
 def parts(s):
     name = s['dataset']
     if name == 'coqa':
@@ -66,10 +108,11 @@ def select(samples, tok, *, count, seed, context_limit, budget, prefix=None, all
         except ValueError as exc:
             excluded.append(dict(id=s['id'], reason=str(exc)))
     # Group order hash; turns follow source order within a conversation.
-    eligible.sort(key=lambda p:(digest([seed, p['sample']['group_id']]), str(p['sample'].get('turn_id','')).zfill(8), p['sample']['id']))
+    eligible.sort(key=lambda p:(digest([seed, p['sample']['group_id']]), turn_order(p['sample'])))
     report = dict(requested=count, total=len(samples), eligible=len(eligible), exclusions=excluded,
         selected_ids=[p['sample']['id'] for p in eligible[:count]], not_selected_ids=[p['sample']['id'] for p in eligible[count:]],
-        ordering='SHA256(seed,conversation/group); turn ID; original ID; no controller HIT annotations', seed=seed)
+        ordering='SHA256(seed,conversation/group); numeric turn ID; original ID; no controller HIT annotations', seed=seed,
+        partial_selected_groups=[dict(group_id=g,eligible_turns=sum(p['sample']['group_id']==g for p in eligible),selected_turns=sum(p['sample']['group_id']==g for p in eligible[:count]),reason='EXACT_SAMPLE_COUNT_SELECTION_BOUNDARY') for g in sorted({p['sample']['group_id'] for p in eligible[:count]}) if sum(p['sample']['group_id']==g for p in eligible)>sum(p['sample']['group_id']==g for p in eligible[:count])])
     if len(eligible) < count:
         raise EligibilityError(report)
     return eligible[:count], report
@@ -81,14 +124,14 @@ class EligibilityError(ValueError):
         super().__init__(f'INSUFFICIENT_ELIGIBLE_DATA: requested={report["requested"]}, eligible={report["eligible"]}; no substitution/duplication')
 
 
-def requests(prompts, *, track, prefix, offset=0, special):
+def requests(prompts, *, track, prefix, offset=0, special, routing_seed=42):
     require(track in ('NATURAL', 'CONTROLLED'), 'invalid workload track')
     tasks = []
     for i,p in enumerate(prompts):
-        n = offset+i; adapter = n%3; user = adapter*10 + (n//3)%10 + 1
+        n = offset+i; route=routing(p['sample'],routing_seed)
         base = dict(input_text=p['input_text'], token_ids=p['token_ids'], prepared=p,
                     dataset=p['sample']['dataset'], sample_id=p['sample']['id'], group_id=p['sample']['group_id'],
-                    adapter_id='Adapter_'+'ABC'[adapter], user_id=f'User_{user:02d}', pair_id=f'P{n:06d}')
+                    **route, pair_id=f'P{n:06d}')
         if track == 'CONTROLLED':
             require(type(prefix) is int and 0 < prefix < len(p['token_ids']), 'invalid exact prefix')
             # Source IDs are sliced, never decode/re-encoded. Text is semantic input only.
@@ -147,27 +190,39 @@ def prepare_experiment(registry, tok, tokenizer_identity, context_limit, special
                     dataset_records[name]['selections'].append(dict(selection,track=track,prefix=prefix,
                         truncation_count=sum(p['truncated'] for p in selected),truncation_rate=sum(p['truncated'] for p in selected)/count,
                         lengths=[{k:p[k] for k in ('original_context_tokens','retained_context_tokens','removed_context_tokens','retained_prompt_tokens','truncated')} for p in selected]))
+                    cohorts=pack_groups(selected,block_size);breaks=continuity(cohorts)
                     for rep in range(repetitions):
-                        for start in range(0,count,block_size):
-                            cohort=deepcopy(selected[start:start+block_size])
+                        start=0
+                        for ordinal,packed in enumerate(cohorts):
+                            cohort=deepcopy(packed)
                             # Predetermined hash-ranked group selection; source and target both strictly captured.
                             chosen=set(sorted(range(len(cohort)),key=lambda i:digest([seed,cohort[i]['sample']['group_id']]))[:strict_per_block])
                             for i,p in enumerate(cohort):
                                 p['strict']=i in chosen
                                 if prefix is not None: p['source_semantic_text']=tok.decode(p['token_ids'][:prefix], skip_special_tokens=False,clean_up_tokenization_spaces=False)
-                            tasks=requests(cohort,track=track,prefix=prefix,offset=start,special=special)
+                            tasks=requests(cohort,track=track,prefix=prefix,offset=start,special=special,routing_seed=seed)
                             block=dict(dataset=name,track=track,prefix_length=prefix,repetition=rep,scale=scale,
+                                scale_semantics=SCALE_SEMANTICS,routing_seed=seed,packing='GROUP_NEXT_FIT_V1',
+                                continuity_breaks=[b for b in breaks if ordinal in b['block_ordinals']],dataset_continuity_break=ordinal>0,
+                                cache_lifetime_requests=len(tasks),physical_requests_per_condition=len(tasks),cache_resets_per_condition=1,
                                 scored_unique_samples=len(cohort), repeated_evaluation_samples=0 if rep==0 else len(cohort),
                                 priming_requests=sum(not t['scored'] for t in tasks), tasks=tasks,
-                                condition_order=[CONDITIONS[i] for i in ORDERS[2*((rep//2+start//block_size)%3)+rep%2]],
+                                condition_order=[CONDITIONS[i] for i in ORDERS[2*((rep//2+ordinal)%3)+rep%2]],
                                 reset='new ES/model/CPU UD sessions and empty cache/index per condition', warmup='one uncached one-token request per adapter; no admission; separate timings')
                             block['resources']=resources(tasks,capacity=capacity,evidence_budget=evidence_budget,seconds_per_forward=seconds_per_forward)
-                            block['block_id']=digest(block); blocks.append(block)
-        config=dict(schema='I5_EXPERIMENT_V1',scale=scale,seed=seed,blocks=blocks,tokenizer_identity=tokenizer_identity,
+                            block['block_id']=digest(block); blocks.append(block);start+=len(cohort)
+        config=dict(schema='I5_EXPERIMENT_V1',scale_semantics=SCALE_SEMANTICS,routing_algorithm='SHA256_CANONICAL_DATASET_VERSION_GROUP_SEED_MOD30_V1',scale=scale,seed=seed,blocks=blocks,tokenizer_identity=tokenizer_identity,
             context_limit=context_limit,special_tokens=special,template_version=TEMPLATE,TEST_FIXTURE_ONLY=fixture,
             conditions=CONDITIONS,clusters=1,policy='LRU_FIT_COMPLETE_SOURCE_V1',max_entries_per_adapter=64,
             shadow_equivalence='same metadata eligibility/LRU bytes and virtual HIT no-admission; tensor failures may diverge; analyzer checks source-decision equivalence',
             balanced_order_cycle=ORDERS,replications=repetitions,block_size=block_size)
+        config['cache_lifetime_assessment']=dict(continuous_20_requests='SUPPORTED_WITHIN_ONE_BLOCK_SUBJECT_TO_RESOURCE_PREFLIGHT',
+            longer_sessions='NOT_SUPPORTED_BY_CURRENT_20_TARGET_BLOCK_BOUND',cross_job_live_cache='NOT_SUPPORTED',
+            future_work='Continuous 1000-request cache study; validated residency/proof serialization or a single bounded allocation required; never restore partial live cache',
+            startup_cost='model reload and three CPU UD restarts per condition/block; measured separately from matched latency')
+        config['scale_summary']=dict(unique_scored_samples=len({(b['dataset'],t['sample_id']) for b in blocks for t in b['tasks'] if t['scored']}),
+            repetitions=repetitions,independent_blocks=len(blocks),cache_resets_all_conditions=3*len(blocks),
+            maximum_cache_lifetime_requests=max(b['cache_lifetime_requests'] for b in blocks))
         config['experiment_id']=digest(config)
         write(out/'i5_dataset_manifest.json',dataset_records);write(out/'i5_workload_manifest.json',config)
         seal(out); return config

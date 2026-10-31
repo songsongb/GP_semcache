@@ -36,6 +36,13 @@ class Processes(unittest.TestCase):
         cls.root.mkdir(parents=True,exist_ok=True);base=prepare_tiny(cls.root/'base')
         multi=prepare(base,cls.root/'adapters','expanded');pm=read(base/'r3a_prepare_manifest.json')
         data=dataset(cls.root,'coqa',3)
+        # One independent conversation per scored target; sticky turns must not
+        # be mistaken for positional adapter balancing.
+        from semcache.edgelora.r3a_artifacts import write,sha
+        records=[r for r in jsonl(data/'samples.jsonl') if r['turn_id']==1]
+        (data/'samples.jsonl').write_bytes(b''.join(canonical(r)+b'\n' for r in records))
+        manifest=read(data/'i5_dataset_manifest.json');manifest.update(samples=len(records),samples_sha256=sha(data/'samples.jsonl'))
+        write(data/'i5_dataset_manifest.json',manifest);seal(data)
         prepare_experiment({'coqa':data},TinyTokenizer(),tokenizer_identity(pm),2048,
             dict(bos_token_id=0,eos_token_id=6,pad_token_id=0),cls.root/'plan',fixture=True,overrides={'coqa':3},
             budgets={'coqa':2},tracks=('CONTROLLED',),prefixes=(64,),repetitions=1,block_size=3,

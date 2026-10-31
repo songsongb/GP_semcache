@@ -1,3 +1,13 @@
+# I5-P operator update
+
+The conversation-aware patch supersedes the positional routing and fixed array
+examples below. New plans use `INDEPENDENT_BLOCK_DATASET_SCALE`, hash-sticky
+conversation routing and whole-group packing. Array lengths MUST come from
+`python scripts/123_preflight_r5_i5.py inspect --experiment "$I5_EXPERIMENT"`.
+Use its generic `jobs/r5_i5_plan.sh` commands; never copy historical fixed bounds.
+See [R5_I5_PREFLIGHT_PATCH.md](R5_I5_PREFLIGHT_PATCH.md) for current readiness,
+cache lifetime semantics, validation and the manually gated smoke sequence.
+
 # R5-I5 integrated multi-dataset evaluation
 
 Implementation status: **IMPLEMENTED**, CPU validation recorded below, **GPU_NOT_RUN**.
@@ -310,8 +320,8 @@ export R5_I5_ENABLE_GPU=1 R5_ENABLE_GPU=1
 export I5_EXPERIMENT=/data/khuss/repos/GP_semcache/results/r5/i5/plan_smoke_one_v1
 export I5_RUN_ROOT=/data/khuss/repos/GP_semcache/results/r5/i5/smoke_one_v1
 # Review block 0 and its sibling _audit before manually continuing.
-sbatch --export=ALL --array=0-0%1 jobs/r5_i5_smoke_one.sh
-sbatch --export=ALL --array=1-3%1 jobs/r5_i5_smoke_one.sh
+sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_smoke_one.sh
+sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_smoke_one.sh
 ```
 
 Four-dataset smoke uses fresh plan and result directories:
@@ -324,7 +334,7 @@ python scripts/118_prepare_r5_i5.py experiment \
   --output-dir results/r5/i5/plan_smoke_four_v1
 export I5_EXPERIMENT=/data/khuss/repos/GP_semcache/results/r5/i5/plan_smoke_four_v1
 export I5_RUN_ROOT=/data/khuss/repos/GP_semcache/results/r5/i5/smoke_four_v1
-sbatch --export=ALL --array=0-15%1 jobs/r5_i5_smoke_four.sh
+sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_smoke_four.sh
 ```
 
 Controlled comparisons use a separate real-context plan. Choose a one-dataset
@@ -340,7 +350,7 @@ python scripts/118_prepare_r5_i5.py experiment \
 export I5_EXPERIMENT=/data/khuss/repos/GP_semcache/results/r5/i5/plan_prefix_v1
 export I5_RUN_ROOT=/data/khuss/repos/GP_semcache/results/r5/i5/prefix_v1
 # This design has 32 blocks if preparation succeeds with ten eligible samples.
-sbatch --export=ALL --array=0-31%1 jobs/r5_i5_controlled.sh
+sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_controlled.sh
 ```
 
 For a separately reviewed 1024-token plan use `--prefixes 1024`,
@@ -369,11 +379,11 @@ unique samples. For the shown four-dataset, two-repetition, five-target design:
 ```bash
 export I5_EXPERIMENT=/data/khuss/repos/GP_semcache/results/r5/i5/plan_small_v1
 export I5_RUN_ROOT=/data/khuss/repos/GP_semcache/results/r5/i5/small_v1
-sbatch --export=ALL --array=0-159%1 jobs/r5_i5_small.sh
+sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_small.sh
 # Set plan_medium_v1 and medium_v1, then manually:
-# sbatch --export=ALL --array=0-799%1 jobs/r5_i5_medium.sh
+# sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_medium.sh
 # Set plan_large_v1 and large_v1, then manually:
-# sbatch --export=ALL --array=0-1599%1 jobs/r5_i5_large.sh
+# sbatch --export=ALL --array=MANIFEST_DERIVED_RANGE jobs/r5_i5_large.sh
 ```
 
 Always read array bounds from the actual manifest if configuration changes:

@@ -192,6 +192,10 @@ def analyze(root):
         pids.append(result['es_pid']);allsteps[condition]=steps
         for rid,row in rows.items():
             task=tasks[rid];req=reqs[rid]
+            if experiment.get('routing_algorithm'):
+                from .r5_i5_workload import routing
+                route=routing(task['prepared']['sample'],experiment['seed'])
+                require(all(task[k]==v for k,v in route.items()),'conversation routing differs')
             require(read(path/'client_results'/(rid+'.json'))==public_result(row),'logical client result exposes invalid/private metadata')
             require(req['token_ids']==task['token_ids'] and req['generation_policy']==task['policy'] and req['user_id']==task['user_id'] and
                     req['adapter_id']==task['adapter_id'] and req['input_text']==task['input_text'] and row['scored']==task['scored'] and
@@ -224,7 +228,7 @@ def analyze(root):
     latency={};quality={};network={};cache={}
     for c in CONDITIONS:
         rows=list(allrows[c].values());targets=[r for r in rows if r['scored']];priming=[r for r in rows if not r['scored']]
-        latency[c]=dict(metrics={k:distribution([r[k] for r in targets]) for k in METRICS},
+        latency[c]=dict(scale_semantics=block.get('scale_semantics','LEGACY_INDEPENDENT_BLOCKS'),cache_lifetime_requests=len(rows),continuity_breaks=block.get('continuity_breaks',[]),throughput_scope='Within-block measured target intervals; excludes startup/warmup and is not continuous serving throughput',metrics={k:distribution([r[k] for r in targets]) for k in METRICS},
             hit_miss={kind:{k:distribution([r[k] for r in targets if bool(r['source'])==hit]) for k in ('application_e2e_ms','application_ttft_ms')} for kind,hit in (('HIT',True),('MISS',False))},
             target_requests=len(targets),priming_requests=len(priming),target_wall_ms=sum(r['application_e2e_ms'] for r in targets),
             priming_wall_ms=sum(r['application_e2e_ms'] for r in priming),

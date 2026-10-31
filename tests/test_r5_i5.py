@@ -126,7 +126,8 @@ class ContextWorkload(unittest.TestCase):
         for src,target in zip(ts[::2],ts[1::2]):
             self.assertEqual(src['token_ids'],target['token_ids'][:64]);self.assertFalse(src['scored'])
             self.assertEqual(src['adapter_id'],target['adapter_id']);self.assertNotIn('expected_hit',target)
-        self.assertEqual([t['user_id'] for t in ts[::2]],['User_01','User_11','User_21'])
+        from semcache.edgelora.r5_i5_workload import routing
+        self.assertEqual([t['user_id'] for t in ts[::2]],[routing(p['sample'])['user_id'] for p in prompts])
     def test_natural_has_no_injected_source(self):
         p=prepare_prompt(samples('snips')[0],FixtureTokenizer(),2048,4);p['strict']=True
         ts=requests([p],track='NATURAL',prefix=None,special=dict(bos_token_id=0,eos_token_id=6,pad_token_id=0))
