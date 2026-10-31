@@ -40,11 +40,34 @@ def context_tensor(tensor):
                 values=[v if not isinstance(v, float) or math.isfinite(v) else str(v) for v in flat])
 
 
+def original_method(method):
+    """Use the same original Python function for source analysis and tracing."""
+    try:
+        function=inspect.unwrap(getattr(method,'__func__',method))
+    except (ValueError,TypeError) as exc:
+        raise ValueError(f'FORENSIC_OPT_FRAME: cannot unwrap {method!r}: {exc}') from exc
+    require(inspect.isfunction(function),f'FORENSIC_OPT_FRAME: expected Python method, got {function!r}')
+    code=function.__code__
+    require(code.co_argcount>0 and code.co_varnames[0]=='self',
+            f'FORENSIC_OPT_FRAME: unwrapped {function.__qualname__} at {code.co_filename}:{code.co_firstlineno} '
+            'has no positional self; decorator may not expose __wrapped__')
+    return function
+
+
 def local_assignments(method, attention):
     """Identify real assignment sites, without depending on an HF line number."""
+    method=original_method(method)
     lines, start = inspect.getsourcelines(method)
     source = textwrap.dedent(''.join(lines)); tree = ast.parse(source); result = {}
-    for node in ast.walk(tree):
+    # Nested definitions have their own code objects and are not this frame.
+    def assignments(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda)):continue
+            if isinstance(child,ast.Assign):yield child
+            yield from assignments(child)
+    require(len(tree.body)==1 and isinstance(tree.body[0],(ast.FunctionDef,ast.AsyncFunctionDef)),
+            f'FORENSIC_OPT_FRAME: cannot identify source function {method.__qualname__}')
+    for node in assignments(tree.body[0]):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             continue
         name = node.targets[0].id; rhs = ast.get_source_segment(source, node.value) or ''; label = None
@@ -84,7 +107,7 @@ class PassiveCapture:
 
     @contextmanager
     def hooks(self, adapter):
-        handles = []; methods = {}; pending = {}; residual_counts = {}; original_trace = sys.gettrace()
+        handles = []; methods = {}; instances = {}; frames = {}; completed = set(); original_trace = sys.gettrace()
         require(original_trace is None, 'forensic capture requires no other Python tracer')
         def pre(name):
             def observe(module, args, kwargs):
@@ -95,46 +118,68 @@ class PassiveCapture:
             def observe(module, args, kwargs, out):
                 self.save(name, out[0] if isinstance(out, tuple) else out)
             return observe
-        def flush(frame):
-            site = pending.pop(id(frame), None)
+        def diagnostic(frame):
+            code=frame.f_code
+            return f'{code.co_qualname if hasattr(code,"co_qualname") else code.co_name} at {code.co_filename}:{frame.f_lineno}'
+        def flush(frame,state):
+            site = state.pop('pending',None)
             if site is None: return
-            end, name, label, rhs, layer = site
+            end, name, label, rhs = site;layer=state['layer']
             if label == 'residual':
-                index = residual_counts.get(layer, 0); residual_counts[layer] = index+1
-                require(index < 2, 'unsupported OPT residual structure')
+                index=state['residual_count'];state['residual_count']=index+1
+                require(index < 2, f'FORENSIC_OPT_FRAME: extra residual at L{layer}, {diagnostic(frame)}')
                 label = ('attention_residual', 'ffn_residual')[index]
             value = frame.f_locals.get(name)
-            if hasattr(value, 'detach'):
-                key = f'L{layer}.{label}'
-                scores = label in ('attention_scores','attention_masked_scores','attention_probabilities')
-                self.save(key, value, layout=('BHQK' if value.ndim == 4 else 'HQK') if scores else 'BTH',
-                          token_axis=value.ndim-2 if scores else 1, key_axis=value.ndim-1 if scores else None)
-                self.sites[key] = dict(line=end, expression=rhs, file=frame.f_code.co_filename)
+            require(hasattr(value,'detach'),f'FORENSIC_OPT_FRAME: missing tensor {name} for L{layer}.{label}, {diagnostic(frame)}')
+            key = f'L{layer}.{label}'
+            scores = label in ('attention_scores','attention_masked_scores','attention_probabilities')
+            self.save(key, value, layout=('BHQK' if value.ndim == 4 else 'HQK') if scores else 'BTH',
+                      token_axis=value.ndim-2 if scores else 1, key_axis=value.ndim-1 if scores else None)
+            self.sites[key] = dict(line=end, expression=rhs, file=frame.f_code.co_filename)
         def trace(frame, event, arg):
             code = frame.f_code
             if code in methods:
-                layer, assignments = methods[code]; ident = id(frame)
+                attention,assignments=methods[code];ident=id(frame)
+                if event=='call':
+                    module=frame.f_locals.get('self');binding=instances.get(id(module))
+                    require(binding is not None and binding[0] is module and binding[2] is code and binding[3]==attention,
+                            f'FORENSIC_OPT_FRAME: cannot identify original-method self in {diagnostic(frame)}; '
+                            f'local names={sorted(frame.f_locals)}; expected registered OPT layer/attention instance')
+                    layer=binding[1];key=(layer,attention)
+                    require(key not in completed and all(s['key']!=key for s in frames.values()),
+                            f'FORENSIC_OPT_FRAME: repeated original-method call for L{layer}, {diagnostic(frame)}')
+                    frames[ident]=dict(layer=layer,key=key,residual_count=0)
+                    return trace
+                state=frames.get(ident)
+                require(state is not None,f'FORENSIC_OPT_FRAME: {event} without verified original-method call, {diagnostic(frame)}')
+                layer=state['layer']
                 if event == 'line':
-                    site = pending.get(ident)
-                    if site and (frame.f_lineno > site[0] or frame.f_lineno < site[0] - 12): flush(frame)
+                    site = state.get('pending')
+                    if site and (frame.f_lineno > site[0] or frame.f_lineno < site[0] - 12): flush(frame,state)
                     if frame.f_lineno in assignments:
-                        pending[ident] = (*assignments[frame.f_lineno], layer)
+                        state['pending']=assignments[frame.f_lineno]
                 elif event == 'return':
-                    flush(frame)
-                    if hasattr(frame.f_locals.get('self'),'num_heads'):
-                        for role,name in (('k','key_states'),('v','value_states')):
-                            value=frame.f_locals.get(name)
-                            if hasattr(value,'detach'):
+                    try:
+                        # An exception unwinding through the frame produces a
+                        # return event with None; preserve the original error.
+                        if arg is not None:
+                            flush(frame,state)
+                            if attention:
                                 heads=self.driver.heads;d=self.driver.identity['hidden_size']//heads
-                                require((value.ndim==3 and value.shape[0]==heads and value.shape[-1]==d) or
-                                        (value.ndim==4 and list(value.shape[:2])==[1,heads] and value.shape[-1]==d),
-                                        'uninspected actual Attention K/V local layout')
-                                self.save(f'L{layer}.used_attention_kv_{role}',value.reshape(1,heads,-1,d),layout='BHTD',token_axis=2)
+                                for role,name in (('k','key_states'),('v','value_states')):
+                                    value=frame.f_locals.get(name)
+                                    require(hasattr(value,'detach'),f'FORENSIC_OPT_FRAME: missing required L{layer}.{name}, {diagnostic(frame)}')
+                                    require((value.ndim==3 and value.shape[0]==heads and value.shape[-1]==d) or
+                                            (value.ndim==4 and list(value.shape[:2])==[1,heads] and value.shape[-1]==d),
+                                            f'FORENSIC_OPT_FRAME: uninspected Attention K/V layout at L{layer}, {diagnostic(frame)}')
+                                    self.save(f'L{layer}.used_attention_kv_{role}',value.reshape(1,heads,-1,d),layout='BHTD',token_axis=2)
+                            completed.add(state['key'])
+                    finally:frames.pop(ident,None)
                 return trace
             # Observe actual native Linear and transported delta locals from the
             # frozen physical_path closure. No independent ES projection runs.
             if code.co_name == 'miss' and Path(code.co_filename).name == 'r3b_runtime.py':
-                if event == 'return':
+                if event == 'return' and arg is not None:
                     v = frame.f_locals; layer, role = v['layer'], v['role']
                     for kind in ('base','delta'):
                         self.save(f'L{layer}.{kind}_{role}', v[kind])
@@ -160,23 +205,37 @@ class PassiveCapture:
                                      ('fc1',layer.fc1), ('ffn',layer.fc2)):
                     handles.append(module.register_forward_hook(post(prefix+name), with_kwargs=True))
                 handles.append(layer.fc2.register_forward_pre_hook(pre(prefix+'activation'), with_kwargs=True))
-                # Code is shared by layers; resolve the layer from the actual self.
+                # Code-to-sites metadata is fixed before tracing. Layer identity
+                # belongs to a verified original-method call frame, never code.
                 for method, attention in ((attn.forward,True),(layer.forward,False)):
-                    methods[method.__func__.__code__] = (None, local_assignments(method,attention))
-            instances = {id(m): i for i,l in enumerate(adapter.layers) for m in (l,l.self_attn)}
-            def resolved_trace(frame, event, arg):
-                if frame.f_code in methods:
-                    _, sites = methods[frame.f_code]
-                    methods[frame.f_code] = (instances[id(frame.f_locals['self'])],sites)
-                trace(frame,event,arg)
-                return resolved_trace if frame.f_code in methods or (frame.f_code.co_name == 'miss' and Path(frame.f_code.co_filename).name == 'r3b_runtime.py') else None
+                    function=original_method(method);code=function.__code__;sites=local_assignments(function,attention)
+                    require(code not in methods or methods[code]==(attention,sites),
+                            f'FORENSIC_OPT_FRAME: ambiguous layer/attention code {function.__qualname__}')
+                    methods[code]=(attention,sites)
+                    module=attn if attention else layer
+                    require(id(module) not in instances,'FORENSIC_OPT_FRAME: repeated layer/attention instance')
+                    instances[id(module)]=(module,i,code,attention)
             def head(module,args,kwargs,out): self.save('final_hidden',args[0])
             handles.append(self.driver.model.lm_head.register_forward_hook(head,with_kwargs=True))
-            sys.settrace(resolved_trace)
+            sys.settrace(trace)
             yield
+            expected={(binding[1],binding[3]) for binding in instances.values()}
+            missing=sorted(expected-completed)
+            require(not frames and not missing,
+                    f'FORENSIC_OPT_FRAME: missing original OPT method calls/returns {missing}; '
+                    'expected unwrapped layer and attention frames; verify decorator __wrapped__ chain')
+            for module,i,code,attention in instances.values():
+                sites=methods[code][1]
+                required=({'used_attention_kv_k','used_attention_kv_v'} if attention else {'attention_residual','ffn_residual'})
+                required|={site[2] for site in sites.values() if site[2]!='residual'}
+                missing=sorted(op for op in required if f'L{i}.{op}' not in self.tensors)
+                require(not missing,f'FORENSIC_OPT_FRAME: missing required tensor observations at L{i}: {missing}; '
+                        f'original code {code.co_filename}:{code.co_firstlineno}')
         finally:
             sys.settrace(original_trace)
-            for handle in reversed(handles): handle.remove()
+            try:
+                for handle in reversed(handles): handle.remove()
+            finally:frames.clear()
 
     @contextmanager
     def tiny_hooks(self):
