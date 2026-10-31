@@ -38,7 +38,7 @@ python -u scripts/95_run_r3a_distributed_no_reuse.py --phase prepare --model fac
   --prompt-lengths 32 --device cuda:0 --adapter user_a --seed 42 --output-dir "$r5p_root/base_prepare"
 r5p_stage=scan_attribution
 python scripts/112_run_r5_balanced_benchmark.py --phase diagnose \
-  --historical-inputs /data/khuss/repos/GP_semcache/results/r5/opt_152301_20261031T074321Z \
+  --historical-inputs /data/khuss/repos/GP_semcache/results/r5/opt_152301_20261031T074321Z/run \
   --output-dir "$r5p_root/attribution"
 if [[ "${R5P_MODE:-diagnostic}" == diagnostic ]]; then
   for r5p_accounting in legacy incremental; do
