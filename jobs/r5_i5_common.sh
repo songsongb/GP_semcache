@@ -19,9 +19,11 @@ i5_index="${SLURM_ARRAY_TASK_ID:-0}"
 python - "$I5_EXPERIMENT" "$i5_expected_scale" "$i5_dataset_count" "$i5_index" <<'PY'
 import json,sys
 from pathlib import Path
-p=Path(sys.argv[1]);m=json.loads((p/'i5_workload_manifest.json').read_text());b=m['blocks'][int(sys.argv[4])]
-assert m['scale']==sys.argv[2] and not m['TEST_FIXTURE_ONLY']
-assert len({x['dataset'] for x in m['blocks']})==int(sys.argv[3])
+sys.path.insert(0,'src')
+from semcache.edgelora.r5_i5_evidence import verify
+p=Path(sys.argv[1]);verify(p);m=json.loads((p/'i5_workload_manifest.json').read_text());index=int(sys.argv[4]);assert 0<=index<len(m['blocks']);b=m['blocks'][index]
+assert (sys.argv[2]=='ANY' or m['scale']==sys.argv[2]) and not m['TEST_FIXTURE_ONLY']
+assert sys.argv[3]=='ANY' or len({x['dataset'] for x in m['blocks']})==int(sys.argv[3])
 assert b['resources']['expected_maximum_forwards']>0
 PY
 python -u scripts/119_run_r5_i5.py --experiment "$I5_EXPERIMENT" --block-index "$i5_index" \
