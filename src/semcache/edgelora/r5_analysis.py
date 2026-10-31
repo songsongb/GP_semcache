@@ -16,7 +16,7 @@ from .r5_evidence import verify
 from .r5_semantic_index import eligibility
 
 
-def audit(directory):
+def audit(directory,*,performance_block=False):
     root=Path(directory);es=root/'es';plan=read(es/'es_plan.json');worker=read(es/'es_result.json')
     identity=read(root/'r5_identity.json');physical=identity['physical_identity'];model=identity['model_identity']
     fixture=plan['fixture'];layers=model['layers'];hidden=model['hidden_size'];element=4 if model['hidden_dtype']=='float32' else 2
@@ -38,7 +38,8 @@ def audit(directory):
     ledger=jsonl(root/'r5_requests.jsonl');arrivals=[e for e in ledger if e['kind']=='ARRIVAL'];completions=[e for e in ledger if e['kind']=='COMPLETION']
     rows=jsonl(root/'r5_generation_outputs.jsonl');by={r['request_id']:r for r in rows}
     requests={e['request']['request_id']:validate_request(e['request']) for e in arrivals}
-    require(len(by)==len(rows)==len(arrivals)==len(completions)==20 and len(requests)==len(rows),'missing/duplicate completion or request')
+    expected_count=10 if performance_block else 20
+    require(len(by)==len(rows)==len(arrivals)==len(completions)==expected_count and len(requests)==len(rows),'missing/duplicate completion or request')
     require([e['request_id'] for e in completions]==list(by)==list(requests),'completion ordering differs')
     for arrival,done,row in zip(arrivals,completions,rows):
         req=arrival['request'];require(req['request_id']==row['request_id']==done['request_id'] and
@@ -229,7 +230,7 @@ def audit(directory):
         life=read(es/name);require(life['returncode']==0 and life['all_children_exited'] and not life['forced_termination'],'unclean worker shutdown')
     integrated=[r for r in rows if r['condition']=='INTEGRATED']
     lifecycle=bool(hits and evictions and any(r['decision']=='SEMANTIC_CANDIDATE_REJECTED' for r in integrated))
-    if plan['lifecycle_capacity']:
+    if plan['lifecycle_capacity'] and (integrated or not performance_block):
         require(integrated[0]['decision']=='CACHE_MISS' and integrated[0]['admission'] and integrated[1]['source']['source_request_id']==integrated[0]['request_id'] and
             integrated[1]['user_id']!=integrated[0]['user_id'] and integrated[3]['source']['source_request_id']==integrated[0]['request_id'] and
             any(e['kind']=='EVICT' and e['source_request_id']==integrated[2]['request_id'] and e['request_id']==integrated[4]['request_id'] for e in events) and
