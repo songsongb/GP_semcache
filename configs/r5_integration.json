@@ -1,0 +1,15 @@
+{
+  "schema": "R5_CONFIG_V1",
+  "semantic_model": "huawei-noah/TinyBERT_General_4L_312D",
+  "semantic_pooling": "masked_mean",
+  "semantic_device": "cpu",
+  "clusters": 1,
+  "cluster_initialization": "first_k",
+  "cluster_update_mode": "immediate_eq9",
+  "cluster_update_interval": 100,
+  "window_size": 3,
+  "candidate_limit": 64,
+  "physical_policy": "LRU_FIT_COMPLETE_SOURCE_V1",
+  "default_capacity_bytes": 268435456,
+  "pilot": "controlled ordinary request sequence; no natural hit-rate claim"
+}
