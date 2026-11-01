@@ -1,3 +1,11 @@
+# I5 GPU identity policy update
+
+For I5, historical preparation UUID equality is superseded by the explicit
+SAME_COMPATIBLE_GPU_CLASS policy. The execution allocation is pinned across
+A/B/C and owns all new physical KV; no historical live cache is restored.
+Legacy setup defaults remain STRICT_PREPARATION_GPU. See
+[R5_I5_GPU_IDENTITY_POLICY.md](R5_I5_GPU_IDENTITY_POLICY.md).
+
 # I5-P operator update
 
 The conversation-aware patch supersedes the positional routing and fixed array
@@ -279,7 +287,7 @@ for subsequent independent audits; source drift fails closed.
 
 Verify real I4A base preparation, model/tokenizer files and TinyBERT revision
 `34707a33cd59a94ecde241ac209bf35103691b43` exist locally. `I5_BASE_PREPARED` must
-identify a real OPT FP16 preparation on the same GPU UUID. If missing, use the
+identify a real OPT FP16 preparation on a compatible RTX 3090 under the I5 policy. If missing, use the
 existing R3A preparation workflow in a separately reviewed allocation. Install
 `rouge==1.0.1` for MultiNews, matplotlib for plots, and the compatible datasets
 package for HF snapshots outside inference jobs.

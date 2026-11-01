@@ -24,12 +24,17 @@ from .r5_perf_evidence import PerformanceEvidence,spawn,finish
 
 
 def execute(plan,root,writer):
+    from .r5_i5_gpu import reject_restore
+    reject_restore(plan)
     root=Path(root);m,pm,adapters,registry=validate(plan['multi_prepared'])
     require(m['TEST_FIXTURE_ONLY']==plan['fixture'] and m['base_prepared']==plan['base_prepared'],'multi/base preparation scope mismatch')
     initialized=time.monotonic_ns()
-    _,_,_,old,tokenizer,gpu=setup(plan,native=False)
+    _,_,_,old,tokenizer,gpu=setup(plan,native=False,gpu_identity_policy=plan['gpu_identity_policy'])
     if plan['fixture']:old.tiny.matrices=None;tokenizer=TinyTokenizer()
     tok=tokenizer_identity(pm,tokenizer);require(tok==m['tokenizer'],'runtime tokenizer differs from adapter preparation')
+    from .r5_i5_gpu import receipt,match_execution
+    gpu_receipt=receipt(pm,gpu,plan['gpu_identity_policy'],fixture=plan['fixture'])
+    match_execution(plan['expected_execution_gpu_uuid'],gpu_receipt['execution_gpu_uuid'])
     raw=deepcopy(plan['block']['tasks']);encoder=None if plan['condition']=='FULL_RECOMPUTE' else encoder_for(plan,raw);config=read(ROOT/'configs/r5_integration.json')
     require(config['clusters']==1 and config['physical_policy']=='LRU_FIT_COMPLETE_SOURCE_V1','unsupported semantic/cache policy')
     writer.write(root/'configuration.json',config);writer.write(root/'registry.json',registry);writer.write(root/'workload.json',raw)
@@ -179,6 +184,7 @@ def execute(plan,root,writer):
         if not plan['fixture']:
             from semcache.system_cost.es_base_profile import assert_no_lora
             assert_no_lora(old.model,old.adapter);require(full_base_fingerprint(old.model)['sha256']==pm['identity']['base_weight_sha256'],'base weights mutated')
+        writer.write(root/'gpu_identity.json',gpu_receipt)
         writer.write(root/'result.json',dict(status='COMPLETE',condition=plan['condition'],es_pid=os.getpid(),requests=len(rows),
             gpu_inference_performed=not plan['fixture'],base_models_loaded=1,es_lora_parameters=0,adapter_ids=list(adapters),sequential=True))
     finally:

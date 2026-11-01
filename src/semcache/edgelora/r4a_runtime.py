@@ -31,7 +31,10 @@ def launch(kind,plan,output):
     return p,out,err
 
 
-def setup(plan,native=False):
+def setup(plan,native=False,*,gpu_identity_policy='STRICT_PREPARATION_GPU'):
+    from .gpu_identity import STRICT_PREPARATION_GPU,SAME_COMPATIBLE_GPU_CLASS,validate_gpu
+    require(gpu_identity_policy in (STRICT_PREPARATION_GPU,SAME_COMPATIBLE_GPU_CLASS),'unknown GPU identity policy')
+    require(gpu_identity_policy==STRICT_PREPARATION_GPU or plan.get('i5_gpu_policy_scope')=='R5_I5','compatible GPU policy is I5-only')
     pm,ref,am=validate_prepared(plan['base_prepared']);fixture=plan['fixture']
     require(pm.get('TEST_FIXTURE_ONLY',False)==fixture,'base preparation fixture scope mismatch')
     identity=pm['identity'];gpu=None;model=adapter=tokenizer=tiny=None
@@ -45,7 +48,7 @@ def setup(plan,native=False):
         from .r3a_runtime import runtime_setup,memory,load_bare
         runtime_setup(plan['device']);torch.manual_seed(identity['seed'])
         available=sorted(os.sched_getaffinity(0))[:4];os.sched_setaffinity(0,available);torch.set_num_threads(len(available));torch.set_num_interop_threads(1)
-        gpu=memory(plan['device']);require(gpu['uuid']!='UNAVAILABLE' and gpu['uuid']==pm['gpu']['uuid'] and '3090' in gpu['name'],'fresh allocated RTX3090 UUID required')
+        gpu=memory(plan['device']);validate_gpu(pm['gpu'],gpu,plan['device'],gpu_identity_policy)
         require(versions()==identity['versions'],'prepared/runtime versions differ')
         if native:
             from .parity_forensics_probe import load_native

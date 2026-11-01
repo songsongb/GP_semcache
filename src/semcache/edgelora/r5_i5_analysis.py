@@ -189,6 +189,12 @@ def analyze(root):
             subset={rid:r for rid,r in rows.items() if r['adapter_id']==aid}
             st,ss=audit_adapter(path,aid,plan,registry,spec,pm,m['tokenizer'],reqs,subset);stats[aid]=st;steps.update(ss)
             pids.append(st['ud_pid']);sessions.append(st['session_id'])
+        from .r5_i5_gpu import verify_receipt,match_execution
+        gpu_provenance=read(path/'gpu_identity.json')
+        for aid in adapters:
+            verify_receipt(gpu_provenance,pm,read(path/aid/'identity.json')['gpu'],config['gpu_identity_policy'],fixture=config['fixture'])
+        match_execution(config['expected_execution_gpu_uuid'],gpu_provenance['execution_gpu_uuid'])
+        require(plan['gpu_identity_policy']==config['gpu_identity_policy'] and plan['expected_execution_gpu_uuid']==config['expected_execution_gpu_uuid'],'condition GPU policy differs')
         pids.append(result['es_pid']);allsteps[condition]=steps
         for rid,row in rows.items():
             task=tasks[rid];req=reqs[rid]
@@ -207,7 +213,7 @@ def analyze(root):
                 expected=dict(score(task['prepared']['sample'],row['generated_text'],task['prepared']['template_version']),request_id=rid,condition=condition,truncated=row['truncated'],hit=row['source'] is not None)
                 require(q[rid]==expected,'reference score differs');qualities.append(dict(expected,block_id=identity))
         cache=replay_cache(path,plan,registry,adapters,pm,m,reqs,rows,steps)
-        audits[condition]=dict(adapters=stats,cache=cache,initialization=read(path/'initialization.json'),warmup_total_ms=sum(w['elapsed_ms'] for w in warmups))
+        audits[condition]=dict(gpu_identity=gpu_provenance,adapters=stats,cache=cache,initialization=read(path/'initialization.json'),warmup_total_ms=sum(w['elapsed_ms'] for w in warmups))
         allrows[condition]=rows;events.extend(dict(e,condition=condition,block_id=identity) for e in jsonl(path/'events.jsonl'))
     require(len(set(pids))==len(pids) and len(set(sessions))==len(sessions),'process/session state reused between conditions')
     comparisons=[];numerical=[];quality_delta=[]

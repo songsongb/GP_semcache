@@ -28,13 +28,15 @@ def audit_adapter(path,aid,plan,registry,spec,pm,tok,requests,rows):
     require(phys==physical(runtime_view(pm,spec),tok,plan['device'],phys['gpu_uuid'],{k:v for k,v in contract.items() if k!='r5_multi'},spec,registry)[0] and
             identity['adapter']==spec and model==runtime_view(pm,spec)['identity'],'physical adapter/model/tokenizer contract differs')
     require(identity['tokenizer']==tok and identity['TEST_FIXTURE_ONLY']==plan['fixture'],'tokenizer/scope mismatch')
+    if not plan['fixture']:
+        require(identity['gpu']['uuid']==phys['gpu_uuid']==plan['expected_execution_gpu_uuid'] and (es/'gpu_execution.json').is_file(),'execution GPU identity/forward evidence differs')
     if plan['condition']=='FULL_RECOMPUTE':require(identity['semantic_encoder'] is None,'A performed semantic computation')
     elif plan['fixture']:require(identity['semantic_encoder']['checkpoint']=='controlled_vectors_v1','fixture encoder mismatch')
     else:
         from .r5_perf_schedule import TINYBERT_REVISION
         require(identity['semantic_encoder']['family']=='TinyBERT' and identity['semantic_encoder']['resolved_revision']==TINYBERT_REVISION and
                 identity['semantic_encoder']['device']=='cpu' and 'RTX 3090' in identity['gpu']['name'] and
-                identity['gpu']['uuid']==pm['gpu']['uuid']==phys['gpu_uuid'] and (es/'gpu_execution.json').is_file(),'real GPU/encoder proof missing')
+                identity['gpu']['uuid']==phys['gpu_uuid']==plan['expected_execution_gpu_uuid'] and (es/'gpu_execution.json').is_file(),'real GPU/encoder proof missing')
         for method in contract['methods'].values():require(digest_bytes(method['source'].encode())==method['source_sha256'],'runtime method digest differs')
     initial=read(base/'initial.json');ui=read(ud/'initial.json');result=read(ud/'result.json');up=read(ud/'plan.json');life=read(ud/'lifecycle.json')
     require(initial['cache']['occupancy_bytes']==0 and initial['cache']['entry_count']==0 and not initial['index_entries'] and not initial['seen'] and

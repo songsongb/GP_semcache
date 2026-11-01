@@ -41,6 +41,10 @@ def preflight(a,experiment,block,m,pm):
     require(tok.identity==experiment['tokenizer_identity'] and tok.supported_context_length==experiment['context_limit'], 'model/tokenizer/config differs')
     from semcache.edgelora.r5_runtime import encoder_for
     encoder=encoder_for(dict(fixture=False,semantic_revision=a.semantic_revision),[]);del encoder
+    from semcache.edgelora.r5_i5_gpu import diagnostics
+    diagnostic=diagnostics(pm,policy=a.gpu_identity_policy)
+    require(diagnostic['eligible'],'allocated GPU ineligible: '+json.dumps(diagnostic))
+    a.execution_gpu_uuid=diagnostic['execution_gpu_uuid']
     import torch
     r=block['resources']
     require(torch.cuda.is_available() and torch.cuda.device_count()==1 and 'RTX 3090' in torch.cuda.get_device_name(0), 'one RTX 3090 required')
@@ -57,6 +61,7 @@ def main(argv=None):
     p.add_argument('--output-dir',type=Path);p.add_argument('--source-commit');p.add_argument('--semantic-revision',default=TINYBERT_REVISION)
     p.add_argument('--runtime-budget-seconds',type=int,default=9000);p.add_argument('--enable-gpu-experiment',action='store_true')
     p.add_argument('--test-fixture-only',action='store_true');p.add_argument('--worker',choices=('es','ud'));p.add_argument('--plan',type=Path)
+    p.add_argument('--gpu-identity-policy',choices=('STRICT_PREPARATION_GPU','SAME_COMPATIBLE_GPU_CLASS'),default='SAME_COMPATIBLE_GPU_CLASS')
     a=p.parse_args(argv)
     if a.worker:
         plan=read(a.plan);writer=Writer(plan['account_root'],plan['condition_budget_bytes']);verify_sources(plan['sources'])
@@ -80,7 +85,7 @@ def main(argv=None):
         m,pm,adapters,registry=validate(a.multi_prepared)
         require(m['stage']=='expanded' and experiment['TEST_FIXTURE_ONLY']==a.test_fixture_only==m['TEST_FIXTURE_ONLY'], 'scope/expanded preparation mismatch')
         if a.enable_gpu_experiment:preflight(a,experiment,block,m,pm)
-        config=dict(schema='I5_EXECUTION_V1',fixture=a.test_fixture_only,multi_prepared=str(a.multi_prepared.resolve()),
+        config=dict(schema='I5_EXECUTION_V1',gpu_identity_policy=a.gpu_identity_policy,i5_gpu_policy_scope='R5_I5',expected_execution_gpu_uuid=getattr(a,'execution_gpu_uuid',None),fixture=a.test_fixture_only,multi_prepared=str(a.multi_prepared.resolve()),
             base_prepared=m['base_prepared'],device='cpu' if a.test_fixture_only else 'cuda:0',condition_budget_bytes=block['resources']['evidence_budget_bytes'],
             semantic_revision=a.semantic_revision,source_commit=a.source_commit,sources=sources(),block=block,runtime_budget_seconds=a.runtime_budget_seconds,
             experiment_id=experiment['experiment_id'],experiment_prepared=str(a.experiment.resolve()),experiment_manifest_sha256=sha(a.experiment/'i5_output_manifest.json'),
@@ -96,6 +101,8 @@ def main(argv=None):
             child=spawn([sys.executable,'-u',str(Path(__file__).resolve()),'--worker','es','--plan',str(dest/'plan.json')],writer,dest/'stdout.log',dest/'stderr.log',env=env)
             life=finish(child,timeout=remaining);writer.write(dest/'lifecycle.json',life)
             require(life['returncode']==0 and not life['pipe_errors'] and not life['forced_termination'], 'condition failed: '+str(dest/'stderr.log'))
+            from semcache.edgelora.r5_i5_gpu import match_execution
+            match_execution(config['expected_execution_gpu_uuid'],read(dest/'gpu_identity.json')['execution_gpu_uuid'])
             writer.reconcile();writer.write(dest/'reconciliation.json',dict(status='PASS'));writer.reconcile()
         verify_sources(config['sources']);status=dict(status='COMPLETE',GPU_NOT_RUN=a.test_fixture_only,block_id=block['block_id'])
     except BaseException as exc:
