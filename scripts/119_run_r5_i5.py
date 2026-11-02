@@ -51,7 +51,17 @@ def preflight(a,experiment,block,m,pm):
     require(torch.cuda.mem_get_info(0)[0] > r['gpu_estimate_bytes'], 'estimated GPU memory unavailable')
     require(shutil.disk_usage(a.output_dir.parent).free>3*r['evidence_budget_bytes']+2**30, 'insufficient block worst-case disk')
     require(int(os.environ.get('SLURM_CPUS_PER_TASK','0'))>=4, 'four CPU cores required')
-    require(os.sysconf('SC_AVPHYS_PAGES')*os.sysconf('SC_PAGE_SIZE')>=r['cpu_memory_reserve_bytes'], 'CPU memory reserve unavailable')
+
+    available = cpu_mem_available_bytes()
+    required = r['cpu_memory_reserve_bytes']
+
+    require(
+      available >= required,
+      f"CPU memory reserve unavailable: "
+      f"available={available / 2**30:.2f} GiB, "
+      f"required={required / 2**30:.2f} GiB"
+    )
+
     require(r['duration_estimate_seconds']*3<a.runtime_budget_seconds, 'estimated block duration exceeds bound; reduce block/generation or use measured smoke estimate')
 
 
@@ -124,3 +134,10 @@ def main(argv=None):
 
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda s,f:sys.exit(128+s));sys.exit(main())
+
+def cpu_mem_available_bytes():
+    with open("/proc/meminfo", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    raise RuntimeError("MemAvailable unavailable")
