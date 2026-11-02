@@ -17,6 +17,12 @@ from semcache.edgelora.r5_i5_evidence import fresh,seal,verify,sources,verify_so
 from semcache.edgelora.r5_perf_evidence import Writer,accounted_modules,spawn,finish
 from semcache.edgelora.r5_perf_schedule import TINYBERT_REVISION
 
+def cpu_mem_available_bytes():
+    with open("/proc/meminfo", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    raise RuntimeError("MemAvailable unavailable")
 
 def preflight(a,experiment,block,m,pm):
     require(os.environ.get('R5_I5_ENABLE_GPU')=='1' and os.environ.get('R5_ENABLE_GPU')=='1' and os.environ.get('SLURM_JOB_ID'), 'manual Slurm allocation and I5/R5 GPU opt-in required')
@@ -135,9 +141,3 @@ def main(argv=None):
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda s,f:sys.exit(128+s));sys.exit(main())
 
-def cpu_mem_available_bytes():
-    with open("/proc/meminfo", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) * 1024
-    raise RuntimeError("MemAvailable unavailable")
