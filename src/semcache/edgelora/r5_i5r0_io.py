@@ -122,7 +122,15 @@ def load_blocks(files,mode,allow_partial=False,expected_blocks=None):
                     if x['kind']=='ARRIVAL':
                         req=x['request'];key=(c,req['request_id']);require(key not in item['requests'],'duplicate request arrival');item['requests'][key]=req
                 rows.extend(files.jsonl(root+'/'+c+'/generation.jsonl'))
-                events.extend(dict(e,condition=c) for e in files.jsonl(root+'/'+c+'/events.jsonl'))
+                event_path=root+'/'+c+'/events.jsonl'
+                if c=='FULL_RECOMPUTE':
+                    # A disables both semantic matching and cache events. The
+                    # sealed inventory may legitimately omit this empty stream.
+                    condition_events=files.jsonl(event_path) if event_path in files.names else []
+                    require(not condition_events,'FULL_RECOMPUTE must not contain semantic/cache events')
+                else:
+                    condition_events=files.jsonl(event_path)
+                events.extend(dict(e,condition=c) for e in condition_events)
         else:
             audit=files.json(root+'/i5_independent_audit.json');require(audit['status']=='PASS','exported audit not PASS')
             item['reported_audit']=audit

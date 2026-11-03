@@ -55,6 +55,25 @@ def archive(parent,out):
             if p.is_file() and p.resolve()!=Path(out).resolve():z.write(p,p.relative_to(parent).as_posix())
 
 
+def raw_fixture(parent):
+    """Synthetic raw structure: A never creates events.jsonl; B/C do."""
+    parent=Path(parent);exports=parent/'exports';exports.mkdir();b=fixture(exports)
+    config=json.loads((b/'i5_execution_config.json').read_text())
+    rows=[json.loads(x) for x in (b/'i5_request_metrics.jsonl').read_text().splitlines()]
+    events=[json.loads(x) for x in (b/'i5_cache_events.jsonl').read_text().splitlines()]
+    runs=parent/'runs';runs.mkdir();root=runs/'block_0_123';root.mkdir()
+    for name,value in [('i5_execution_config.json',config),('i5_block_status.json',{'status':'COMPLETE'}),('i5_workload_manifest.json',{'block':config['block']}),('i5_adapter_registry.json',{'registry':REG})]:
+        (root/name).write_text(json.dumps(value))
+    for condition in CONDITIONS:
+        dest=root/condition;dest.mkdir();(dest/'result.json').write_text(json.dumps({'status':'COMPLETE'}))
+        streams=[('generation.jsonl',[r for r in rows if r['condition']==condition]),('requests.jsonl',[])]
+        if condition!='FULL_RECOMPUTE':
+            streams.append(('events.jsonl',[{k:v for k,v in e.items() if k!='condition'} for e in events if e['condition']==condition]))
+        for name,value in streams:
+            (dest/name).write_text(''.join(json.dumps(r)+'\n' for r in value))
+    seal(root);return runs,root
+
+
 class CandidateChecks(unittest.TestCase):
     def diagnose(self,s,t,**kw):return candidate_diagnostic(s,t,resident=True,registry=REG,**kw)
     def test_short_prefix(self):
@@ -127,15 +146,8 @@ class InputAndAggregation(unittest.TestCase):
             finally:f.close()
     def test_raw_run_mode_excludes_sibling_audits_and_rejects_incomplete(self):
         with tempfile.TemporaryDirectory() as d:
-            p=Path(d);exports=p/'exports';exports.mkdir();b=fixture(exports)
-            c=json.loads((b/'i5_execution_config.json').read_text());rows=[json.loads(x) for x in (b/'i5_request_metrics.jsonl').read_text().splitlines()];events=[json.loads(x) for x in (b/'i5_cache_events.jsonl').read_text().splitlines()]
-            runs=p/'runs';runs.mkdir();root=runs/'block_0_123';root.mkdir()
-            for name,v in [('i5_execution_config.json',c),('i5_block_status.json',{'status':'COMPLETE'}),('i5_workload_manifest.json',{'block':c['block']}),('i5_adapter_registry.json',{'registry':REG})]:(root/name).write_text(json.dumps(v))
-            for condition in CONDITIONS:
-                dest=root/condition;dest.mkdir();(dest/'result.json').write_text(json.dumps({'status':'COMPLETE'}))
-                for name,v in [('generation.jsonl',[r for r in rows if r['condition']==condition]),('events.jsonl',[{k:v for k,v in e.items() if k!='condition'} for e in events if e['condition']==condition]),('requests.jsonl',[])]:
-                    (dest/name).write_text(''.join(json.dumps(r)+'\n' for r in v))
-            seal(root)
+            p=Path(d);runs,root=raw_fixture(p)
+            self.assertFalse((root/'FULL_RECOMPUTE/events.jsonl').exists())
             sibling=runs/'block_0_456_audit';sibling.mkdir();(sibling/'ignored').write_text('not a raw block')
             result=run(runs_root=runs,output_dir=p/'out',allow_partial=True,expected_blocks=1)
             self.assertEqual(result['workload']['blocks'],1)
@@ -146,6 +158,61 @@ class InputAndAggregation(unittest.TestCase):
             try:
                 with self.assertRaisesRegex(ValueError,'missing sealed evidence manifest'):load_blocks(f,'RAW_RUNS',True,1)
             finally:f.close()
+    def test_raw_full_recompute_missing_or_empty_events(self):
+        for present in (False,True):
+            with self.subTest(present=present),tempfile.TemporaryDirectory() as d:
+                runs,root=raw_fixture(d)
+                if present:
+                    (root/'FULL_RECOMPUTE/events.jsonl').write_text('');seal(root)
+                f=Files(runs)
+                try:
+                    blocks=load_blocks(f,'RAW_RUNS',False,1)
+                    self.assertEqual(blocks[0]['integrity']['status'],'SHA256_INVENTORY_PASS')
+                    self.assertEqual([e['condition'] for e in blocks[0]['events']],
+                        ['SEMANTIC_NO_REUSE']*3+['SEMCACHE_INTEGRATED']*3)
+                    self.assertEqual(blocks[0]['missing'],[])
+                finally:f.close()
+    def test_raw_full_recompute_rejects_nonempty_events(self):
+        for kind in ('DISCOVERY','ADMISSION'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                runs,root=raw_fixture(d)
+                (root/'FULL_RECOMPUTE/events.jsonl').write_text(json.dumps({'event':{'kind':kind}})+'\n');seal(root)
+                f=Files(runs)
+                try:
+                    with self.assertRaisesRegex(ValueError,'FULL_RECOMPUTE must not contain'):
+                        load_blocks(f,'RAW_RUNS',True,1)
+                finally:f.close()
+    def test_raw_semantic_conditions_require_event_files(self):
+        for condition in CONDITIONS[1:]:
+            with self.subTest(condition=condition),tempfile.TemporaryDirectory() as d:
+                runs,root=raw_fixture(d)
+                (root/condition/'events.jsonl').unlink();seal(root)
+                f=Files(runs)
+                try:
+                    with self.assertRaisesRegex(ValueError,'missing evidence: .*'+condition+'/events.jsonl'):
+                        load_blocks(f,'RAW_RUNS',True,1)
+                finally:f.close()
+    def test_raw_event_file_hashes_remain_strict(self):
+        for condition in CONDITIONS:
+            with self.subTest(condition=condition),tempfile.TemporaryDirectory() as d:
+                runs,root=raw_fixture(d)
+                event_path=root/condition/'events.jsonl'
+                if condition=='FULL_RECOMPUTE':event_path.write_text('');seal(root)
+                event_path.write_text(event_path.read_text()+'\n')
+                f=Files(runs)
+                try:
+                    with self.assertRaisesRegex(ValueError,'corrupt sealed file'):
+                        load_blocks(f,'RAW_RUNS',True,1)
+                finally:f.close()
+    def test_raw_semantic_event_json_is_validated(self):
+        for condition in CONDITIONS[1:]:
+            with self.subTest(condition=condition),tempfile.TemporaryDirectory() as d:
+                runs,root=raw_fixture(d)
+                (root/condition/'events.jsonl').write_text('invalid json\n');seal(root)
+                f=Files(runs)
+                try:
+                    with self.assertRaises(json.JSONDecodeError):load_blocks(f,'RAW_RUNS',True,1)
+                finally:f.close()
     def test_raw_incomplete_directory_cannot_be_ignored(self):
         with tempfile.TemporaryDirectory() as d:
             (Path(d)/'block_0_123').mkdir()
