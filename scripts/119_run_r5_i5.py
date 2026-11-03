@@ -114,8 +114,11 @@ def main(argv=None):
             plan=dict(config,condition=condition,account_root=str(dest),output=str(dest));writer.write(dest/'plan.json',plan)
             env=dict(os.environ,HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',TOKENIZERS_PARALLELISM='false',CUBLAS_WORKSPACE_CONFIG=':4096:8',OMP_NUM_THREADS='4',MKL_NUM_THREADS='4',OPENBLAS_NUM_THREADS='4')
             remaining=deadline-time.monotonic();require(remaining>1, 'block runtime exhausted')
+            process_start=time.monotonic_ns()
             child=spawn([sys.executable,'-u',str(Path(__file__).resolve()),'--worker','es','--plan',str(dest/'plan.json')],writer,dest/'stdout.log',dest/'stderr.log',env=env)
-            life=finish(child,timeout=remaining);writer.write(dest/'lifecycle.json',life)
+            life=finish(child,timeout=remaining);process_end=time.monotonic_ns()
+            life.update(execution_start_ns=process_start,execution_end_ns=process_end,process_wall_ms=(process_end-process_start)/1e6)
+            writer.write(dest/'lifecycle.json',life)
             require(life['returncode']==0 and not life['pipe_errors'] and not life['forced_termination'], 'condition failed: '+str(dest/'stderr.log'))
             from semcache.edgelora.r5_i5_gpu import match_execution
             match_execution(config['expected_execution_gpu_uuid'],read(dest/'gpu_identity.json')['execution_gpu_uuid'])
