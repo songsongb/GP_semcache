@@ -22,7 +22,7 @@ def historical_fixture(root,*,full=False,strided=False):
     base=prepare_tiny(root/'base');pm=read(base/'r3a_prepare_manifest.json');run=root/'historical_run';run.mkdir()
     plan_root=root/'historical_plan';plan_root.mkdir();review=root/'historical_review';review.mkdir()
     commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-    frozen='src/semcache/edgelora/r3b_runtime.py';inventory={frozen:file_sha(ROOT/frozen)}
+    frozen='src/semcache/edgelora/r3b_runtime.py';inventory={frozen:digest_bytes(subprocess.check_output(['git','show','HEAD:'+frozen],cwd=ROOT))}
     src=dict(commit=commit,files=inventory)
     tasks=[dict(request_id=rid,user_id='User_01',adapter_id='Adapter_A',token_ids=[1]*n) for rid,n in (('S',64),('F',256))]
     block=dict(dataset='qasper',tasks=tasks);config=dict(fixture=True,source_commit=commit,sources=inventory,block=block,

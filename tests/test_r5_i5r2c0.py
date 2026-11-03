@@ -32,7 +32,7 @@ class Cast(unittest.TestCase):
 class EvidenceTests(unittest.TestCase):
  def fixture(self,root):
   run,review,base,commit=historical_fixture(root)
-  source=dict(commit=commit,branch='exp/raw-semcache-r5-integration',files={'src/semcache/edgelora/r3b_runtime.py':file_sha(ROOT/'src/semcache/edgelora/r3b_runtime.py')})
+  source=dict(commit=commit,branch='exp/raw-semcache-r5-integration',files={'src/semcache/edgelora/r3b_runtime.py':__import__('hashlib').sha256(subprocess.check_output(['git','show','HEAD:src/semcache/edgelora/r3b_runtime.py'],cwd=ROOT)).hexdigest()})
   with patch('semcache.edgelora.r5_i5r2bs1_plan.source_identity',return_value=source):
    prepare(run,review,base,root/'plan',expected_commit=commit,fixture=True)
    raw=synthetic_run(root/'plan',root/'run')

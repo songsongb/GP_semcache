@@ -84,7 +84,9 @@ def main(argv=None):
         plan=read(a.plan);writer=Writer(plan['account_root'],plan['condition_budget_bytes']);verify_sources(plan['sources'])
         if not plan['fixture']:
             require(os.environ.get('R5_I5_ENABLE_GPU')=='1' and os.environ.get('SLURM_JOB_ID') and source_identity()['git_head']==plan['source_commit'], 'GPU worker opt-in/source mismatch')
-        if plan.get('i5r2b'):
+        if plan.get('i5r2c2'):
+            from semcache.edgelora.r5_i5r2c2 import execute,serve
+        elif plan.get('i5r2b'):
             from semcache.edgelora.r5_i5r2b_capture import execute,serve
         else:
             from semcache.edgelora.r5_i5_runtime import execute
@@ -100,6 +102,9 @@ def main(argv=None):
     try:
         verify(a.experiment);experiment=read(a.experiment/'i5_workload_manifest.json')
         require(bool(experiment.get('i5r2b'))==a.enable_arithmetic_diagnostic,'explicit arithmetic diagnostic flag/plan mismatch')
+        if experiment.get('i5r2c2'):
+            from semcache.edgelora.r5_i5r2c2 import validate
+            validate(a.experiment)
         if a.enable_arithmetic_diagnostic:
             from semcache.edgelora.r5_i5r2b_plan import validate_plan as validate_arithmetic_plan
             require(validate_arithmetic_plan(a.experiment,a.multi_prepared)==experiment,'arithmetic protocol differs')
@@ -115,6 +120,7 @@ def main(argv=None):
             experiment_id=experiment['experiment_id'],experiment_prepared=str(a.experiment.resolve()),experiment_manifest_sha256=sha(a.experiment/'i5_output_manifest.json'),
             model_initialization_measured_separately=True,localhost_tcp=True,numerical_history='ROOT_CAUSE_UNRESOLVED; I4A Expanded 12/12 HIT tolerances failed; I3F-B FUTURE_WORK')
         if a.enable_arithmetic_diagnostic:config['i5r2b']=experiment['i5r2b']
+        if experiment.get('i5r2c2'):config['i5r2c2']=experiment['i5r2c2']
         write(out/'i5_execution_config.json',config);write(out/'i5_workload_manifest.json',dict(schema='I5_BLOCK_WORKLOAD_V1',experiment_id=experiment['experiment_id'],block=block))
         write(out/'i5_dataset_manifest.json',read(a.experiment/'i5_dataset_manifest.json'));write(out/'i5_adapter_registry.json',dict(adapters=adapters,registry=registry))
         deadline=time.monotonic()+a.runtime_budget_seconds
