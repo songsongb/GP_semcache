@@ -29,8 +29,14 @@ adapter-tagged events.jsonl; the reader handles them separately.
 Raw mode accepts only block_<index>_<numeric_job_id> directories directly under
 --runs-root; siblings ending _audit are excluded. It requires COMPLETE block and
 condition receipts, verifies sealed inventory, expected task coverage and matched
-A/B/C identities, and reads original arrivals/events. It does not call or weaken
-the frozen strict I5 GPU independent analyzer. ZIP mode accepts only exported
+A/B/C identities, and reads original arrivals/events. FULL_RECOMPUTE may omit events.jsonl
+or contain an empty event stream; any nonempty A event stream is rejected.
+SEMANTIC_NO_REUSE and SEMCACHE_INTEGRATED must each contain events.jsonl,
+including when --allow-partial is selected. SHA-256 inventory verification runs
+before these condition-specific checks and remains strict: a file listed in a
+sealed manifest cannot be removed or changed, including an empty A event file.
+It does not call or weaken the frozen strict I5 GPU independent analyzer.
+ZIP mode accepts only exported
 block_<index>_<numeric_job_id>_audit roots, verifies reported audit PASS and every
 contained manifest/file hash, and clearly retains the exported audit as a
 historical claim. Neither mode freshly validates GPU tensor bytes as consumed
@@ -206,7 +212,7 @@ The main historical release is results/r5/i5r/diagnosis/longbench3_delivery_2026
 
 ## Executed CPU validation
 
-The final corrected worktree ran 151 applicable tests: **149 PASS, 0 FAIL,
+The initial I5R-0 implementation ran 151 applicable tests: **149 PASS, 0 FAIL,
 2 SKIP**. This includes 22 I5R-0 diagnostic tests. Existing skips are the pinned
 ROUGE dependency and installed OPT contract (torch/transformers/numpy unavailable).
 Neither skip is reported as runtime/GPU verification. The exact regression command:
@@ -223,6 +229,15 @@ The real ZIP CLI completed successfully with explicit PARTIAL_DIAGNOSTIC status.
 Source, manifest, identity and counterfactual checks ran on CPU. No new GPU tensor
 audit or process/TCP execution was claimed. The independent audits above are the
 twelve verified historical exports, not twelve newly executed GPU audits.
+
+The RAW_RUNS event-loader correction on 2026-11-03 ran **27 PASS, 0 FAIL,
+0 SKIP** in test_r5_i5r0, and reran the same combined command above with
+**154 PASS, 0 FAIL, 2 SKIP** (156 total). The two existing dependency skips
+remain ROUGE and installed OPT. New raw fixtures omit A's events.jsonl and test
+its optional empty form, nonempty A rejection, mandatory B/C event files,
+malformed B/C JSON rejection and SHA-256 tamper rejection for all conditions.
+Only temporary synthetic fixtures are created/resealed by those tests; historical
+experiment results and manifests are never modified.
 
 ## R5-I5R-1 design handoff
 
