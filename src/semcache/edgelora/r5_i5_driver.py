@@ -81,10 +81,19 @@ class QualityDriver(ForwardDriver):
         input_past=None if past is None else past_summary(past,old,self.identity['layers'],self.heads,self.identity['hidden_size'],self.identity['hidden_dtype'],self.device)
         input_kv=[] if past is None else [[spec(t) for t in pair] for pair in cache_pairs(past)]
         session=DynamicSession(self.channel,self.identity,fid,c,torch_backend=not self.fixture)
+        transform=getattr(self,'experimental_native_projection',None)
+        if transform is not None:session.experimental_native_projection=lambda layer,role,native,x:transform(c,layer,role,native,x)
         first=len(self.channel.records);captures={};observed=[];components={};start=time.monotonic_ns();gpu_ms=None
         if self.fixture:
             def project(layer,role,x,native):
-                delta=session.correction(layer,role,x);tensor=ArrayTensor([f32(a+b) for a,b in zip(native(),delta)],[1,len(inputs),self.identity['hidden_size']])
+                delta=session.correction(layer,role,x)
+                if transform is None:base=native()
+                else:
+                    from .r3a_tiny import linear
+                    h=self.identity['hidden_size']
+                    fn=lambda padded:ArrayTensor(linear(padded.values,self.tiny.base['layers'][layer][role],h,h),list(padded.shape))
+                    base=transform(c,layer,role,fn,ArrayTensor(x,[1,len(inputs),h])).values
+                tensor=ArrayTensor([f32(a+b) for a,b in zip(base,delta)],[1,len(inputs),self.identity['hidden_size']])
                 captures.setdefault(layer,{})[role]=tensor.clone();observed.append(dict(layer=layer,role=role,reused=False));return tensor.values
             out=self.tiny.forward(inputs,c['attention_mask'],past,project,use_cache);session.complete()
             position=dict(source='TEST_FIXTURE_ONLY_ACTUAL_TINY_POSITION_MATH',positions=c['positions'],past_length=old)

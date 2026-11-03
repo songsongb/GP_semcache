@@ -30,7 +30,9 @@ def physical_path(adapter,session,entry,captures,records):
             key=(layer,role);require(key not in seen and not args and not kwargs,'duplicate/unsupported QKV step')
             def miss():
                 delta=session.correction(layer,role,x)
-                base=native(x);return (base+delta).to(base.dtype)
+                transform=getattr(session,'experimental_native_projection',None)
+                base=native(x) if transform is None else transform(layer,role,native,x)
+                return (base+delta).to(base.dtype)
             # Never expose writable cache storage to later attention operations.
             output=total_projection(entry,layer,role,miss)
             # Owned passive captures avoid later in-place attention scaling.
