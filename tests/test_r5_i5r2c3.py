@@ -6,6 +6,7 @@ from semcache.edgelora.r3a_artifacts import ROOT,THRESHOLDS,pack,write
 from semcache.edgelora.r5_i5_evidence import seal
 from semcache.edgelora.r5_i5r2_tensors import Evidence
 from semcache.edgelora.r5_i5r2c3 import causal_mask,aligned_bytes,compare_aligned,verdict,stage_a,history,fresh,BOUNDARIES
+from semcache.edgelora.r5_multi_artifacts import runtime_view
 
 
 def fixture(root,complete=False,mode='SOURCE_ONLY'):
@@ -13,7 +14,8 @@ def fixture(root,complete=False,mode='SOURCE_ONLY'):
  for p in (plan,run,audit):p.mkdir(parents=True)
  commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip();name='src/semcache/edgelora/r3b_runtime.py'
  sha=digest_bytes(subprocess.check_output(['git','show',commit+':'+name],cwd=ROOT))
- source=dict(commit=commit,files={name:sha});model=dict(hidden_size=4);adapter=dict(matrix_sha256='adapter-matrix')
+ source=dict(commit=commit,files={name:sha});model=dict(hidden_size=4,base_weight_sha256='base-fingerprint',adapter='BASE_PREPARATION',adapter_matrix_sha256='base-adapter',rank=8,delta_dtype='float32')
+ adapter=dict(adapter_id='Adapter_A',matrix_sha256='adapter-matrix',base_fingerprint=model['base_weight_sha256'],rank=8,matrix_dtype='float32')
  tasks=[dict(request_id=r,token_ids=list(range(n)),user_id='User_01',adapter_id='Adapter_A') for r,n in (('S',64),('F',256))]
  block=dict(tasks=tasks);cfg2=dict(mode=mode,source='S',target='F')
  p=dict(blocks=[block],i5r2c2=cfg2,i5r2b=dict(source=source),i5r1=dict(model_identity=model,adapter_fingerprints={'Adapter_A':'adapter-matrix'}))
@@ -25,7 +27,7 @@ def fixture(root,complete=False,mode='SOURCE_ONLY'):
   return dict(file=name+'.bin',shape=shape,dtype='float16',sha256=digest_bytes(data),status='CAPTURED',semantic_positions=[0,64],observed_shape=shape)
  for label,cond,n in (('S','SEMCACHE_INTEGRATED',64),('F','FULL_RECOMPUTE',256)):
   base=run/cond/'Adapter_A/es';base.mkdir(parents=True)
-  identity=dict(model_identity=model,adapter=adapter,gpu=None,physical_identity={'gpu_uuid':'CPU_FIXTURE'},contract={})
+  identity=dict(model_identity=runtime_view({'identity':model},adapter)['identity'],adapter=adapter,gpu=None,physical_identity={'gpu_uuid':'CPU_FIXTURE'},contract={})
   write(base.parent/'identity.json',identity)
   ctx=dict(pass_index=0,past_length=0,input_token_ids=list(range(n)),positions=list(range(n)),attention_mask=[1]*n)
   entries={};qkv={}
@@ -44,6 +46,29 @@ def fixture(root,complete=False,mode='SOURCE_ONLY'):
 
 
 class Attention(unittest.TestCase):
+ def test_valid_adapter_runtime_identity_is_not_base_identity(self):
+  with tempfile.TemporaryDirectory() as d:
+   p,r,a,c=fixture(Path(d));h=history(p,r,a,c,True)
+   self.assertNotEqual(h['identities']['S']['model_identity'],h['plan']['i5r1']['model_identity'])
+   self.assertEqual(h['identities']['S']['model_identity'],runtime_view({'identity':h['plan']['i5r1']['model_identity']},h['identities']['S']['adapter'])['identity'])
+ def changed_runtime_identity(self,field,value):
+  with tempfile.TemporaryDirectory() as d:
+   p,r,a,c=fixture(Path(d));path=r/'SEMCACHE_INTEGRATED/Adapter_A/identity.json';ident=json.loads(path.read_text());ident['model_identity'][field]=value;write(path,ident);seal(r)
+   ad=json.loads((a/'i5r2c2_decision.json').read_text());ad['inventory']=Evidence(r).verify();write(a/'i5r2c2_decision.json',ad);seal(a)
+   with self.assertRaisesRegex(ValueError,'historical model/adapter differs'):history(p,r,a,c,True)
+ def test_changed_base_fingerprint_rejected(self):
+  self.changed_runtime_identity('base_weight_sha256','changed-base')
+ def test_changed_adapter_fingerprint_rejected(self):
+  self.changed_runtime_identity('adapter_matrix_sha256','changed-adapter')
+ def test_wrong_runtime_rank_dtype_or_adapter_rejected(self):
+  for field,value in (('rank',4),('delta_dtype','float16'),('adapter','Adapter_B')):
+   with self.subTest(field=field):self.changed_runtime_identity(field,value)
+ def test_registry_fingerprint_rank_and_dtype_remain_pinned(self):
+  for field,value in (('matrix_sha256','changed-adapter'),('rank',4),('matrix_dtype','float16'),('base_fingerprint','changed-base'),('adapter_id','Adapter_B')):
+   with self.subTest(field=field),tempfile.TemporaryDirectory() as d:
+    p,r,a,c=fixture(Path(d));registry=json.loads((r/'i5_adapter_registry.json').read_text());registry['adapters']['Adapter_A'][field]=value;write(r/'i5_adapter_registry.json',registry);seal(r)
+    ad=json.loads((a/'i5r2c2_decision.json').read_text());ad['inventory']=Evidence(r).verify();write(a/'i5r2c2_decision.json',ad);seal(a)
+    with self.assertRaisesRegex(ValueError,'historical model/adapter differs'):history(p,r,a,c,True)
  def test_actual_causal_mask_all_future_keys_checked(self):
   good=pack([0 if k<=q else -65504 for q in range(64) for k in range(256)],'float16')
   self.assertTrue(causal_mask(good,[1,1,64,256],'float16',64,256)['future_keys_masked'])

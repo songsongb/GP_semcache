@@ -13,6 +13,7 @@ from .r5_i5r2_tensors import Evidence,DTYPES,slice_axis,metrics,file_sha
 from .r5_i5r2_analysis import source_provenance
 from .r5_i5r1_plan import source_identity
 from .r5_i5r2bs1_analysis import compare_bytes
+from .r5_multi_artifacts import runtime_view
 
 VERSION='I5R2C3_ATTENTION_V1'
 NAMESPACE=ROOT/'results/r5/i5r/numerical_fidelity/attention_localization'
@@ -87,9 +88,13 @@ def history(experiment,run,audit,expected_commit,fixture=False):
  require(oldnum['target']['thresholds']==THRESHOLDS,'historical frozen thresholds differ')
  s,t=cfg['block']['tasks'];require(len(s['token_ids'])==64 and len(t['token_ids'])==256 and s['token_ids']==t['token_ids'][:64] and s['adapter_id']==t['adapter_id']=='Adapter_A' and s['user_id']==t['user_id']=='User_01','historical source/target alignment differs')
  registry=ev.json('i5_adapter_registry.json');captures={};identities={};steps={};contexts={};backends={}
+ spec=registry['adapters']['Adapter_A'];base_identity=p['i5r1']['model_identity']
+ require(spec['adapter_id']=='Adapter_A' and spec['matrix_sha256']==p['i5r1']['adapter_fingerprints']['Adapter_A'] and
+  spec['base_fingerprint']==base_identity['base_weight_sha256'] and spec['rank']==8 and spec['matrix_dtype']=='float32','historical model/adapter differs')
+ expected_identity=runtime_view({'identity':base_identity},spec)['identity']
  for label,cond,task,n in (('S','SEMCACHE_INTEGRATED',s,64),('F','FULL_RECOMPUTE',t,256)):
   base=cond+'/Adapter_A/es';ident=ev.json(cond+'/Adapter_A/identity.json');identities[label]=ident
-  require(ident['model_identity']==p['i5r1']['model_identity'] and ident['adapter']['matrix_sha256']==registry['adapters']['Adapter_A']['matrix_sha256']==p['i5r1']['adapter_fingerprints']['Adapter_A'],'historical model/adapter differs')
+  require(ident['model_identity']==expected_identity and ident['adapter']==spec,'historical model/adapter differs')
   if not fixture:
    require(ident['physical_identity']['base_fingerprint']==p['i5r1']['model_identity']['base_weight_sha256'] and ident['physical_identity']['adapter_matrix_fingerprint']==ident['adapter']['matrix_sha256'],'physical/model/adapter fingerprint differs')
    method=ident['contract']['methods']['attention'];require(digest_bytes(method['source'].encode())==method['source_sha256'],'historical attention implementation text/hash differs')
