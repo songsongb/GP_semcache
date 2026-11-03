@@ -7,9 +7,9 @@ from .r3a_artifacts import ROOT, sha, write
 
 def fresh(path, protected=()):
     path = Path(path).resolve()
-    allowed=(ROOT/'results/r5/i5',ROOT/'results/r5/i5r/controlled_hit')
+    allowed=(ROOT/'results/r5/i5',ROOT/'results/r5/i5r/controlled_hit',ROOT/'results/r5/i5r/numerical_fidelity/earliest_arithmetic')
     require(not path.is_relative_to(ROOT) or any(path.is_relative_to(p) for p in allowed),
-            'I5 outputs belong under results/r5/i5 or results/r5/i5r/controlled_hit')
+            'I5 outputs belong under results/r5/i5, results/r5/i5r/controlled_hit or results/r5/i5r/numerical_fidelity/earliest_arithmetic')
     require(all(not path.is_relative_to(Path(p).resolve()) and not Path(p).resolve().is_relative_to(path)
                 for p in protected if p), 'output overlaps input')
     require(not path.exists(), 'refusing existing output directory; restart into a fresh attempt')

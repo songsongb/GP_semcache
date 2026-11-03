@@ -78,13 +78,17 @@ def main(argv=None):
     p.add_argument('--runtime-budget-seconds',type=int,default=9000);p.add_argument('--enable-gpu-experiment',action='store_true')
     p.add_argument('--test-fixture-only',action='store_true');p.add_argument('--worker',choices=('es','ud'));p.add_argument('--plan',type=Path)
     p.add_argument('--gpu-identity-policy',choices=('STRICT_PREPARATION_GPU','SAME_COMPATIBLE_GPU_CLASS'),default='SAME_COMPATIBLE_GPU_CLASS')
+    p.add_argument('--enable-arithmetic-diagnostic',action='store_true')
     a=p.parse_args(argv)
     if a.worker:
         plan=read(a.plan);writer=Writer(plan['account_root'],plan['condition_budget_bytes']);verify_sources(plan['sources'])
         if not plan['fixture']:
             require(os.environ.get('R5_I5_ENABLE_GPU')=='1' and os.environ.get('SLURM_JOB_ID') and source_identity()['git_head']==plan['source_commit'], 'GPU worker opt-in/source mismatch')
-        from semcache.edgelora.r5_i5_runtime import execute
-        from semcache.edgelora.r5_i5_session import serve
+        if plan.get('i5r2b'):
+            from semcache.edgelora.r5_i5r2b_capture import execute,serve
+        else:
+            from semcache.edgelora.r5_i5_runtime import execute
+            from semcache.edgelora.r5_i5_session import serve
         with accounted_modules(writer):
             if a.worker=='es':execute(plan,Path(plan['account_root']),writer)
             else:serve(plan,Path(plan['output']),writer)
@@ -95,6 +99,10 @@ def main(argv=None):
     out=fresh(a.output_dir,(a.experiment,a.multi_prepared));status=dict(status='FAILED',GPU_NOT_RUN=True)
     try:
         verify(a.experiment);experiment=read(a.experiment/'i5_workload_manifest.json')
+        require(bool(experiment.get('i5r2b'))==a.enable_arithmetic_diagnostic,'explicit arithmetic diagnostic flag/plan mismatch')
+        if a.enable_arithmetic_diagnostic:
+            from semcache.edgelora.r5_i5r2b_plan import validate_plan as validate_arithmetic_plan
+            require(validate_arithmetic_plan(a.experiment,a.multi_prepared)==experiment,'arithmetic protocol differs')
         require(0<=a.block_index<len(experiment['blocks']), 'invalid block index')
         block=experiment['blocks'][a.block_index]
         from semcache.edgelora.r5_multi_artifacts import validate
@@ -106,6 +114,7 @@ def main(argv=None):
             semantic_revision=a.semantic_revision,source_commit=a.source_commit,sources=sources(),block=block,runtime_budget_seconds=a.runtime_budget_seconds,
             experiment_id=experiment['experiment_id'],experiment_prepared=str(a.experiment.resolve()),experiment_manifest_sha256=sha(a.experiment/'i5_output_manifest.json'),
             model_initialization_measured_separately=True,localhost_tcp=True,numerical_history='ROOT_CAUSE_UNRESOLVED; I4A Expanded 12/12 HIT tolerances failed; I3F-B FUTURE_WORK')
+        if a.enable_arithmetic_diagnostic:config['i5r2b']=experiment['i5r2b']
         write(out/'i5_execution_config.json',config);write(out/'i5_workload_manifest.json',dict(schema='I5_BLOCK_WORKLOAD_V1',experiment_id=experiment['experiment_id'],block=block))
         write(out/'i5_dataset_manifest.json',read(a.experiment/'i5_dataset_manifest.json'));write(out/'i5_adapter_registry.json',dict(adapters=adapters,registry=registry))
         deadline=time.monotonic()+a.runtime_budget_seconds
