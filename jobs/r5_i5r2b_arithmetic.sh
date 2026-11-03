@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=r5_i5r2b_arithmetic
 #SBATCH --partition=batch_eebme_ugrad
-#SBATCH --nodelist=moana-y4
+#SBATCH --nodelist=moana-y3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --chdir=/data/khuss/repos/GP_semcache
 #SBATCH --output=/data/khuss/repos/GP_semcache/logs/r5_i5r2b_%j.out
 #SBATCH --error=/data/khuss/repos/GP_semcache/logs/r5_i5r2b_%j.err
