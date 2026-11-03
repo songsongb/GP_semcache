@@ -170,7 +170,7 @@ the new namespace. CPU fixtures explicitly label every result TEST_FIXTURE_ONLY.
 The stdlib scalar fixture cannot observe Torch normalization, promoted sum or
 additive attention mask tensors; those are NOT_CAPTURED, not fabricated PASSes.
 
-Final local validation against the delivered worktree:
+Original R2B implementation validation, before the metadata hotfix below:
 
 | Suite | Executed | PASS | FAIL | SKIP |
 | --- | ---: | ---: | ---: | ---: |
@@ -293,3 +293,129 @@ checks, GPU_EVIDENCE_COMPLETE, first observed/localized boundary, frozen logit
 verdicts and explicit missing fields separately. An ordinary metadata audit PASS
 or identical generated tokens does not imply numerical fidelity. A functional
 HIT or localized arithmetic boundary does not imply a confirmed root cause.
+
+## Metadata collision hotfix after job 152834
+
+The first real attempt at
+`run_20261103T101731Z/block_0_152834` failed while constructing capture metadata:
+the old `dict()` call specified default `observed_stride`/`original_contiguous`
+keywords and unpacked actual tensor observations containing the same keys. This
+was a diagnostic bug, not a numerical verdict or GPU allocation failure. The
+attempt did not produce the required arithmetic comparisons. Its files remain
+immutable; ROOT_CAUSE remains UNRESOLVED.
+
+`Capture.blob()` now constructs protected tensor metadata separately and merges
+validated layout observations. Only `observed_stride` (rank-matched nonnegative
+integer list), `original_contiguous` (bool) and `storage_offset` (nonnegative int)
+are accepted as observations. Their actual values from `Capture.save()` survive
+serialization. Shape, dtype, device, SHA, file, status, token axis, observed shape
+and semantic positions cannot be overridden. The six existing annotation names
+(`actual_operation`, `allow_negative_infinity`, `full_payload_sha256`,
+`full_payload_shape`, `full_payload_bytes`, `scale`) are separately allowlisted.
+All other extra keys fail before writing. `save()` also validates extras before
+forwarding positional arguments, preventing another duplicate-keyword failure.
+This changes diagnostic metadata assembly only, with no inference arithmetic,
+threshold, cache-policy or eligibility changes.
+
+Added regressions include actual CPU Torch FP16/FP32 tensors, both contiguous and
+noncontiguous with a nonzero storage offset, plus the actual `model_hooks()` path
+on a tiny CPU OPT instantiated from configuration (no checkpoint download).
+Dependency-free tests additionally reproduce the old merge collision and reject
+protected-field overrides and malformed observations. Local Torch/NumPy/Transformers
+are absent: the real Torch observer, two real tensor tests and actual OPT hook test
+are explicitly NOT_RUN/SKIP. They must execute in the existing SERAPH environment
+before another GPU submission.
+
+Hotfix validation against the corrected worktree:
+
+| Suite | PASS | FAIL | SKIP |
+| --- | ---: | ---: | ---: |
+| I5R2B unit tests | 27 | 0 | 4 |
+| I5R2A historical-analysis unit tests | 23 | 0 | 0 |
+| I5R1 unit tests | 20 | 0 | 0 |
+| I5R2B process/TCP and OFF regression | 3 | 0 | 0 |
+| Existing I5R1 strict process/TCP regression | 5 | 0 | 0 |
+| Total | 78 | 0 | 4 |
+
+Both independent CPU fixture audits passed. An initial sandbox socket restriction
+required a fresh, socket-enabled TCP test attempt; no GPU was involved. Retained
+new fixture evidence is under `metadata_hotfix_cpu_tcp_02` and
+`metadata_hotfix_legacy_r1_02` in the earliest-arithmetic namespace. The failed
+SERAPH attempt was neither accessed nor modified from the local workstation.
+
+The three changed files are the capture module, `tests/test_r5_i5r2b.py` and this
+document. The patch is pending user review and commit; stage only these files:
+
+```bash
+git add src/semcache/edgelora/r5_i5r2b_capture.py \
+  tests/test_r5_i5r2b.py docs/R5_I5R2B_EARLIEST_ARITHMETIC.md
+git diff --cached --check
+git diff --cached --stat
+git commit -m "Fix R5-I5R-2B observed tensor metadata merge"
+```
+
+Run the focused local regressions with:
+
+```bash
+PYTHONPATH=src:tests python3 -m unittest \
+  test_r5_i5r2b test_r5_i5r2 test_r5_i5r1 -v
+PYTHONPATH=src:tests python3 -m unittest \
+  test_r5_i5r2b_processes test_r5_i5r1_processes -v
+```
+
+After user-managed review, commit/push and SERAPH pull, first execute the real CPU
+tests without a GPU allocation. Import dependencies explicitly so missing packages
+cannot masquerade as skipped successful tests:
+
+```bash
+cd /data/khuss/repos/GP_semcache
+test "$(git branch --show-current)" = exp/raw-semcache-r5-integration
+git pull --ff-only
+conda activate semcache
+export HF_HOME=/data/khuss/huggingface HF_HUB_CACHE=/data/khuss/huggingface/hub
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+CUDA_VISIBLE_DEVICES='' python -c 'import torch, numpy, transformers; print(torch.__version__, numpy.__version__, transformers.__version__)'
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src:tests python -m unittest \
+  test_r5_i5r2b.RealTensorCaptures \
+  test_r5_i5r2b.RealModelHookCapture \
+  test_r5_i5r2b.Captures.test_actual_installed_Torch_mode_preserves_single_original_calls -v
+```
+
+Require four executed tests, zero failures and zero skips above. Then pin the
+corrected reviewed commit and generate a **new** plan, retaining the failed plan
+and run without resealing:
+
+```bash
+read -r -p 'Reviewed corrected commit SHA: ' I5R2B_SOURCE_COMMIT
+export I5R2B_SOURCE_COMMIT
+test "$(git branch --show-current)" = exp/raw-semcache-r5-integration
+test "$(git rev-parse HEAD)" = "$I5R2B_SOURCE_COMMIT"
+test -z "$(git status --porcelain --untracked-files=no)"
+export I5R2B_MULTI_PREPARED="$PWD/results/r5/multiuser/expanded_152381_20261031T154848Z/adapters"
+export I5R2B_TAG="metadata_fix_$(date -u +%Y%m%dT%H%M%SZ)"
+export I5R2B_EXPERIMENT="$PWD/results/r5/i5r/numerical_fidelity/earliest_arithmetic/plan_$I5R2B_TAG"
+export I5R2B_RUN_ROOT="$PWD/results/r5/i5r/numerical_fidelity/earliest_arithmetic/run_$I5R2B_TAG"
+python scripts/130_prepare_r5_i5r2b.py \
+  --historical-plan results/r5/i5r/controlled_hit/plan_smoke_v1 \
+  --r2a-review results/r5/i5r/numerical_fidelity/historical_review_01 \
+  --multi-prepared "$I5R2B_MULTI_PREPARED" --output-dir "$I5R2B_EXPERIMENT"
+```
+
+Only after successful CPU tests and preparation, submit one job manually:
+
+```bash
+export R5_I5_ENABLE_GPU=1 R5_ENABLE_GPU=1
+mkdir -p logs
+I5R2B_JOB_ID="$(sbatch --parsable --export=ALL jobs/r5_i5r2b_arithmetic.sh)"
+export I5R2B_JOB_ID
+```
+
+After completion, use the new run and a new independent review directory:
+
+```bash
+export I5R2B_RUN="$I5R2B_RUN_ROOT/block_0_${I5R2B_JOB_ID%%;*}"
+python -m json.tool "$I5R2B_RUN/i5_block_status.json"
+python -m json.tool "${I5R2B_RUN}_audit/i5_independent_audit.json"
+python scripts/132_analyze_r5_i5r2b.py --experiment "$I5R2B_EXPERIMENT" \
+  --run-dir "$I5R2B_RUN" --output-dir "${I5R2B_RUN}_arithmetic_review_02"
+```

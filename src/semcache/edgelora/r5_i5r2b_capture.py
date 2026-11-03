@@ -23,6 +23,31 @@ from .r5_i5r2_tensors import slice_axis,DTYPES,UNKNOWN
 from .r5_i5r2b_plan import VERSION
 
 
+OBSERVED_FIELDS={'observed_stride','original_contiguous','storage_offset'}
+ANNOTATION_FIELDS={'actual_operation','allow_negative_infinity','full_payload_sha256',
+    'full_payload_shape','full_payload_bytes','scale'}
+
+
+def capture_metadata(shape,observed,extra):
+    """Only layout observations and named annotations may extend tensor identity."""
+    require(observed is None or isinstance(observed,dict),'invalid observed capture metadata')
+    observed={} if observed is None else observed
+    require(set(observed)<=OBSERVED_FIELDS,'protected/unknown observed capture metadata')
+    require(set(extra)<=ANNOTATION_FIELDS,'protected/unknown extra capture metadata')
+    if 'observed_stride' in observed:
+        stride=observed['observed_stride']
+        require(isinstance(stride,list) and len(stride)==len(shape) and all(type(v) is int and v>=0 for v in stride),
+            'invalid observed tensor stride')
+    if 'original_contiguous' in observed:
+        require(type(observed['original_contiguous']) is bool,'invalid observed tensor contiguity')
+    if 'storage_offset' in observed:
+        require(type(observed['storage_offset']) is int and observed['storage_offset']>=0,'invalid observed tensor storage offset')
+    metadata=dict(observed_stride=UNKNOWN,original_contiguous=UNKNOWN)
+    metadata.update(observed)
+    metadata.update(extra)
+    return metadata
+
+
 def backend(fixture=False):
     if fixture:return dict(TEST_FIXTURE_ONLY=True,engine='stdlib scalar fixture; not Torch/GPU arithmetic')
     import torch
@@ -55,6 +80,7 @@ class Capture:
         self.entries[key]=dict(status='NOT_CAPTURED',reason=reason)
     def blob(self,name,data,shape,dtype,device,axis,*,origin=None,observed=None,**extra):
         require(self.current is not None,'diagnostic context missing')
+        metadata=capture_metadata(shape,observed,extra)
         origin=self.current['origin'] if origin is None else origin;n=shape[axis]
         start=max(0,-origin);stop=min(n,64-origin)
         if stop<=start:self.omit(name,'NO_PREFIX_QUERY_ROWS: actual HIT computes suffix only');return None
@@ -64,13 +90,16 @@ class Capture:
         require(self.files+1<=self.config['max_files'] and self.bytes+len(selected)<=self.config['capture_bytes'],'I5R2B_CAPTURE_BUDGET_EXHAUSTED')
         path='tensors/i5r2b_'+self.current['request_id']+'_'+name+'.bin'
         require('/' not in name and '..' not in name,'unsafe diagnostic boundary name')
-        self.writer.bytes(self.output/path,selected,exclusive=True);self.files+=1;self.bytes+=len(selected)
         item=dict(status='CAPTURED',file=path,shape=retained,dtype=dtype,device=device,sha256=digest_bytes(selected),token_axis=axis,
-            semantic_positions=[origin+start,origin+stop],observed_shape=list(shape),observed_stride=UNKNOWN,
-            original_contiguous=UNKNOWN,**(observed or {}),**extra)
+            semantic_positions=[origin+start,origin+stop],observed_shape=list(shape))
+        item.update(metadata)
+        self.writer.bytes(self.output/path,selected,exclusive=True);self.files+=1;self.bytes+=len(selected)
         self.entries[key]=item;return item
     def save(self,name,tensor,axis=1,*,origin=None,**extra):
         shape=list(tensor.shape);dtype=str(tensor.dtype).removeprefix('torch.');device=str(tensor.device)
+        # Reject reserved kwargs before forwarding positional shape/dtype/device
+        # to blob(), rather than raising a duplicate-keyword TypeError there.
+        capture_metadata(shape,None,extra)
         observed={}
         if not hasattr(tensor,'fixture_bytes'):
             observed=dict(observed_stride=list(tensor.stride()),original_contiguous=tensor.is_contiguous(),storage_offset=tensor.storage_offset())
