@@ -2,6 +2,7 @@
 from copy import deepcopy
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import Mock,patch
@@ -14,7 +15,7 @@ from semcache.edgelora.r5_i5_artifacts import prepare as adapters
 from semcache.edgelora.r5_multi_artifacts import validate,tokenizer_identity
 from semcache.edgelora.r5_i5r1_plan import prepare as old_prepare
 from semcache.edgelora.r5_i5r2b_plan import prepare,validate_plan,VERSION
-from semcache.edgelora.r5_i5r2b_capture import Capture,operation_mode,installed_observer_check
+from semcache.edgelora.r5_i5r2b_capture import Capture,operation_mode,installed_observer_check,model_hooks
 from semcache.edgelora.r5_i5r2b_analysis import classify
 from semcache.edgelora.r5_i5r2_tensors import metrics,Evidence
 from test_r5_i5 import dataset
@@ -116,6 +117,43 @@ class Captures(unittest.TestCase):
             ev=Evidence(d);self.assertEqual(ev.tensor('',item),pack([1.]*256,'float32'))
             (Path(d)/item['file']).write_bytes(pack([2.]*256,'float32'))
             with self.assertRaisesRegex(ValueError,'corrupt'):ev.tensor('',item)
+    def test_validated_layout_metadata_merges_without_duplicate_keywords(self):
+        with tempfile.TemporaryDirectory() as d:
+            s,w=self.store(Path(d));s.select('S',0,64)
+            layout=dict(observed_stride=[1024,8,2],original_contiguous=False,storage_offset=4)
+            item=s.blob('input',pack([1.]*256,'float32'),[1,64,4],'float32','cpu',1,observed=layout,actual_operation='linear')
+            self.assertEqual({k:item[k] for k in layout},layout);self.assertEqual(item['actual_operation'],'linear')
+            self.assertEqual(item['shape'],[1,64,4]);self.assertEqual(item['semantic_positions'],[0,64])
+    def test_observed_metadata_cannot_override_tensor_identity(self):
+        for key in ('shape','observed_shape','dtype','sha256','file','device','status','token_axis','semantic_positions','scale'):
+            with self.subTest(key=key),tempfile.TemporaryDirectory() as d:
+                s,w=self.store(Path(d));s.select('S',0,64)
+                with self.assertRaisesRegex(ValueError,'observed capture metadata'):
+                    s.blob('input',pack([1.]*256,'float32'),[1,64,4],'float32','cpu',1,observed={key:None})
+                w.bytes.assert_not_called();self.assertEqual(s.files,0)
+    def test_extra_metadata_cannot_override_identity_or_layout(self):
+        for key in ('shape','dtype','device','sha256','file','status','token_axis','semantic_positions','observed_shape',
+                'observed_stride','original_contiguous','storage_offset','observed','unknown_annotation','data'):
+            with self.subTest(key=key),tempfile.TemporaryDirectory() as d:
+                s,w=self.store(Path(d));s.select('S',0,64)
+                with self.assertRaisesRegex(ValueError,'extra capture metadata'):
+                    s.save('input',ArrayTensor([1.]*256,[1,64,4]),**{key:None})
+                w.bytes.assert_not_called();self.assertEqual(s.entries,{})
+    def test_invalid_layout_values_fail_before_writing(self):
+        for layout in ([],{'observed_stride':[1,2]}, {'observed_stride':[1,-2,3]}, {'observed_stride':[True,2,3]},
+                {'original_contiguous':1},{'storage_offset':-1},{'storage_offset':True}):
+            with self.subTest(layout=layout),tempfile.TemporaryDirectory() as d:
+                s,w=self.store(Path(d));s.select('S',0,64)
+                with self.assertRaisesRegex(ValueError,'invalid observed'):
+                    s.blob('input',pack([1.]*256,'float32'),[1,64,4],'float32','cpu',1,observed=layout)
+                w.bytes.assert_not_called()
+    def test_every_existing_extra_annotation_is_disjoint_and_preserved(self):
+        with tempfile.TemporaryDirectory() as d:
+            s,w=self.store(Path(d));s.select('S',0,64)
+            extras=dict(actual_operation='add',allow_negative_infinity=True,full_payload_sha256='a'*64,
+                full_payload_shape=[1,64,4],full_payload_bytes=1024,scale=1.)
+            item=s.save('input',ArrayTensor([1.]*256,[1,64,4]),**extras)
+            self.assertEqual({k:item[k] for k in extras},extras)
     def test_OFF_never_imports_or_enters_torch_mode(self):
         with patch.dict('sys.modules',{'torch.overrides':None}):
             spy=Mock()
@@ -124,6 +162,58 @@ class Captures(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec('torch') and importlib.util.find_spec('numpy'),'installed Torch observer CPU API NOT_RUN; dependencies absent')
     def test_actual_installed_Torch_mode_preserves_single_original_calls(self):
         self.assertEqual(installed_observer_check()['status'],'CPU_API_PASS_NOT_GPU_FIDELITY')
+
+
+@unittest.skipUnless(all(importlib.util.find_spec(n) for n in ('torch','numpy')),
+    'real CPU Torch capture NOT_RUN; torch/numpy absent')
+class RealTensorCaptures(unittest.TestCase):
+    store=Captures.store
+    def check_tensor(self,noncontiguous):
+        import torch
+        from semcache.edgelora.r3b_cache import raw
+        for dtype in (torch.float16,torch.float32):
+            with self.subTest(dtype=dtype),tempfile.TemporaryDirectory() as d:
+                base=torch.arange(1*257*8,dtype=dtype,device='cpu').reshape(1,257,8)
+                tensor=base[:,1::2,::2] if noncontiguous else base[:,:256].clone()
+                before=tensor.clone();stride=list(tensor.stride());offset=tensor.storage_offset()
+                s,w=self.store(Path(d));s.select('F',0,tensor.shape[1]);item=s.save('input',tensor)
+                self.assertEqual(item['observed_stride'],stride)
+                self.assertEqual(item['original_contiguous'],tensor.is_contiguous())
+                self.assertEqual(item['original_contiguous'],not noncontiguous)
+                self.assertEqual(item['storage_offset'],offset)
+                self.assertEqual(item['observed_shape'],list(tensor.shape));self.assertEqual(item['shape'],[1,64,tensor.shape[2]])
+                self.assertEqual(item['semantic_positions'],[0,64]);self.assertEqual(item['device'],'cpu')
+                self.assertEqual(Evidence(d).tensor('',item),raw(tensor[:,:64]))
+                self.assertTrue(torch.equal(tensor,before));self.assertEqual(list(tensor.stride()),stride)
+                if noncontiguous:self.assertGreater(offset,0)
+    def test_save_real_contiguous_CPU_tensor(self):self.check_tensor(False)
+    def test_save_real_noncontiguous_CPU_tensor_with_storage_offset(self):self.check_tensor(True)
+
+
+@unittest.skipUnless(all(importlib.util.find_spec(n) for n in ('torch','numpy','transformers')),
+    'actual OPT model-hook capture CPU NOT_RUN; torch/numpy/transformers absent')
+class RealModelHookCapture(unittest.TestCase):
+    store=Captures.store
+    def test_actual_OPT_hook_path_preserves_forward_and_records_layout(self):
+        import torch
+        from transformers import OPTConfig,OPTForCausalLM
+        cfg=OPTConfig(vocab_size=17,hidden_size=16,word_embed_proj_dim=16,ffn_dim=32,num_hidden_layers=1,
+            num_attention_heads=4,max_position_embeddings=512,dropout=0.,attention_dropout=0.)
+        cfg._attn_implementation='eager';model=OPTForCausalLM(cfg).eval()
+        driver=SimpleNamespace(fixture=False,model=model,adapter=SimpleNamespace(layers=model.model.decoder.layers))
+        ids=torch.tensor([[1+i%15 for i in range(256)]],device='cpu')
+        with tempfile.TemporaryDirectory() as d,torch.inference_mode():
+            s,w=self.store(Path(d));s.select('F',0,256)
+            args=dict(input_ids=ids,attention_mask=torch.ones_like(ids),use_cache=True,output_attentions=False)
+            baseline=model(**args).logits.clone()
+            with model_hooks(driver,s):observed=model(**args).logits
+            self.assertTrue(torch.equal(observed,baseline))
+            expected=('token_embedding','position_embedding','layer_input','norm_input','norm_output','actual_attention_mask','attention_output')
+            for name in expected:
+                item=s.entries['F/'+name];self.assertEqual(item['status'],'CAPTURED');self.assertEqual(item['semantic_positions'],[0,64])
+                self.assertIsInstance(item['observed_stride'],list);self.assertIs(type(item['original_contiguous']),bool)
+                self.assertIs(type(item['storage_offset']),int);Evidence(d).tensor('',item)
+            self.assertTrue(all(not module._forward_hooks and not module._forward_pre_hooks for module in model.modules()))
 
 
 def fixture_inputs(root):
