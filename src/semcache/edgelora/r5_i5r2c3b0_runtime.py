@@ -1,14 +1,104 @@
 """Two real distributed prefills; passive, complete Layer-0 operand capture only."""
 from contextlib import contextmanager
-import inspect,os,sys,time,uuid
+import inspect,os,re,sys,time,uuid
 from pathlib import Path
 from .communication import Channel,connect,header,digest,require,digest_bytes
-from .r3a_artifacts import ROOT,read,full_base_fingerprint
+from .r3a_artifacts import ROOT,read,full_base_fingerprint,write as write_status
+from .r5_i5_evidence import seal
 from .r3b_cache import raw
 from .r5_i5r2c3b0 import load,prepared,fresh
 from .r5_i5r2b_capture import backend
 from .r5_i5r2bs1_plan import CORE
 from .r5_i5r2bs1_runtime import Store,layout,apply_recorded_backend
+
+
+def contract_difference(expected,actual,*,limit=64,node_limit=20000):
+ """Bounded JSON-pointer diff. Embedded code/config objects are hash-only."""
+ require(1<=limit<=64 and 1<=node_limit<=20000,'invalid contract diff bounds')
+ missing=object();rows=[];visited=0;truncated=False
+ def summary(value,path):
+  if value is missing:return dict(type='MISSING',sha256=None)
+  result=dict(type=type(value).__name__,sha256=digest(value))
+  if value is None or type(value) in (bool,int,float):result['value']=value
+  elif isinstance(value,str) and not path.endswith('/source') and len(value)<=80 and re.fullmatch(r'[A-Za-z0-9_.:+/\-]*',value):result['value']=value
+  return result
+ def walk(a,b,path):
+  nonlocal visited,truncated
+  if visited>=node_limit or len(rows)>=limit:truncated=True;return
+  visited+=1
+  if a==b and digest(a)==digest(b):return
+  if isinstance(a,dict) and isinstance(b,dict):
+   for key in sorted(set(a)|set(b)):
+    walk(a.get(key,missing),b.get(key,missing),path+'/'+key.replace('~','~0').replace('/','~1'))
+    if truncated:return
+  elif isinstance(a,list) and isinstance(b,list):
+   for i in range(max(len(a),len(b))):
+    walk(a[i] if i<len(a) else missing,b[i] if i<len(b) else missing,path+'/'+str(i))
+    if truncated:return
+  else:
+   row=dict(path=path if len(path)<=512 else None,kind='missing_in_actual' if b is missing else 'extra_in_actual' if a is missing else 'type' if type(a) is not type(b) else 'value',expected=summary(a,path),actual=summary(b,path))
+   if row['path'] is None:row['path_sha256']=digest(path);truncated=True
+   rows.append(row)
+ walk(expected,actual,'')
+ return dict(exact_equal=expected==actual and digest(expected)==digest(actual),expected_sha256=digest(expected),actual_sha256=digest(actual),
+  differences=rows,truncated=truncated,visited_nodes=visited,limits=dict(differences=limit,nodes=node_limit),normalization='NONE')
+
+
+def failure_note(error,message):
+ # Python 3.10 is supported; BaseException.add_note starts at 3.11.
+ try:
+  error.b0_secondary_failures=getattr(error,'b0_secondary_failures',[])+[message]
+  if callable(getattr(error,'add_note',None)):error.add_note(message)
+ except BaseException:pass
+
+
+def verify_contract(expected,actual,writer,out):
+ report=contract_difference(expected,actual)
+ if not report['exact_equal']:
+  try:require(False,'native OPT/adapter contract differs')
+  except BaseException as primary:
+   try:writer.write(Path(out)/'i5r2c3b0_contract_difference.json',report)
+   except BaseException as secondary:failure_note(primary,'Contract difference receipt failed: '+type(secondary).__name__)
+   raise
+ writer.write(Path(out)/'i5r2c3b0_contract_difference.json',report)
+
+
+def finalize_attempt(out,writer,status,*,primary=None,channel=None,child=None,finish_child=None):
+ """Best-effort failure evidence; cleanup never replaces a primary exception.
+
+ A failed accounting ledger remains failed. A last-resort FAILED status is
+ written directly only inside this fresh attempt; it cannot authorize an audit.
+ """
+ errors=[];first=primary;out=Path(out)
+ def attempt(stage,action):
+  nonlocal first
+  try:action();return True
+  except BaseException as exc:
+   errors.append(dict(stage=stage,type=type(exc).__name__,message=str(exc)[:256]))
+   if first is None:first=exc
+   return False
+ if channel is not None:attempt('channel_close',channel.close)
+ if child is not None:
+  try:alive=child[0].poll() is None
+  except BaseException as exc:
+   alive=True;errors.append(dict(stage='child_poll',type=type(exc).__name__,message=str(exc)[:256]))
+   if first is None:first=exc
+  if alive:
+   attempt('child_terminate',child[0].terminate)
+   attempt('child_finish',lambda:finish_child(child,timeout=10))
+ if not attempt('writer_reconcile',writer.reconcile):status['evidence_accounting']='FAILED'
+ def save_status():
+  if first is not None:status.update(status='FAILED',reason=type(first).__name__+': '+str(first)[:512])
+  status['finalization_errors']=list(errors)
+  if not attempt('status_write',lambda:writer.write(out/'i5r2c3b0_status.json',status)):
+   status.update(status='FAILED',reason=type(first).__name__+': '+str(first)[:512],evidence_accounting='FAILED',finalization_errors=list(errors))
+   attempt('failed_status_fallback',lambda:write_status(out/'i5r2c3b0_status.json',status))
+ save_status()
+ if not attempt('seal',lambda:seal(out)):
+  status['failure_seal']='FAILED';save_status()
+ if primary is not None:
+  if errors:failure_note(primary,'B0 secondary finalization failures: '+', '.join(e['stage']+':'+e['type'] for e in errors))
+ elif first is not None:raise first
 
 
 @contextmanager
@@ -62,7 +152,7 @@ def execute(experiment,output,commit):
  started=time.monotonic();setup_plan=dict(base_prepared=p['base_prepared'],fixture=False,device='cuda:0',i5_gpu_policy_scope='R5_I5')
  out=fresh(output,(experiment,p['history']['run'],p['history']['audit'],p['multi_prepared']));store=Store(out,p['budget'],p['max_files']);writer=store.writer
  status=dict(status='FAILED',GPU_NOT_RUN=True,source_commit=commit,experiment_id=p['experiment_id'],model_load_count=0,prefill_forwards=0,decode_forwards=0,cache_reads=0,cache_admissions=0,protocol_selected_tokens=0)
- child=channel=None;records={};padcfg=dict(mode='SOURCE_ONLY',source=p['tasks'][0]['request_id'],target=p['tasks'][1]['request_id'])
+ child=channel=None;primary=None;records={};padcfg=dict(mode='SOURCE_ONLY',source=p['tasks'][0]['request_id'],target=p['tasks'][1]['request_id'])
  class Driver(QualityDriver):
   label=None
   @property
@@ -79,7 +169,9 @@ def execute(experiment,output,commit):
    view=runtime_view(pm,spec);es=out/'es';ud=out/'ud';es.mkdir();ud.mkdir()
    driver=Driver(view['identity'],'cuda:0',model=old.model,adapter=old.adapter,native=False);driver.model_tokenizer=tok
    contract=driver.configure(es,budget_bytes=p['budget']);ident,contract=physical(view,p['tokenizer'],'cuda:0',current['uuid'],contract,spec,registry)
-   require(contract==p['contract'],'native OPT/adapter contract differs');driver.contract=contract
+   writer.write(out/'i5r2c3b0_backend.json',dict(initial=initial_backend,effective=backend()))
+   writer.write(out/'i5r2c3b0_allocation.json',dict(gpu=current,preparation_gpu_uuid=pm['gpu']['uuid'],gpu_identity_policy='SAME_COMPATIBLE_GPU_CLASS',prefill_forwards=0))
+   verify_contract(p['contract'],contract,writer,out);driver.contract=contract
    driver.evidence=PerformanceEvidence(es,writer,profile='SCALABLE_EVALUATION')
    identity=dict(model_identity=view['identity'],adapter=spec,physical_identity=ident,contract=contract)
    cohort=digest(dict(experiment_id=p['experiment_id'],physical_identity=ident));session=uuid.uuid4().hex
@@ -130,11 +222,9 @@ def execute(experiment,output,commit):
    require(writer.status()['data_files']<=p['max_files'],'B0 file bound exceeded')
    status.update(status='COMPLETE',GPU_NOT_RUN=False,es_pid=os.getpid(),ud_pid=child[0].pid)
  except BaseException as exc:
-  status['reason']=type(exc).__name__+': '+str(exc);raise
+  primary=exc;status.update(status='FAILED',reason=type(exc).__name__+': '+str(exc)[:512]);raise
  finally:
-  if channel is not None:channel.close()
-  if child is not None and child[0].poll() is None:child[0].terminate();finish(child,timeout=10)
-  writer.write(out/'i5r2c3b0_status.json',status);writer.reconcile();seal(out)
+  finalize_attempt(out,writer,status,primary=primary,channel=channel,child=child,finish_child=finish)
  return status
 
 

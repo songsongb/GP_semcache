@@ -196,3 +196,34 @@ git diff --cached --stat
 
 No commit or push is executed by Codex. The operator chooses the reviewed commit
 and handles deployment and the single manual GPU submission.
+
+## Contract rejection and failure-finalization hotfix
+
+B0 and C2 construct contracts with the same sequence: `runtime_view`,
+`QualityDriver.configure`/`installed_contract`, then `physical`'s adapter/registry
+extension. Static inspection alone does not identify the observed differing field.
+No field is normalized or ignored. The mismatch remains unresolved until actual
+expected/current values are compared.
+
+Before rejecting, B0 writes `i5r2c3b0_contract_difference.json`: exact RFC6901 JSON
+paths, missing/extra/type/value classifications, canonical-JSON SHA-256 hashes,
+types and bounded safe scalars. Source implementations and whole configuration
+objects are never dumped in this receipt. Limits are64 differences and20,000
+visited nodes, with explicit truncation; full-contract hashes and exact equality
+are checked independently of report truncation. Early backend/allocation receipts
+are saved without claiming any KV creation before a prefill has executed.
+
+`seal` is explicitly imported. Cleanup, reconciliation, status writing and sealing
+are attempted independently so secondary failures cannot replace the primary
+exception (including on Python3.10). FAILED status retains the primary reason and
+secondary stage errors. If the accounting writer fails, only the fresh attempt's
+FAILED status may use a direct fallback write; accounting remains explicitly
+FAILED, and no COMPLETE/audit gate is bypassed. Available evidence is sealed when
+storage permits. A sealing failure is recorded as such and never claimed sealed.
+Existing attempt directories are still refused; preserve failed attempts and
+prepare a fresh sealed plan under the newly reviewed commit before retrying.
+
+Hotfix validation: **53 PASS / 0 FAIL / 2 SKIP** in the B0/C3 focused suites
+(55 tests), plus Python/shell syntax and diff checks. Skips are the unavailable
+native Torch/Transformers CPU APIs. No GPU execution or historical evidence
+mutation was performed, and no GPU contract equality has been newly verified.
