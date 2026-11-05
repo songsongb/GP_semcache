@@ -196,7 +196,55 @@ class ContractFailures(unittest.TestCase):
    root=Path(d);writer=self.writer(root);expected=self.contract();actual=copy.deepcopy(expected)
    verify_contract(expected,actual,writer,root)
    report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text())
-   self.assertTrue(report['exact_equal']);self.assertEqual(report['differences'],[]);self.assertEqual(actual,expected)
+   self.assertTrue(report['exact_equal']);self.assertEqual(report['CONTRACT_VERIFIED'],'EXACT');self.assertEqual(report['differences'],[]);self.assertEqual(actual,expected)
+ def label_contracts(self):
+  expected=self.contract();expected['config']['id2label']={'0':'LABEL_0','1':'LABEL_1'}
+  actual=copy.deepcopy(expected);actual['config']['id2label']={0:'LABEL_0',1:'LABEL_1'}
+  return expected,actual
+ def test_confirmed_id2label_representation_verified_without_mutation(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract,contract_difference
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);expected,actual=self.label_contracts();old_expected=copy.deepcopy(expected);old_actual=copy.deepcopy(actual);raw=contract_difference(expected,actual)
+   verify_contract(expected,actual,self.writer(root),root)
+   report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text())
+   self.assertEqual(report['CONTRACT_VERIFIED'],'VERIFIED_JSON_KEY_REPRESENTATION');self.assertFalse(report['exact_equal']);self.assertTrue(report['compatibility_established']);self.assertTrue(report['physical_opt_contract_consistent'])
+   self.assertEqual(report['differences'],json.loads(json.dumps(raw['differences'])));self.assertEqual(expected,old_expected);self.assertEqual(actual,old_actual)
+ def test_allowlist_rejects_label_model_attention_adapter_or_collision_changes(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
+  for case in ('label','model','attention','adapter','collision','other_key_conversion','wrong_direction','boolean_key'):
+   with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+    expected,actual=self.label_contracts()
+    if case=='label':actual['config']['id2label'][0]='DIFFERENT'
+    elif case=='model':actual['config']['hidden_size']=1024
+    elif case=='attention':actual['methods']['attention']['source_sha256']='c'*64
+    elif case=='adapter':actual['r5_multi']['adapter_manifest_sha256']='c'*64
+    elif case=='collision':actual['config']['id2label']['0']='LABEL_0'
+    elif case=='other_key_conversion':expected['config']['other']={'0':'x'};actual['config']['other']={0:'x'}
+    elif case=='wrong_direction':expected,actual=actual,expected
+    else:actual['config']['id2label']={False:'LABEL_0',1:'LABEL_1'}
+    with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs'):verify_contract(expected,actual,self.writer(Path(d)),Path(d))
+    self.assertEqual(json.loads((Path(d)/'i5r2c3b0_contract_difference.json').read_text())['CONTRACT_VERIFIED'],'REJECTED')
+ def test_truncated_or_incomplete_comparison_cannot_authorize_compatibility(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract,contract_difference
+  for case in ('truncated','hash_errors','rows','json_unavailable'):
+   with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+    expected,actual=self.label_contracts();report=contract_difference(expected,actual)
+    if case=='truncated':report['truncated']=True
+    elif case=='hash_errors':report['hash_errors']=['incomplete']
+    elif case=='rows':report['differences']=report['differences'][:2]
+    else:report['json_round_trip']['actual']['available']=False
+    with patch('semcache.edgelora.r5_i5r2c3b0_runtime.contract_difference',return_value=report):
+     with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs'):verify_contract(expected,actual,self.writer(Path(d)),Path(d))
+ def test_physical_opt_contract_fingerprint_matches_historical_namespace(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
+  from semcache.edgelora.r5_contracts import namespace
+  expected,actual=self.label_contracts()
+  identity=dict(model='facebook/opt-2.7b',base_weight_sha256='base',adapter='Adapter_A',adapter_matrix_sha256='adapter',hidden_dtype='float16',layers=32,hidden_size=2560,rank=8)
+  old=namespace({'identity':identity},{},'cuda:0','historical-gpu',expected);new=namespace({'identity':identity},{},'cuda:0','current-gpu',actual)
+  self.assertEqual(old['opt_contract'],new['opt_contract']);self.assertNotEqual(old['gpu_uuid'],new['gpu_uuid'])
+  with tempfile.TemporaryDirectory() as d:
+   verify_contract(expected,actual,self.writer(Path(d)),Path(d),expected_opt_contract=old['opt_contract'],actual_opt_contract=new['opt_contract'])
+   with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs'):verify_contract(expected,actual,self.writer(Path(d)),Path(d),expected_opt_contract='changed',actual_opt_contract=new['opt_contract'])
  def test_meaningful_attention_source_hash_or_adapter_mismatch_rejected(self):
   from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
   for group,key in (('methods','attention'),('r5_multi','adapter_manifest_sha256'),('config','model_type')):
