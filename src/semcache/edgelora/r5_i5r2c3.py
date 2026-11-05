@@ -169,18 +169,30 @@ def stage_a(experiment,run,audit,output,expected_commit,allow_incomplete=False,f
  return result
 
 
-def prepare(experiment,run,audit,base_prepared,output,expected_commit):
- h=history(experiment,run,audit,expected_commit);require(not h['missing'],'INCOMPLETE_EVIDENCE: replay forbidden: '+repr(h['missing']))
+def replay_operands(h,companion=None):
+ if companion is not None:
+  require(set(companion)=={'experiment','run','audit'} and all(companion.values()),'all three explicit B0 companion paths required')
+  from .r5_i5r2c3b0 import verified_companion
+  return verified_companion(companion['experiment'],companion['run'],companion['audit'],h)
+ require(not h['missing'],'INCOMPLETE_EVIDENCE: replay forbidden: '+repr(h['missing']))
+ return h['inputs'],None
+
+
+def prepare(experiment,run,audit,base_prepared,output,expected_commit,companion=None):
+ h=history(experiment,run,audit,expected_commit);inputs,companion_proof=replay_operands(h,companion)
  require(all(x['metrics']['bitwise_equal'] for x in h['observations'] if x['boundary'].startswith('raw_')),'replay requires equal prefix QKV')
  from .r3a_artifacts import validate_prepared,versions
- pm,_,_=validate_prepared(base_prepared);require(pm['identity']==h['identities']['F']['model_identity'] and versions()==pm['identity']['versions'],'prepared model/environment differs')
- current=source_identity();out=fresh(output,(experiment,run,audit,base_prepared))
+ pm,_,_=validate_prepared(base_prepared);require(pm['identity']==h['plan']['i5r1']['model_identity'] and versions()==pm['identity']['versions'],'prepared model/environment differs')
+ current=source_identity();out=fresh(output,(experiment,run,audit,base_prepared,*(companion.values() if companion else ())))
  from .r5_i5r2bs1_runtime import Store
  store=Store(out,256*2**20,192);blobs={}
- for label,entries in h['inputs'].items():
+ for label,entries in inputs.items():
   blobs[label]={name:dict(store.tensor('inputs/'+label+'_'+name+'.bin',data,item['shape'],item['dtype']),historical=item) for name,(data,item) in entries.items()}
  p=dict(version=VERSION,DIAGNOSTIC_ONLY=True,source=current,history=dict(experiment=str(Path(experiment).resolve()),run=str(Path(run).resolve()),audit=str(Path(audit).resolve()),expected_commit=expected_commit,proof=h['proof']),
   base_prepared=str(Path(base_prepared).resolve()),model_identity=pm['identity'],contract=h['identities']['F']['contract'],backend=h['backend'],blobs=blobs,warmups=2,repetitions=6,budget=256*2**20,max_files=192,deadline_seconds=600)
+ if companion is not None:
+  p['companion']=dict(paths={k:str(Path(v).resolve()) for k,v in companion.items()},proof=companion_proof)
+  p['operand_provenance']='NEW_B0_RECAPTURE_VERIFIED_AGAINST_C2'
  p['experiment_id']=digest(p);store.put('i5r2c3_plan.json',p);store.writer.reconcile();seal(out);return p
 
 
@@ -190,7 +202,10 @@ def load(path,current=False):
  source_provenance(dict(source_commit=p['source']['commit'],sources=p['source']['files']),expected_commit=p['source']['commit'],fixture=False)
  if current:require(p['source']==source_identity(),'reviewed current source differs')
  h=history(**{k:p['history'][k] for k in ('experiment','run','audit','expected_commit')});require(h['proof']==p['history']['proof'],'historical evidence/provenance changed')
+ inputs,proof=replay_operands(h,p.get('companion',{}).get('paths'))
+ if 'companion' in p:
+  require(proof==p['companion']['proof'] and p['operand_provenance']=='NEW_B0_RECAPTURE_VERIFIED_AGAINST_C2','B0 companion provenance changed')
  for label,entries in p['blobs'].items():
-  require(set(entries)==set(h['inputs'][label]),'replay operand coverage differs')
-  for name,item in entries.items():require(ev.tensor('',item)==h['inputs'][label][name][0] and item['historical']==h['inputs'][label][name][1],'replay operands differ from historical bytes')
+  require(set(entries)==set(inputs[label]),'replay operand coverage differs')
+  for name,item in entries.items():require(ev.tensor('',item)==inputs[label][name][0] and item['historical']==inputs[label][name][1],'replay operands differ from verified recorded bytes')
  return p,ev
