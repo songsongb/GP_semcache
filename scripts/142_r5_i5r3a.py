@@ -12,6 +12,7 @@ def main():
   a=sub.add_parser(name);a.add_argument('--plan',required=True);a.add_argument('--output-dir',required=True)
   if name=='verify':a.add_argument('--audit',required=True)
  args=vars(p.parse_args());action=args.pop('action');args['output']=args.pop('output_dir')
+ if action=='prepare':args['multi']=args.pop('multi_prepared')
  try:print(json.dumps(getattr(api,action)(**args),indent=2));return 0
  except (ValueError,KeyError,FileNotFoundError,ImportError) as exc:print(json.dumps(dict(status='REJECTED',reason=str(exc))),file=sys.stderr);return 2
 if __name__=='__main__':sys.exit(main())

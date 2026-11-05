@@ -1,5 +1,7 @@
 """Synthetic CPU fixtures only; never evidence of GPU reuse."""
 import copy,json,tempfile,unittest
+import contextlib,importlib.util,io,sys
+from unittest.mock import patch,create_autospec
 from pathlib import Path
 from semcache.edgelora.communication import digest
 from semcache.edgelora.r3a_artifacts import write,sha
@@ -33,7 +35,37 @@ class Audit(unittest.TestCase):
     return super().encode(text,**kwargs)
   r=audit_dataset(samples(),ExactTokenizer(),self.registry)
   self.assertEqual(r['summary']['strict_prefix_pairs'],1)
+  self.assertEqual(r['summary']['same_context_strict_prefix_pairs'],1)
+  self.assertEqual(r['summary']['cross_context_strict_prefix_pairs'],0)
   self.assertEqual(r['samples'][0]['token_ids'],[1,2])
+ def test_order_comparison_uses_production_selection_and_common_tokens(self):
+  from semcache.edgelora.r5_i5_workload import select,pack_groups
+  rows=normalize('qasper',[dict(_id=str(i),context='context'+str(i),input='q'+str(i),answers=['gold'],length=8,TEST_FIXTURE_ONLY=True) for i in range(8)],fixture=True)
+  class PrefixTokenizer(Tokenizer):
+   def encode(self,text,**kwargs):
+    if text.endswith('\nAnswer:'):return list(range(int(text.rsplit('q',1)[1].split('\n')[0])+2))
+    return super().encode(text,**kwargs)
+  tok=PrefixTokenizer();r=audit_dataset(rows,tok,self.registry,block_size=3)
+  expected,_=select(rows,tok,count=8,seed=42,context_limit=2048,budget=32,allow_truncation=True)
+  ids=[p['sample']['id'] for group in pack_groups(expected,3) for p in group]
+  self.assertEqual([x['id'] for x in r['original_i5_order']],ids)
+  self.assertEqual(r['summary']['same_context_strict_prefix_pairs'],0)
+  self.assertEqual(r['summary']['cross_context_strict_prefix_pairs'],28)
+  original={p['id']:p for p in r['original_i5_order']}
+  for pair in r['pairs']:
+   old=pair['original_i5_order'];a=original[pair['source_id']];b=original[pair['target_id']]
+   self.assertEqual(old['SOURCE_PRECEDES_TARGET'],a['sequence']<b['sequence'])
+   self.assertEqual(old['WITHIN_SAME_CACHE_LIFETIME'],a['block']==b['block'])
+   self.assertEqual(pair['scope'],'STATIC_ONLY')
+  self.assertTrue(any(p['SOURCE_PRECEDES_TARGET']!=p['original_i5_order']['SOURCE_PRECEDES_TARGET'] for p in r['pairs']))
+  comparison=r['order_comparison'];self.assertEqual(comparison['original_i5']['strict_prefix_pairs'],28)
+  self.assertEqual(comparison['original_i5']['statically_eligible_pairs'],sum(p['original_i5_order']['STATICALLY_ELIGIBLE'] for p in r['pairs']))
+  self.assertEqual(comparison['gained_statically_eligible_pairs'],sum(p['STATICALLY_ELIGIBLE'] and not p['original_i5_order']['STATICALLY_ELIGIBLE'] for p in r['pairs']))
+  self.assertEqual(comparison['lost_statically_eligible_pairs'],sum(not p['STATICALLY_ELIGIBLE'] and p['original_i5_order']['STATICALLY_ELIGIBLE'] for p in r['pairs']))
+ def test_no_eligible_records_have_empty_order_comparison(self):
+  r=self.run_audit(samples(questions=('q'*400,'q'*400)),input_limit=150)
+  self.assertEqual(r['original_i5_order'],[]);self.assertEqual(r['order_comparison']['original_i5']['strict_prefix_pairs'],0)
+  self.assertEqual(r['summary']['natural_actual_hit_status'],'NOT_EVALUATED')
  def test_complete_prefix_and_same_adapter_authorization(self):
   a,b=prepared([1,2],'s'),prepared([1,2,3],'t','User_02');r=pair_record(a,b,{'s':[0,0],'t':[0,1]},self.registry,491520)
   self.assertTrue(r['STATICALLY_ELIGIBLE']);self.assertEqual(r['suffix_tokens'],1);self.assertEqual(r['source_raw_qkv_bytes'],983040)
@@ -97,5 +129,23 @@ class Audit(unittest.TestCase):
     self.assertEqual(verify(root/'plan',review,root/'verified')['status'],'PASS')
     summary['runtime_semantics_admission_eviction_reuse_numerical_fidelity']='PASS';write(review/'i5r3a_summary.json',summary);seal(review)
     with self.assertRaisesRegex(ValueError,'summary differs'):verify(root/'plan',review,root/'bad')
+
+class CLI(unittest.TestCase):
+ def setUp(self):
+  spec=importlib.util.spec_from_file_location('i5r3a_cli',Path(__file__).resolve().parents[1]/'scripts/142_r5_i5r3a.py')
+  self.cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.cli)
+ def test_prepare_real_parser_dispatch_matches_function_signature(self):
+  argv=['142_r5_i5r3a.py','prepare','--registry','registry.json','--multi-prepared','sealed_adapters','--output-dir','fresh_plan','--block-size','7','--input-limit','512','--seed','17']
+  dispatch=create_autospec(self.cli.api.prepare,return_value={'status':'PREPARED'})
+  with patch.object(sys,'argv',argv),patch.object(self.cli.api,'prepare',dispatch),contextlib.redirect_stdout(io.StringIO()) as output:
+   self.assertEqual(self.cli.main(),0)
+  dispatch.assert_called_once_with(registry='registry.json',multi='sealed_adapters',output='fresh_plan',block_size=7,input_limit=512,seed=17)
+  self.assertEqual(json.loads(output.getvalue())['status'],'PREPARED')
+ def test_prepare_dispatch_enters_actual_prepare_and_reports_missing_inputs(self):
+  argv=['142_r5_i5r3a.py','prepare','--registry','missing_registry','--multi-prepared','missing_adapters','--output-dir','never_created']
+  with patch.object(sys,'argv',argv),patch.object(self.cli.api,'inputs',side_effect=FileNotFoundError('missing real data')) as load,contextlib.redirect_stderr(io.StringIO()) as error:
+   self.assertEqual(self.cli.main(),2)
+  load.assert_called_once_with('missing_registry','missing_adapters')
+  self.assertEqual(json.loads(error.getvalue())['status'],'REJECTED')
 
 if __name__=='__main__':unittest.main()

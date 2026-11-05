@@ -48,6 +48,9 @@ Required summaries:
 - `strict_prefix_pairs`: directed distinct complete prompts where source tokens
   are strictly shorter and exactly equal to the initial target tokens. Identical
   full prompts are excluded. These pairs can span different original contexts.
+- `same_context_strict_prefix_pairs` and `cross_context_strict_prefix_pairs`
+  partition that same directed denominator by exact original context equality;
+  their sum equals `strict_prefix_pairs`. Both remain NATURAL, STATIC_ONLY.
 - `authorized_prefix_pairs`, `capacity_eligible_pairs`, `within_lifetime_pairs`:
   independent filters over strict-prefix pairs, not a sequential funnel.
 - `statically_eligible_pairs`: intersection of prefix, authorization, source
@@ -69,6 +72,19 @@ adapter/block are reported, **not** measured occupancy or an LRU simulation.
 Admission, eviction, residency, semantic candidates, actual completion, physical
 GPU identity and HITs remain NOT_EVALUATED. An individually fitting source can
 still be evicted or never admitted during real execution.
+
+`order_comparison` now evaluates production I5 `select()` ordering and group
+packing against the context-grouped proposal. Both scenarios use **all the same
+eligible original IDs**, verified identical complete prompt tokens, the same
+routing, seed, block size, capacity and reset policy. This is not an attempt to
+recreate a historical experiment's selected counts or recorded request order.
+Each scenario reports its prefix partition, authorization/capacity filters,
+source-precedes-target, lifetime and static-eligibility counts. The comparison
+reports gained/lost static pairs. Candidate records retain `original_i5_order`
+location/check/rejection receipts alongside the existing proposed-order checks;
+`original_i5_order` at dataset level records the complete comparison order.
+The summary artifact also includes these comparisons. All results are STATIC_ONLY,
+and no order can establish a measured HIT, admission or residency.
 
 Each eligible pair is linked to a context-dependency component. Counts of these
 components, distinct contexts, and group-size histograms support planning; they
@@ -158,9 +174,18 @@ analysis and independent verification remain NOT_RUN until the SERAPH workflow
 succeeds. Numerical diagnosis/fidelity, performance, optimized cache lifetime and
 all later roadmap stages remain outside I5R-3A.
 
-Local final validation: 28 tests, 28 PASS, 0 FAIL, 0 SKIP (19 new fixture
-checks and 9 existing I5 preflight regressions). Synthetic verifier tests exercise
+Local final validation after the CLI/order-reporting patch: 32 tests, 32 PASS,
+0 FAIL, 0 SKIP (23 I5R-3A checks and 9 existing I5 preflight regressions).
+The CLI regression invokes the real argument parser/dispatch against the actual
+prepare signature and enters the real prepare function up to input loading.
+The unchanged `--multi-prepared` flag maps explicitly to the internal `multi`
+parameter. Synthetic verifier tests exercise
 both a sealed successful recomputation and rejection of a resealed false runtime
 claim. They do not constitute a real-data independent audit. Reports exceeding
 the existing 16 MiB JSON-reader metadata limit fail explicitly before output;
 there is no silent reduction of records or candidate pairs.
+
+Create fresh plan/audit/verification directories under the reviewed corrected
+source commit before SERAPH execution; never edit/reseal earlier outputs. The
+prepare CLI dispatch is CPU-verified, but real offline assets/datasets and the
+SERAPH independent audit remain NOT_RUN locally.
