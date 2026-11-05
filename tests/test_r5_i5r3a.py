@@ -130,6 +130,52 @@ class Audit(unittest.TestCase):
     summary['runtime_semantics_admission_eviction_reuse_numerical_fidelity']='PASS';write(review/'i5r3a_summary.json',summary);seal(review)
     with self.assertRaisesRegex(ValueError,'summary differs'):verify(root/'plan',review,root/'bad')
 
+class ManifestCompatibility(unittest.TestCase):
+ @contextlib.contextmanager
+ def adapter_fixture(self):
+  # Real inventory I/O, isolated from model/tokenizer/preparation dependencies.
+  # This fixture does not stand in for validation of real adapter matrices.
+  from types import SimpleNamespace
+  from semcache.edgelora import r5_i5r3a as api
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);multi=root/'multi';multi.mkdir();registry=root/'registry.json';write(registry,{})
+   write(multi/'adapter.json',{'TEST_FIXTURE_ONLY':True})
+   write(multi/'r5_output_manifest.json',{'files':{'adapter.json':sha(multi/'adapter.json')}})
+   tok=SimpleNamespace(identity={'TEST_FIXTURE_ONLY':True},tokenizer=Tokenizer())
+   loaded=(tok,{}, {}, {}, {'identity':{'TEST_FIXTURE_ONLY':True}}, {})
+   with patch.object(api,'inputs',return_value=loaded),patch.object(api,'source_identity',return_value={'commit':'fixture','files':{}}),patch.object(api,'source_provenance'):
+    yield api,root,multi,registry
+ def test_valid_r5_multi_manifest_passes_prepare_and_compute(self):
+  from semcache.edgelora.r5_i5r2_tensors import Evidence
+  with self.adapter_fixture() as (api,root,multi,registry):
+   api.prepare(registry,multi,root/'plan')
+   p,result=api.compute(root/'plan')
+   self.assertEqual(p['multi_inventory']['manifest'],'r5_output_manifest.json')
+   self.assertEqual(result,{})
+   self.assertTrue((root/'plan/i5_output_manifest.json').is_file())
+   Evidence(root/'plan').verify()
+ def test_missing_r5_manifest_rejected_even_with_valid_i5_manifest(self):
+  with self.adapter_fixture() as (api,root,multi,registry):
+   api.prepare(registry,multi,root/'plan')
+   (multi/'r5_output_manifest.json').unlink();seal(multi)
+   for action in (lambda:api.prepare(registry,multi,root/'other_plan'),lambda:api.compute(root/'plan')):
+    with self.assertRaisesRegex(ValueError,'missing required evidence: r5_output_manifest.json'):action()
+ def test_corrupted_r5_inventory_rejected_in_prepare_and_compute(self):
+  with self.adapter_fixture() as (api,root,multi,registry):
+   api.prepare(registry,multi,root/'plan');write(multi/'adapter.json',{'TEST_FIXTURE_ONLY':True,'altered':True})
+   for action in (lambda:api.prepare(registry,multi,root/'other_plan'),lambda:api.compute(root/'plan')):
+    with self.assertRaisesRegex(ValueError,'corrupt sealed evidence'):action()
+ def test_i5_dataset_keeps_its_normal_i5_manifest(self):
+  from semcache.edgelora.r5_i5r2_tensors import Evidence
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);rows=samples()
+   (root/'samples.jsonl').write_text(''.join(json.dumps(s)+'\n' for s in rows))
+   write(root/'i5_dataset_manifest.json',dict(dataset='qasper',version=VERSIONS['qasper'],source=SOURCES['qasper'],split='test',revision='a'*40,source_files={'fixture.jsonl':'b'*64},TEST_FIXTURE_ONLY=True,samples=2,samples_sha256=sha(root/'samples.jsonl')))
+   seal(root)
+   self.assertEqual(provenance(root,'qasper',True)[0],rows)
+   self.assertEqual(Evidence(root).verify()['manifest'],'i5_output_manifest.json')
+   self.assertFalse((root/'r5_output_manifest.json').exists())
+
 class CLI(unittest.TestCase):
  def setUp(self):
   spec=importlib.util.spec_from_file_location('i5r3a_cli',Path(__file__).resolve().parents[1]/'scripts/142_r5_i5r3a.py')

@@ -127,14 +127,14 @@ def inputs(registry_path,multi):
 def prepare(registry,multi,output,block_size=20,input_limit=None,seed=42):
  require(1<=block_size<=20 and (input_limit is None or 1<=input_limit<=2048),'invalid audit bounds')
  tok,users,prov,data,pm,m=inputs(registry,multi)
- p=dict(schema='I5R3A_STATIC_V1',source=source_identity(),registry_path=str(Path(registry).resolve()),registry_sha256=sha(registry),multi_prepared=str(Path(multi).resolve()),multi_inventory=Evidence(multi).verify(),datasets=prov,tokenizer_identity=tok.identity,model_identity=pm['identity'],users=users,template=TEMPLATE,budgets={k:BUDGETS[k] for k in DATASETS},block_size=block_size,input_limit=input_limit,seed=seed,capacity_bytes=CAPACITY,max_entries=64,clusters=1,cache_policy='LRU',context_limit=2048,group_stable_policy='NOT_EVALUATED: production per-sample retention only',TEST_FIXTURE_ONLY=False)
+ p=dict(schema='I5R3A_STATIC_V1',source=source_identity(),registry_path=str(Path(registry).resolve()),registry_sha256=sha(registry),multi_prepared=str(Path(multi).resolve()),multi_inventory=Evidence(multi).verify('r5_output_manifest.json'),datasets=prov,tokenizer_identity=tok.identity,model_identity=pm['identity'],users=users,template=TEMPLATE,budgets={k:BUDGETS[k] for k in DATASETS},block_size=block_size,input_limit=input_limit,seed=seed,capacity_bytes=CAPACITY,max_entries=64,clusters=1,cache_policy='LRU',context_limit=2048,group_stable_policy='NOT_EVALUATED: production per-sample retention only',TEST_FIXTURE_ONLY=False)
  p['plan_id']=digest(p);out=fresh(output,[registry,multi,*[x['path'] for x in prov.values()]]);write(out/'i5r3a_plan.json',p);seal(out);return dict(status='PREPARED',plan_id=p['plan_id'])
 
 def compute(plan):
  ev=Evidence(plan);ev.verify();p=ev.json('i5r3a_plan.json');q=dict(p);ident=q.pop('plan_id');require(digest(q)==ident and p['schema']=='I5R3A_STATIC_V1','plan differs')
  require(p['capacity_bytes']==CAPACITY and p['max_entries']==64 and p['clusters']==1 and p['cache_policy']=='LRU' and p['context_limit']==2048 and p['TEST_FIXTURE_ONLY'] is False,'static runtime constraints changed')
  source_provenance(dict(source_commit=p['source']['commit'],sources=p['source']['files']),expected_commit=p['source']['commit'],fixture=False)
- require(sha(p['registry_path'])==p['registry_sha256'] and Evidence(p['multi_prepared']).verify()==p['multi_inventory'],'input provenance changed')
+ require(sha(p['registry_path'])==p['registry_sha256'] and Evidence(p['multi_prepared']).verify('r5_output_manifest.json')==p['multi_inventory'],'input provenance changed')
  tok,users,prov,data,pm,m=inputs(p['registry_path'],p['multi_prepared'])
  require(prov==p['datasets'] and tok.identity==p['tokenizer_identity'] and pm['identity']==p['model_identity'] and users==p['users'] and p['template']==TEMPLATE and p['budgets']=={k:BUDGETS[k] for k in DATASETS},'inputs/template changed')
  result={k:audit_dataset(v,tok.tokenizer,users,seed=p['seed'],block_size=p['block_size'],input_limit=p['input_limit'],bpt=tok.identity['raw_cache_bytes_per_token']) for k,v in data.items()}

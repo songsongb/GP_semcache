@@ -174,8 +174,8 @@ analysis and independent verification remain NOT_RUN until the SERAPH workflow
 succeeds. Numerical diagnosis/fidelity, performance, optimized cache lifetime and
 all later roadmap stages remain outside I5R-3A.
 
-Local final validation after the CLI/order-reporting patch: 32 tests, 32 PASS,
-0 FAIL, 0 SKIP (23 I5R-3A checks and 9 existing I5 preflight regressions).
+Local final validation after the adapter-manifest patch: 36 tests, 36 PASS,
+0 FAIL, 0 SKIP (27 I5R-3A checks and 9 existing I5 preflight regressions).
 The CLI regression invokes the real argument parser/dispatch against the actual
 prepare signature and enters the real prepare function up to input loading.
 The unchanged `--multi-prepared` flag maps explicitly to the internal `multi`
@@ -189,3 +189,8 @@ Create fresh plan/audit/verification directories under the reviewed corrected
 source commit before SERAPH execution; never edit/reseal earlier outputs. The
 prepare CLI dispatch is CPU-verified, but real offline assets/datasets and the
 SERAPH independent audit remain NOT_RUN locally.
+
+Adapter preparation inventories are explicitly verified using their existing
+`r5_output_manifest.json` in both prepare and compute. I5 dataset inputs and
+I5R-3A outputs retain `i5_output_manifest.json`. Missing/corrupt R5 inventories
+reject; there is no fallback, rename or resealing of existing adapter evidence.
