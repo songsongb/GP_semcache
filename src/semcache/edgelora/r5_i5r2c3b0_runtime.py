@@ -131,9 +131,42 @@ def failure_note(error,message):
  except BaseException:pass
 
 
-def verify_contract(expected,actual,writer,out):
+def verified_label_key_representation(expected,actual,report):
+ """Only the four differences proven in the SERAPH C2/B0 receipt qualify."""
+ if report['truncated'] or report['hash_errors'] or not report['serialized_json_representation_equal'] or not report['json_key_conversion_only']:return False
+ if not all(report['json_round_trip'][side]['available'] and report['json_round_trip'][side]['lossless_keys'] for side in ('expected','actual')):return False
+ try:
+  left=expected['config']['id2label'];right=actual['config']['id2label']
+  if type(left) is not dict or type(right) is not dict or len(left)!=2 or len(right)!=2:return False
+  if not all(type(k) is str for k in left) or not all(type(k) is int for k in right):return False
+  if left!={'0':'LABEL_0','1':'LABEL_1'} or right!={0:'LABEL_0',1:'LABEL_1'}:return False
+  wanted={(f'/config/id2label/{i}',kind) for i in (0,1) for kind in ('missing_in_actual','extra_in_actual')}
+  rows=report['differences']
+  if len(rows)!=4 or {(r['path'],r['kind']) for r in rows}!=wanted:return False
+  for r in rows:
+   types=('str','MISSING') if r['kind']=='missing_in_actual' else ('MISSING','int')
+   if (r['expected_key']['type'],r['actual_key']['type'])!=types:return False
+  # Compare the entire structure after changing this one diagnostic copy only.
+  converted=dict(actual,config=dict(actual['config'],id2label={str(k):v for k,v in right.items()}))
+  return diagnostic_hash(expected)==diagnostic_hash(converted)
+ except (KeyError,TypeError,ValueError,RecursionError):return False
+
+
+def verify_contract(expected,actual,writer,out,*,expected_opt_contract=None,actual_opt_contract=None):
  report=contract_difference(expected,actual)
- if not report['exact_equal']:
+ compatible=verified_label_key_representation(expected,actual,report)
+ try:canonical_hashes=dict(expected=digest(expected),actual=digest(actual))
+ except (TypeError,ValueError):canonical_hashes=dict(expected=None,actual=None)
+ fingerprint_ok=canonical_hashes['expected'] is not None and canonical_hashes['expected']==canonical_hashes['actual']
+ fingerprint_ok=fingerprint_ok and (expected_opt_contract is None or expected_opt_contract==canonical_hashes['expected']) and (actual_opt_contract is None or actual_opt_contract==canonical_hashes['actual'])
+ accepted=(report['exact_equal'] or compatible) and fingerprint_ok and not report['truncated'] and not report['hash_errors']
+ report.update(CONTRACT_VERIFIED=('EXACT' if report['exact_equal'] else 'VERIFIED_JSON_KEY_REPRESENTATION') if accepted else 'REJECTED',
+  compatibility_established=bool(accepted and compatible),canonical_opt_contract=canonical_hashes,
+  physical_opt_contract_consistent=bool(fingerprint_ok),
+  compatibility_evidence=dict(rule='C2_B0_ID2LABEL_01_V1',allowlisted_path='/config/id2label',
+   expected_key_type='str',actual_key_type='int',labels=['LABEL_0','LABEL_1'],
+   whole_structure_equal_after_only_allowlisted_key_conversion=compatible) if compatible else None)
+ if not accepted:
   try:require(False,'native OPT/adapter contract differs')
   except BaseException as primary:
    try:writer.write(Path(out)/'i5r2c3b0_contract_difference.json',report)
@@ -250,7 +283,7 @@ def execute(experiment,output,commit):
    contract=driver.configure(es,budget_bytes=p['budget']);ident,contract=physical(view,p['tokenizer'],'cuda:0',current['uuid'],contract,spec,registry)
    writer.write(out/'i5r2c3b0_backend.json',dict(initial=initial_backend,effective=backend()))
    writer.write(out/'i5r2c3b0_allocation.json',dict(gpu=current,preparation_gpu_uuid=pm['gpu']['uuid'],gpu_identity_policy='SAME_COMPATIBLE_GPU_CLASS',prefill_forwards=0))
-   verify_contract(p['contract'],contract,writer,out);driver.contract=contract
+   verify_contract(p['contract'],contract,writer,out,expected_opt_contract=h['identities']['S']['physical_identity']['opt_contract'],actual_opt_contract=ident['opt_contract']);driver.contract=contract
    driver.evidence=PerformanceEvidence(es,writer,profile='SCALABLE_EVALUATION')
    identity=dict(model_identity=view['identity'],adapter=spec,physical_identity=ident,contract=contract)
    cohort=digest(dict(experiment_id=p['experiment_id'],physical_identity=ident));session=uuid.uuid4().hex

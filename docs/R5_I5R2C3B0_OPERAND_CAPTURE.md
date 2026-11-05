@@ -267,3 +267,36 @@ Current focused B0/C3 validation: **60 PASS / 0 FAIL / 2 SKIP** across62 tests;
 CLI/Python/shell syntax and diff checks pass. Rejected mixed-key comparisons write
 the diagnostic receipt and retain the primary rejection in sealed FAILED evidence.
 Historical GPU artifacts remain unchanged; no GPU job or deployment was run.
+
+## Verified id2label representation compatibility
+
+The operator has now verified the actual SERAPH receipt: raw Python equality is
+false, JSON representation equality and key-only conversion are true, traversal
+is complete, hashing succeeded, and the only four differences are missing/extra
+keys at `/config/id2label/0` and `/config/id2label/1`. Historical keys/values are
+`{"0":"LABEL_0","1":"LABEL_1"}`; live keys/values are
+`{0:"LABEL_0",1:"LABEL_1"}`. This is a verified operator handoff, not a new local
+GPU audit. It supersedes the earlier diagnostic-only rejection of this case.
+
+`verify_contract` accepts EXACT equality or VERIFIED_JSON_KEY_REPRESENTATION.
+The latter requires complete error-free diagnostics, lossless collision-free JSON
+round trips with identical canonical hashes, exactly those four differences and
+key types, exactly those two label mappings, and whole-structure typed equality
+after converting **only** that path in a temporary diagnostic copy. No other key,
+value, type, model config, implementation hash, adapter, version or backend change
+is permitted. Expected keys must be builtin strings and actual keys builtin
+integers; reverse conversion, boolean keys and extra labels are refused.
+
+The original raw `exact_equal=false`, differences and typed hashes remain in the
+receipt. Additional fields record CONTRACT_VERIFIED, compatibility evidence,
+canonical contract hashes and physical fingerprint consistency. Production
+`digest(contract)` must match between historical and live contracts, and runtime
+also checks both against their actual physical `opt_contract` fingerprints.
+No installed model config, original contract, serializer, identity, weight,
+backend, LoRA/TCP/cache arithmetic or numerical tolerance is modified.
+
+Validation: **64 PASS / 0 FAIL / 2 SKIP** across66 focused B0/C3 tests. Matching
+canonical fingerprints were checked with the unchanged physical namespace utility.
+GPU numerical reproduction remains NOT_RUN until a fresh B0 run and audit pass.
+Review/commit the patch, then prepare a new sealed plan and fresh attempt under
+that reviewed source; old source-pinned plans and failed attempts stay immutable.
