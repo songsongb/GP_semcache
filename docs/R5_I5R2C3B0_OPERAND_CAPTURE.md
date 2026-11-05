@@ -227,3 +227,43 @@ Hotfix validation: **53 PASS / 0 FAIL / 2 SKIP** in the B0/C3 focused suites
 (55 tests), plus Python/shell syntax and diff checks. Skips are the unavailable
 native Torch/Transformers CPU APIs. No GPU execution or historical evidence
 mutation was performed, and no GPU contract equality has been newly verified.
+
+## Mixed-key diagnostic hotfix
+
+The earlier receipt builder sorted raw dictionary keys, called string methods on
+keys, and used production `digest()` on mixed-key containers. Those operations
+can fail for runtime integer-keyed model configuration alongside historical JSON
+string keys. Diagnostic traversal now orders typed key encodings and emits
+escaped JSON pointers with original key-type paths and per-key summaries. Pointer
+`/0` may denote either an integer or string key; `key_types`, `expected_key` and
+`actual_key` disambiguate them. Missing/extra keys remain explicit.
+
+Diagnostic value/full-contract hashes now use `TYPED_JSON_V1`: tagged scalar,
+list/tuple and dictionary entries, sorted by encoded key type/value. They are
+separate from all frozen production identity hashes. Traversal remains bounded
+(64 differences,20,000 nodes,depth64); hash serialization has its own bounds
+(100,000 nodes,depth128,32 MiB). Unavailable hashes are explicitly null with
+errors and cannot authorize equality. Production canonical serialization is
+unchanged. No model configuration, attention implementation or source field is
+normalized or ignored.
+
+The receipt separately records `raw_python_structural_equal`,
+`serialized_json_representation_equal`, `json_key_conversion_only`, and original
+key types/paths. JSON round-trip comparison uses unsorted serialization before
+sorting its parsed string-key tree, detects duplicate/coalescing keys, and never
+silently discards a colliding key. The key-only hypothesis comparison changes
+only keys in a diagnostic copy, preserving other value/container types.
+
+CPU tests reproduce `{"0":"LABEL_0"}` versus `{0:"LABEL_0"}` and representative
+`config.id2label` structures: Python/typed structures differ while their lossless
+JSON representations agree. This confirms the mechanism in CPU examples; it does
+not yet identify the actual differing fields of the SERAPH contract. Even when
+`json_key_conversion_only=true`, B0 rejects the mismatch and
+`compatibility_established=false`. A fresh GPU receipt is still required to
+establish whether this is the complete historical discrepancy. No compatibility
+policy has been enabled.
+
+Current focused B0/C3 validation: **60 PASS / 0 FAIL / 2 SKIP** across62 tests;
+CLI/Python/shell syntax and diff checks pass. Rejected mixed-key comparisons write
+the diagnostic receipt and retain the primary rejection in sealed FAILED evidence.
+Historical GPU artifacts remain unchanged; no GPU job or deployment was run.

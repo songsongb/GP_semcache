@@ -207,14 +207,14 @@ class ContractFailures(unittest.TestCase):
     with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs'):verify_contract(expected,actual,self.writer(root),root)
     report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text());self.assertFalse(report['exact_equal']);self.assertEqual(len(report['differences']),1)
  def test_diff_exact_paths_missing_extra_types_hashes_and_no_source_dump(self):
-  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference,diagnostic_hash
   source='PRIVATE IMPLEMENTATION\n'*10000
   a={'methods':{'attention':{'source':source}},'remove':None,'rank':8,'a/b~':1}
   b={'methods':{'attention':{'source':source+'changed'}},'extra':[1,2],'rank':8.0,'a/b~':2}
   report=contract_difference(a,b);rows={x['path']:x for x in report['differences']}
   self.assertEqual(set(rows),{'/methods/attention/source','/remove','/extra','/rank','/a~1b~0'})
   self.assertEqual(rows['/remove']['kind'],'missing_in_actual');self.assertEqual(rows['/extra']['kind'],'extra_in_actual');self.assertEqual(rows['/rank']['kind'],'type')
-  item=rows['/methods/attention/source'];self.assertEqual(item['expected']['sha256'],digest(source));self.assertEqual(item['actual']['type'],'str');self.assertNotIn('value',item['actual'])
+  item=rows['/methods/attention/source'];self.assertEqual(item['expected']['sha256'],diagnostic_hash(source));self.assertEqual(item['actual']['type'],'str');self.assertNotIn('value',item['actual'])
   self.assertNotIn('PRIVATE IMPLEMENTATION',json.dumps(report));self.assertLess(len(json.dumps(report)),65536)
  def test_diff_bound_and_numeric_boolean_type_difference(self):
   from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
@@ -224,6 +224,46 @@ class ContractFailures(unittest.TestCase):
   self.assertFalse(report['exact_equal']);self.assertEqual(report['differences'][0]['path'],'/nested/enabled')
   class RuntimeVersion(str):pass
   report=contract_difference({'version':'2.0'},{'version':RuntimeVersion('2.0')});self.assertTrue(report['exact_equal']);self.assertEqual(report['differences'],[])
+ def test_integer_string_label_keys_reproduce_crash_and_json_conversion(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  direct=contract_difference({'0':'LABEL_0'},{0:'LABEL_0'});self.assertTrue(direct['json_key_conversion_only']);self.assertFalse(direct['exact_equal'])
+  a={'config':{'id2label':{'0':'LABEL_0','1':'LABEL_1'}}};b={'config':{'id2label':{0:'LABEL_0',1:'LABEL_1'}}}
+  report=contract_difference(a,b)
+  self.assertFalse(report['exact_equal']);self.assertFalse(report['raw_python_structural_equal']);self.assertTrue(report['serialized_json_representation_equal']);self.assertTrue(report['json_key_conversion_only'])
+  self.assertEqual({r['path'] for r in report['differences']},{'/config/id2label/0','/config/id2label/1'})
+  self.assertEqual({r['expected_key']['type'] for r in report['differences']},{'MISSING','str'});self.assertEqual({r['actual_key']['type'] for r in report['differences']},{'MISSING','int'})
+ def test_nested_mixed_keys_lists_missing_extra_and_escaping(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  a={'a/b~':[{0:'zero','x':{2:'two','name':'before'}}]};b={'a/b~':[{0:'zero','x':{2:'two','name':'after','extra':1}}]}
+  report=contract_difference(a,b)
+  self.assertFalse(report['exact_equal']);self.assertFalse(report['json_key_conversion_only']);self.assertEqual({r['path'] for r in report['differences']},{'/a~1b~0/0/x/name','/a~1b~0/0/x/extra'})
+ def test_typed_hashes_order_independent_preserve_key_types(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import diagnostic_hash,contract_difference
+  a={0:'zero','x':{3:'three','name':'label'}};b={'x':{'name':'label',3:'three'},0:'zero'}
+  self.assertEqual(diagnostic_hash(a),diagnostic_hash(b));self.assertNotEqual(diagnostic_hash({0:'LABEL_0'}),diagnostic_hash({'0':'LABEL_0'}));self.assertTrue(contract_difference(a,b)['exact_equal'])
+  with self.assertRaises(TypeError):digest(a)  # Production mixed-key behavior is untouched.
+ def test_json_collision_is_not_lossless_or_compatible(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  report=contract_difference({'0':'last'},{0:'first','0':'last'})
+  self.assertFalse(report['exact_equal']);self.assertFalse(report['json_key_conversion_only']);self.assertIsNone(report['serialized_json_representation_equal']);self.assertFalse(report['json_round_trip']['actual']['lossless_keys'])
+ def test_json_equality_does_not_hide_other_type_changes(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  report=contract_difference({'x':[1]},{'x':(1,)})
+  self.assertTrue(report['serialized_json_representation_equal']);self.assertFalse(report['json_key_conversion_only']);self.assertFalse(report['exact_equal'])
+ def test_deep_traversal_is_bounded_and_hash_failure_is_explicit(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  a,b=0,1
+  for i in range(140):a={i:a};b={i:b}
+  report=contract_difference(a,b);self.assertTrue(report['truncated']);self.assertFalse(report['exact_equal']);self.assertIsNone(report['expected_sha256']);self.assertTrue(report['hash_errors'])
+ def test_key_conversion_receipt_survives_rejection_and_failed_attempt_seal(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract,finalize_attempt
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);writer=self.writer(root);primary=None
+   with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs') as caught:
+    try:verify_contract({'config':{'id2label':{'0':'LABEL_0'}}},{'config':{'id2label':{0:'LABEL_0'}}},writer,root)
+    except BaseException as exc:primary=exc;raise
+    finally:finalize_attempt(root,writer,{},primary=primary)
+   self.assertIs(caught.exception,primary);report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text());self.assertTrue(report['json_key_conversion_only']);self.assertFalse(report['compatibility_established']);self.assertEqual(json.loads((root/'i5r2c3b0_status.json').read_text())['status'],'FAILED');Evidence(root).verify()
  def test_primary_failure_survives_cleanup_reconcile_and_is_sealed(self):
   from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
   with tempfile.TemporaryDirectory() as d:

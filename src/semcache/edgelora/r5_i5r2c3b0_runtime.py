@@ -1,6 +1,6 @@
 """Two real distributed prefills; passive, complete Layer-0 operand capture only."""
 from contextlib import contextmanager
-import inspect,os,re,sys,time,uuid
+import inspect,json,os,re,sys,time,uuid
 from pathlib import Path
 from .communication import Channel,connect,header,digest,require,digest_bytes
 from .r3a_artifacts import ROOT,read,full_base_fingerprint,write as write_status
@@ -12,36 +12,115 @@ from .r5_i5r2bs1_plan import CORE
 from .r5_i5r2bs1_runtime import Store,layout,apply_recorded_backend
 
 
+def diagnostic_serialize(value):
+ """Typed diagnostic JSON only; production canonical identities are untouched."""
+ nodes=0
+ def encode(v,depth=0):
+  nonlocal nodes
+  nodes+=1
+  if nodes>100000 or depth>128:raise ValueError('diagnostic serialization bound exceeded')
+  if v is None:return ['null']
+  if isinstance(v,bool):return ['bool',v]
+  if isinstance(v,int):return ['int',str(v)]
+  if isinstance(v,float):return ['float',repr(v)]
+  if isinstance(v,str):return ['str',v]
+  if isinstance(v,(list,tuple)):return ['list' if isinstance(v,list) else 'tuple',[encode(x,depth+1) for x in v]]
+  if isinstance(v,dict):
+   pairs=[(encode(k,depth+1),encode(x,depth+1)) for k,x in v.items()]
+   pairs.sort(key=lambda pair:json.dumps(pair[0],ensure_ascii=True,separators=(',',':')))
+   return ['dict',pairs]
+  raise ValueError('unsupported diagnostic value type: '+type(v).__name__)
+ data=json.dumps(encode(value),ensure_ascii=True,separators=(',',':')).encode()
+ if len(data)>32*2**20:raise ValueError('diagnostic serialization byte bound exceeded')
+ return data
+
+
+def diagnostic_hash(value):return digest_bytes(diagnostic_serialize(value))
+
+
+def json_representation(value):
+ """Observe Python's JSON round trip; reject ambiguous key collisions."""
+ def unique(pairs):
+  result={}
+  for key,v in pairs:
+   if key in result:raise ValueError('JSON key conversion collision')
+   result[key]=v
+  return result
+ try:
+  # No mixed-key sorting here. Only the parsed all-string-key tree is sorted.
+  parsed=json.loads(json.dumps(value,sort_keys=False,allow_nan=False),object_pairs_hook=unique)
+  return dict(available=True,sha256=digest(parsed),lossless_keys=True)
+ except (ValueError,TypeError,RecursionError) as exc:
+  return dict(available=False,sha256=None,lossless_keys=False,error=type(exc).__name__+': '+str(exc)[:128])
+
+
+def key_projection(value,depth=0):
+ """Convert ONLY dictionary keys, preserving all non-key types and values."""
+ if depth>128:raise ValueError('key projection depth bound exceeded')
+ if isinstance(value,dict):
+  result={}
+  for key,v in value.items():
+   name=next(iter(json.loads(json.dumps({key:None},allow_nan=False))))
+   if name in result:raise ValueError('JSON key conversion collision')
+   result[name]=key_projection(v,depth+1)
+  return result
+ if isinstance(value,list):return [key_projection(x,depth+1) for x in value]
+ if isinstance(value,tuple):return tuple(key_projection(x,depth+1) for x in value)
+ return value
+
+
 def contract_difference(expected,actual,*,limit=64,node_limit=20000):
- """Bounded JSON-pointer diff. Embedded code/config objects are hash-only."""
+ """Bounded typed-key JSON-pointer diff; never uses production mixed-key hashes."""
  require(1<=limit<=64 and 1<=node_limit<=20000,'invalid contract diff bounds')
- missing=object();rows=[];visited=0;truncated=False
+ missing=object();rows=[];visited=0;truncated=False;hash_errors=[]
+ def hashed(value):
+  try:return diagnostic_hash(value)
+  except (ValueError,TypeError,RecursionError) as exc:
+   if len(hash_errors)<4:hash_errors.append(type(exc).__name__+': '+str(exc)[:128])
+   return None
  def summary(value,path):
   if value is missing:return dict(type='MISSING',sha256=None)
-  result=dict(type=type(value).__name__,sha256=digest(value))
+  result=dict(type=type(value).__name__,sha256=hashed(value))
   if value is None or type(value) in (bool,int,float):result['value']=value
   elif isinstance(value,str) and not path.endswith('/source') and len(value)<=80 and re.fullmatch(r'[A-Za-z0-9_.:+/\-]*',value):result['value']=value
   return result
- def walk(a,b,path):
+ def walk(a,b,path,left_types=(),right_types=(),left_key=missing,right_key=missing,depth=0):
   nonlocal visited,truncated
-  if visited>=node_limit or len(rows)>=limit:truncated=True;return
+  if visited>=node_limit or len(rows)>=limit or depth>64:truncated=True;return
   visited+=1
-  if a==b and digest(a)==digest(b):return
+  if a is not missing and b is not missing:
+   ah,bh=hashed(a),hashed(b)
+   if ah is not None and ah==bh:return
   if isinstance(a,dict) and isinstance(b,dict):
-   for key in sorted(set(a)|set(b)):
-    walk(a.get(key,missing),b.get(key,missing),path+'/'+key.replace('~','~0').replace('/','~1'))
+   if len(a)+len(b)>node_limit:truncated=True;return
+   left={diagnostic_serialize(k):(k,v) for k,v in a.items()};right={diagnostic_serialize(k):(k,v) for k,v in b.items()}
+   for token in sorted(set(left)|set(right)):
+    ak,av=left.get(token,(missing,missing));bk,bv=right.get(token,(missing,missing));key=ak if ak is not missing else bk
+    walk(av,bv,path+'/'+str(key).replace('~','~0').replace('/','~1'),left_types+(type(ak).__name__ if ak is not missing else 'MISSING',),right_types+(type(bk).__name__ if bk is not missing else 'MISSING',),ak,bk,depth+1)
     if truncated:return
   elif isinstance(a,list) and isinstance(b,list):
    for i in range(max(len(a),len(b))):
-    walk(a[i] if i<len(a) else missing,b[i] if i<len(b) else missing,path+'/'+str(i))
+    walk(a[i] if i<len(a) else missing,b[i] if i<len(b) else missing,path+'/'+str(i),left_types+('index',),right_types+('index',),depth=depth+1)
     if truncated:return
   else:
-   row=dict(path=path if len(path)<=512 else None,kind='missing_in_actual' if b is missing else 'extra_in_actual' if a is missing else 'type' if type(a) is not type(b) else 'value',expected=summary(a,path),actual=summary(b,path))
-   if row['path'] is None:row['path_sha256']=digest(path);truncated=True
+   row=dict(path=path if len(path)<=512 else None,kind='missing_in_actual' if b is missing else 'extra_in_actual' if a is missing else 'type' if type(a) is not type(b) else 'value',expected=summary(a,path),actual=summary(b,path),key_types=dict(expected=left_types,actual=right_types))
+   if left_key is not missing or right_key is not missing:row.update(expected_key=summary(left_key,path),actual_key=summary(right_key,path))
+   if row['path'] is None:row['path_sha256']=diagnostic_hash(path);truncated=True
    rows.append(row)
  walk(expected,actual,'')
- return dict(exact_equal=expected==actual and digest(expected)==digest(actual),expected_sha256=digest(expected),actual_sha256=digest(actual),
-  differences=rows,truncated=truncated,visited_nodes=visited,limits=dict(differences=limit,nodes=node_limit),normalization='NONE')
+ eh,ah=hashed(expected),hashed(actual);ej,aj=json_representation(expected),json_representation(actual)
+ try:raw_equal=expected==actual
+ except (RecursionError,ValueError,TypeError):raw_equal=None
+ json_equal=ej['sha256']==aj['sha256'] if ej['available'] and aj['available'] else None
+ keys_only=False
+ if json_equal and eh is not None and ah is not None and eh!=ah:
+  try:keys_only=diagnostic_hash(key_projection(expected))==diagnostic_hash(key_projection(actual))
+  except (ValueError,TypeError,RecursionError):pass
+ return dict(exact_equal=raw_equal is True and eh is not None and eh==ah and json_equal is True,
+  raw_python_structural_equal=raw_equal,serialized_json_representation_equal=json_equal,json_key_conversion_only=keys_only,
+  expected_sha256=eh,actual_sha256=ah,diagnostic_hash_format='TYPED_JSON_V1',hash_errors=hash_errors,
+  json_round_trip=dict(expected=ej,actual=aj),differences=rows,truncated=truncated,visited_nodes=visited,
+  limits=dict(differences=limit,nodes=node_limit,depth=64),normalization='NONE',compatibility_established=False)
 
 
 def failure_note(error,message):
