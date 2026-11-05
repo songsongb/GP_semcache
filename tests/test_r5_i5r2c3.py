@@ -140,7 +140,7 @@ class Attention(unittest.TestCase):
    with self.assertRaises(ValueError):validate_repetitions(broken)
  def test_missing_boundary_rejected(self):
   from semcache.edgelora.r5_i5r2c3_runtime import schedule,validate_repetitions
-  rows=[dict(s,boundaries={b:{} for b in BOUNDARIES}) for s in schedule() if not s['warmup']]
+  rows=[dict(s,boundaries={b:{} for b in BOUNDARIES if b!='output_projection_input'}) for s in schedule() if not s['warmup']]
   with self.assertRaisesRegex(ValueError,'missing attention boundary'):validate_repetitions(rows)
  def test_historical_git_blob_hash_mismatch_fails(self):
   from semcache.edgelora.r5_i5r2_analysis import source_provenance
@@ -150,16 +150,103 @@ class Attention(unittest.TestCase):
  def test_masked_finite_values_have_ulp_and_infinite_pattern_supported(self):
   finite=pack([0.]*4096,'float16');m=compare_aligned((finite,[1,64,64]),(finite,[1,64,64]),'float16','masked_scores');self.assertIn('FP16_ULP',m)
   data=struct.pack('<4096e',*([-float('inf')]*4096));m=compare_aligned((data,[1,64,64]),(data,[1,64,64]),'float16','masked_scores');self.assertTrue(m['bitwise_equal'])
+ def test_native_rank4_canonical_shapes_and_invalid_batches(self):
+  from semcache.edgelora.r5_i5r2c3_runtime import canonical_boundary_shape
+  for n in (64,256):
+   for role in ('scores','masked_scores','probabilities','pv'):
+    last=4 if role=='pv' else n
+    self.assertEqual(canonical_boundary_shape([1,2,n,last],role,2,n,4),[2,n,last])
+    self.assertEqual(canonical_boundary_shape([2,n,last],role,2,n,4),[2,n,last])
+    with self.assertRaises(ValueError):canonical_boundary_shape([2,2,n,last],role,2,n,4)
+   with self.assertRaises(ValueError):canonical_boundary_shape([1,n,2,4],'scores',2,n,4)
+ def test_rank4_query_key_prefix_axes_and_hash_alignment(self):
+  from semcache.edgelora.r5_i5r2c3_runtime import operand_prefix
+  for role,axis in (('q',2),('k',3),('v',2),('probabilities',2)):
+   results=[]
+   for n in (64,256):
+    shape=[1,2,4,n] if role=='k' else [1,2,n,n if role=='probabilities' else 4]
+    if role=='k':values=[float(h*1000+d*100+t) for h in range(2) for d in range(4) for t in range(n)]
+    else:values=[float(h*1000+t*10+d) for h in range(2) for t in range(n) for d in range(shape[-1])]
+    data=pack(values,'float32');prefix,selected=operand_prefix(data,shape,'float32',axis,also_keys=role=='probabilities')
+    self.assertEqual(selected[axis],64)
+    if role=='probabilities':self.assertEqual(selected[-1],64)
+    results.append(digest_bytes(prefix))
+   self.assertEqual(results[0],results[1],role)
+ def test_independent_k_v_prefix_hash_reconstruction(self):
+  from semcache.edgelora.r5_i5r2c3_runtime import head_prefix_bytes,operand_prefix
+  for n in (64,256):
+   raw=pack([float(t*8+h*4+j) for t in range(n) for h in range(2) for j in range(4)],'float32')
+   keys=pack([float(t*8+h*4+j) for h in range(2) for j in range(4) for t in range(n)],'float32')
+   values=pack([float(t*8+h*4+j) for h in range(2) for t in range(n) for j in range(4)],'float32')
+   self.assertEqual(head_prefix_bytes(raw,n,2,4,width=4,transpose=True),operand_prefix(keys,[1,2,4,n],'float32',3)[0])
+   self.assertEqual(head_prefix_bytes(raw,n,2,4,width=4),operand_prefix(values,[1,2,n,4],'float32',2)[0])
+ def fake_observer(self):
+  from types import SimpleNamespace
+  from semcache.edgelora.r5_i5r2c3_runtime import AttentionOperations
+  class T:
+   def __init__(self,shape,dtype='float32'):self.shape=shape;self.ndim=len(shape);self.dtype=dtype;self.device='cpu'
+   def stride(self):
+    stride=[];n=1
+    for size in self.shape[::-1]:stride.insert(0,n);n*=size
+    return tuple(stride)
+   def storage_offset(self):return 0
+   def is_contiguous(self):return True
+  operands={r:T([1,64,8]) for r in 'qkv'};operands['mask']=T([1,1,64,64]);seen={}
+  state=AttentionOperations(SimpleNamespace(num_heads=2,head_dim=4,training=False),operands,lambda role,t,*args:seen.setdefault(role,(t,args)))
+  state.equal_head=lambda *a:True
+  return state,T,operands,seen
+ def test_native_matmul_state_order_and_actual_pv_probability_identity(self):
+  from types import SimpleNamespace
+  from unittest.mock import patch
+  state,T,x,seen=self.fake_observer();q=T([1,2,64,4]);k=T([1,2,4,64]);v=T([1,2,64,4]);scores=T([1,2,64,64]);masked=T([1,2,64,64]);soft=T([1,2,64,64]);cast=T([1,2,64,64]);drop=T([1,2,64,64])
+  with patch.dict('sys.modules',{'torch':SimpleNamespace(equal=lambda a,b:True)}),patch('semcache.edgelora.r5_i5r2c3_runtime.tensor_bytes',side_effect=lambda t:str(t.shape).encode()):
+   state.operation('view',(x['q'],),{},q);state.operation('matmul',(q,k),{},scores)
+   state.operation('add',(scores,x['mask']),{},masked);state.operation('softmax',(masked,),{'dim':-1},soft)
+   state.operation('to',(soft,),{},cast);state.operation('dropout',(cast,),{'training':False,'p':0.},drop)
+   state.operation('matmul',(drop,v),{},T([1,2,64,4]));state.finish()
+  self.assertIs(seen['probabilities'][0],drop);self.assertEqual([o['operation'] for o in state.trace['operations']],['matmul','matmul'])
+  self.assertEqual([axis for t,axis in seen['scores'][1][0]],[2,3]);self.assertEqual([axis for t,axis in seen['pv'][1][0]],[2,2]);self.assertTrue(state.trace['dropout']['observed'])
+ def test_unsupported_fused_or_wrong_product_shapes_fail_closed(self):
+  for name,shape in (('matmul',[2,2,64,4]),('matmul',[1,2,4,64]),('scaled_dot_product_attention',[1,2,64,4])):
+   state,T,x,seen=self.fake_observer()
+   with self.subTest(name=name,shape=shape),self.assertRaises(ValueError):state.operation(name,(T(shape),T([1,2,4,64])),{},T([1,2,64,64]))
+  state,T,x,seen=self.fake_observer()
+  with self.assertRaises(ValueError):state.finish()
+ def test_softmax_and_pv_cannot_be_identified_by_count_only(self):
+  state,T,x,seen=self.fake_observer()
+  with self.assertRaises(ValueError):state.operation('softmax',(T([1,2,64,64]),),{'dim':-1},T([1,2,64,64]))
+  state.phase='SOFTMAX';state.prob=[T([1,2,64,64])]
+  with self.assertRaises(ValueError):state.operation('matmul',(T([1,2,64,64]),T([1,2,64,4])),{},T([1,2,64,4]))
  @unittest.skipUnless(all(importlib.util.find_spec(x) for x in ('torch','numpy','transformers')),'installed native OPTAttention CPU API NOT_RUN: dependencies unavailable')
  def test_installed_attention_native_operation_observer_cpu(self):
   import torch
+  from unittest.mock import patch
   from transformers import OPTConfig
   from transformers.models.opt.modeling_opt import OPTAttention
-  from semcache.edgelora.r5_i5r2c3_runtime import native_replay
-  config=OPTConfig(hidden_size=8,num_attention_heads=2,attention_dropout=0.)
-  config._attn_implementation='eager';module=OPTAttention(config=config,layer_idx=0).eval()
-  x=torch.zeros(1,64,8);qkv={r:x.clone() for r in 'qkv'};qkv['mask']=torch.zeros(1,1,64,64);seen={};weights=module.q_proj.weight.clone();original=module.q_proj.forward
-  with torch.inference_mode():result=native_replay(module,qkv,lambda n,t,*args:seen.setdefault(n,t.detach().clone()))
-  self.assertEqual(set(seen),set(BOUNDARIES)|{'output_projection_input'});self.assertEqual(result.shape,x.shape);self.assertTrue(torch.equal(module.q_proj.weight,weights));self.assertEqual(module.q_proj.forward,original)
+  from semcache.edgelora.r5_i5r2c3_runtime import native_replay,canonical_boundary,operand_prefix
+  from semcache.edgelora.r3a_artifacts import tensor_bytes
+  config=OPTConfig(hidden_size=8,num_attention_heads=2,attention_dropout=0.);config._attn_implementation='eager'
+  module=OPTAttention(config=config,layer_idx=0).eval();weights={k:v.clone() for k,v in module.state_dict().items()};original=module.q_proj.forward
+  torch.manual_seed(42);raw={r:torch.randn(1,256,8) for r in 'qkv'};receipts=[]
+  for n in (64,256):
+   qkv={r:t[:,:n].clone() for r,t in raw.items()};qkv['mask']=torch.triu(torch.full((1,1,n,n),torch.finfo(torch.float32).min),diagonal=1);seen={};trace={};prefixes={}
+   def save(role,t,operands=None):
+    canonical=canonical_boundary(t,role,2,n,4);seen[role]=(t.clone(),canonical.clone())
+    if operands:
+     prefixes[role]=[digest_bytes(operand_prefix(tensor_bytes(v),list(v.shape),'float32',axis,also_keys=role=='pv' and j==0)[0]) for j,(v,axis) in enumerate(operands)]
+   with torch.inference_mode():
+    with patch.object(module.q_proj,'forward',lambda x:qkv['q']),patch.object(module.k_proj,'forward',lambda x:qkv['k']),patch.object(module.v_proj,'forward',lambda x:qkv['v']):
+     baseline=module(hidden_states=qkv['q'],attention_mask=qkv['mask'],output_attentions=False)[0]
+    result=native_replay(module,qkv,save,trace=trace)
+   self.assertEqual(set(seen),set(BOUNDARIES)|{'output_projection_input'});self.assertTrue(torch.equal(result,baseline));self.assertEqual(module.q_proj.forward,original)
+   for key,value in weights.items():self.assertTrue(torch.equal(value,module.state_dict()[key]))
+   self.assertEqual(len(trace['operations']),2)
+   for role in ('scores','masked_scores','probabilities','pv'):
+    observed,canonical=seen[role];self.assertEqual(list(canonical.shape),[2,n,4 if role=='pv' else n])
+    if trace['operations'][0]['operation']!='bmm':self.assertEqual(observed.ndim,4)
+   if trace['operations'][0]['operation']!='bmm':self.assertTrue(all(o['operation'] in ('matmul','__matmul__') for o in trace['operations']))
+   receipts.append(prefixes['scores'])
+   print('NATIVE_CPU_OBSERVATION',n,[(o['operation'],o['left']['shape'],o['right']['shape']) for o in trace['operations']], 'softmax',trace['softmax']['input']['shape'])
+  self.assertEqual(receipts[0],receipts[1])
 
 if __name__=='__main__':unittest.main()
