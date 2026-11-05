@@ -2,7 +2,7 @@
 import copy,importlib.util,json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-from semcache.edgelora.communication import digest
+from semcache.edgelora.communication import digest,digest_bytes
 from semcache.edgelora.r3a_artifacts import write,read,THRESHOLDS
 from semcache.edgelora.r5_i5_evidence import seal
 from semcache.edgelora.r5_i5_data import normalize
@@ -108,22 +108,91 @@ class Workload(unittest.TestCase):
    root=Path(d);multi=root/'multi';multi.mkdir();write(multi/'fixture.json',{'TEST_FIXTURE_ONLY':True});write(multi/'r5_output_manifest.json',{'files':{'fixture.json':__import__('hashlib').sha256((multi/'fixture.json').read_bytes()).hexdigest()}})
    ds=root/'data';ds.mkdir();write(ds/'samples.json',{'TEST_FIXTURE_ONLY':True});seal(ds)
    raw={p['sample']['id']:p for p in self.prompts};data={'qasper':[p['sample'] for p in self.prompts]};prov={'qasper':dict(path=str(ds),manifest={'TEST_FIXTURE_ONLY':True})}
-   pm={'identity':{'TEST_FIXTURE_ONLY':True,'layers':32}};m={'tokenizer':{}};tok=SimpleNamespace(identity={},tokenizer=Tokenizer())
-   old=dict(registry_path=str(root/'registry'),multi_prepared=str(multi),users=USERS,model_identity=pm['identity'],tokenizer_identity={},seed=42,input_limit=None)
-   result={'qasper':dict(samples=[dict(id=k,token_ids=p['token_ids']) for k,p in raw.items()],summary={'TEST_FIXTURE_ONLY':True})};proof={'scope':'TEST_FIXTURE_ONLY'};source={'commit':'TEST_FIXTURE_ONLY','files':{}}
-   specs={a:{'matrix_sha256':a} for a in ('Adapter_A','Adapter_B','Adapter_C')}
+   pm={'identity':{'TEST_FIXTURE_ONLY':True,'model':'facebook/opt-2.7b','base_revision':'a'*40,'base_weight_sha256':'b'*64,'dtype':'float16','hidden_dtype':'float16','layers':32,'hidden_size':2560}};m={'tokenizer':{'tokenizer_revision':'c'*40}};tok=SimpleNamespace(identity=m['tokenizer'],tokenizer=Tokenizer())
+   old=dict(registry_path=str(root/'registry'),multi_prepared=str(multi),users=USERS,model_identity=pm['identity'],tokenizer_identity=m['tokenizer'],seed=42,input_limit=None)
+   result={'qasper':dict(samples=[dict(id=k,token_ids=p['token_ids'],token_ids_sha256=digest(p['token_ids']),source_record_sha256=p['sample']['source_record_sha256'],shared_context_key=digest_bytes(p['sample']['context'].encode()),route=p['route']) for k,p in raw.items()],summary={'TEST_FIXTURE_ONLY':True})};proof={'scope':'TEST_FIXTURE_ONLY'};source={'commit':'TEST_FIXTURE_ONLY','files':{}}
+   frozen_3a=copy.deepcopy(result)
+   specs={a:{'matrix_sha256':digest(a),'adapter_id':a,'rank':8,'matrix_dtype':'float32'} for a in ('Adapter_A','Adapter_B','Adapter_C')}
    with patch.object(api,'history',return_value=(old,result,proof)),patch.object(api,'inputs_3a',return_value=(tok,USERS,prov,data,pm,m)),patch.object(api,'validate',return_value=(m,pm,specs,USERS)),patch.object(api,'source_identity',return_value=source),patch.object(api,'archived_source'),patch.object(api,'prepare_prompt',side_effect=lambda s,*a,**kw:copy.deepcopy(raw[s['id']])):
     info=api.prepare(root/'3a_plan',root/'3a_audit',root/'3a_verified','fixture',root/'plan')
     self.assertEqual(info['independent_groups'],1);self.assertEqual(info['requests_per_condition'],[4]);self.assertEqual(info['a0_requests_per_condition'],[3])
+    self.assertEqual(result,frozen_3a)
+    with patch.object(api,'transport_preflight',side_effect=ValueError('TCP_HEADER_LIMIT fixture')) as gate:
+     with self.assertRaisesRegex(ValueError,'TCP_HEADER_LIMIT'):api.prepare(root/'3a_plan',root/'3a_audit',root/'3a_verified','fixture',root/'unsafe_plan')
+     gate.assert_called_once()
+     self.assertFalse((root/'unsafe_plan').exists())
     protocol,plans=api.validate_plan(root/'plan');abc=plans['abc']['blocks'][0];a0=plans['a0']['blocks'][0]
     self.assertEqual([t['sample_id'] for t in a0['tasks']],[t['sample_id'] for t in abc['tasks'][1:]])
     self.assertTrue(all(t['scored'] for t in a0['tasks']));self.assertEqual(a0['priming_requests'],0)
+    self.assertEqual(protocol['label'],'TRANSPORT_LIMITED_DERIVED_WORKLOAD');self.assertEqual(protocol['max_prompt_tokens'],1280)
+    self.assertTrue(all(t['prepared']['original_3a']['original_routing']==t['prepared']['route'] for t in abc['tasks']))
+    transport=root/'plan/i5r3b_transport.json';original_transport=read(transport);bad=copy.deepcopy(original_transport);bad['maximum_header_bytes']=0;write(transport,bad);seal(root/'plan')
+    with self.assertRaisesRegex(ValueError,'transport envelope'):api.validate_plan(root/'plan')
+    write(transport,original_transport);seal(root/'plan')
     # Tampering is rejected without modifying either the old inputs or their seals.
     child=root/'plan/a0/i5_workload_manifest.json';x=read(child);x['blocks'][0]['tasks'][0]['token_ids'][0]=99;write(child,x)
     with self.assertRaises(ValueError):api.validate_plan(root/'plan')
  def test_frozen_thresholds_and_quality_interface(self):
   from semcache.edgelora.r5_i5_quality import score
   self.assertEqual(THRESHOLDS['max_abs'],.01);self.assertEqual(THRESHOLDS['relative_l2'],.001);self.assertTrue(score(self.prompts[0]['sample'],'gold','I5_PROMPTS_V1'))
+
+
+class Transport(unittest.TestCase):
+ def setUp(self):
+  self.pm={'identity':{'model':'facebook/opt-2.7b','base_revision':'a'*40,'base_weight_sha256':'b'*64,'dtype':'float16','hidden_dtype':'float16','layers':32,'hidden_size':2560}}
+  self.tokenizer={'tokenizer_revision':'c'*40}
+  self.specs={a:dict(adapter_id=a,matrix_sha256=digest(a),rank=8,matrix_dtype='float32') for a in ('Adapter_A','Adapter_B','Adapter_C')}
+ def plans(self,n):
+  ps=copy.deepcopy(corpus())
+  for i,p in enumerate(ps):
+   p['token_ids']=([49999]*n if not p['sample']['context'].startswith('negative') else [40000]*n)
+   p['token_ids'][-1]=i;p['token_ids_sha256']=digest(p['token_ids']);p['input_text']='word '*n
+  chosen,_=selection(ps,USERS,'B2_SMOKE');b=build_blocks(chosen,'B2_SMOKE',SPECIAL,Tokenizer(),USERS,42)[0]
+  a0=copy.deepcopy(b);a0['tasks']=a0['tasks'][1:]
+  for i,t in enumerate(a0['tasks']):t['request_sequence_number']=i
+  return {'abc':{'conditions':['FULL_RECOMPUTE','SEMANTIC_NO_REUSE','SEMCACHE_INTEGRATED'],'blocks':[b]},'a0':{'conditions':['FULL_RECOMPUTE','SEMANTIC_NO_REUSE','SEMCACHE_INTEGRATED'],'blocks':[a0]}}
+ def test_old_2016_header_exceeds_frozen_limit_and_fails(self):
+  from semcache.edgelora.r5_i5r3b_transport import predicted_request,preflight
+  from semcache.edgelora.r5_i5_limits import wire_limits
+  plans=self.plans(2016);task=plans['abc']['blocks'][0]['tasks'][1];req=predicted_request(task,self.pm,self.specs[task['adapter_id']],self.tokenizer)
+  with self.assertRaisesRegex(ValueError,'TCP_HEADER_LIMIT: required=[0-9]+, limit=65536'):wire_limits(req,USERS,'0'*64,2048)
+  with self.assertRaises(ValueError):preflight(plans,self.pm,self.specs,self.tokenizer,USERS)
+ def test_every_1280_abc_a0_request_has_reserved_headroom(self):
+  from semcache.edgelora.r5_i5r3b_transport import preflight,HEADROOM
+  result=preflight(self.plans(1280),self.pm,self.specs,self.tokenizer,USERS)
+  self.assertEqual(len(result['rows']),7)
+  for row in result['rows']:
+   self.assertLessEqual(row['maximum_header_bytes']+HEADROOM,65536)
+   self.assertEqual(row['conditions'],['FULL_RECOMPUTE','SEMANTIC_NO_REUSE','SEMCACHE_INTEGRATED'])
+   self.assertIn('cold_step_0',row['scenario_header_bytes'])
+   if row['input_tokens']>512:self.assertIn('prefix_512_step_0',row['scenario_header_bytes'])
+  self.assertLess(result['maximum_header_utilization'],1.)
+ def test_request_below_hard_limit_still_requires_explicit_headroom(self):
+  from semcache.edgelora.r5_i5r3b_transport import preflight,predicted_request
+  from semcache.edgelora.r5_i5_limits import wire_limits
+  plans=self.plans(1400);task=plans['abc']['blocks'][0]['tasks'][1]
+  raw=wire_limits(predicted_request(task,self.pm,self.specs[task['adapter_id']],self.tokenizer),USERS,'0'*64,2048)
+  self.assertLess(raw['maximum_header_bytes'],65536)
+  with self.assertRaisesRegex(ValueError,'TCP_HEADER_HEADROOM'):preflight(plans,self.pm,self.specs,self.tokenizer,USERS)
+ def test_real_context_only_truncation_preserves_question_refs_ids_route(self):
+  from semcache.edgelora.r5_i5_workload import prepare_prompt
+  from semcache.edgelora.r5_i5r3b_plan import original_link
+  class CharacterTokenizer:
+   def encode(self,text,**kwargs):return list(text.encode())
+   def decode(self,ids,**kwargs):return bytes(ids).decode()
+  ps=copy.deepcopy(corpus()[:2]);derived=[]
+  for p in ps:
+   sample=p['sample'];sample['context']='x'*5000;sample['original']['context']=sample['context'];sample['source_record_sha256']=digest(sample['original'])
+   original=prepare_prompt(sample,CharacterTokenizer(),2048,32,allow_truncation=True)
+   new=prepare_prompt(sample,CharacterTokenizer(),2048,32,allow_truncation=True,input_limit=1280)
+   record=dict(id=sample['id'],source_record_sha256=sample['source_record_sha256'],shared_context_key=digest_bytes(sample['context'].encode()),token_ids=original['token_ids'],token_ids_sha256=digest(original['token_ids']),route=routing(sample))
+   frozen=copy.deepcopy(record);link=original_link(sample,record)
+   self.assertEqual(record,frozen);self.assertEqual(new['sample'],sample);self.assertIn(sample['question'],new['input_text']);self.assertEqual(new['sample']['references'],['gold']);self.assertEqual(routing(new['sample']),record['route'])
+   self.assertLessEqual(len(new['token_ids']),1280);self.assertEqual(len(original['token_ids']),2016);self.assertNotEqual(new['token_ids_sha256'],link['original_3a_prompt_sha256']);derived.append(new)
+  self.assertEqual(derived[0]['token_ids'][:512],derived[1]['token_ids'][:512]);self.assertGreater(len(derived[0]['token_ids']),512)
+ def test_b1_rejects_b2_only_option(self):
+  from semcache.edgelora.r5_i5r3b_plan import prepare
+  with self.assertRaisesRegex(ValueError,'B2-only'):prepare('p','a','v','c','out',profile='B1',max_prompt_tokens=1280)
 
 class Reporting(unittest.TestCase):
  def row(self,rid,scored,start,role='SCORED_TARGET'):
@@ -164,9 +233,9 @@ class Reporting(unittest.TestCase):
   import contextlib,io,sys
   from unittest.mock import create_autospec
   spec=importlib.util.spec_from_file_location('i3b_prepare',Path(__file__).resolve().parents[1]/'scripts/143_prepare_r5_i5r3b.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-  argv=['143_prepare_r5_i5r3b.py','prepare','--plan-3a','p','--audit-3a','a','--verification-3a','v','--expected-3a-commit','commit','--output','fresh']
+  argv=['143_prepare_r5_i5r3b.py','prepare','--plan-3a','p','--audit-3a','a','--verification-3a','v','--expected-3a-commit','commit','--output','fresh','--max-prompt-tokens','1280']
   fn=create_autospec(module.api.prepare,return_value={'status':'TEST_FIXTURE_ONLY'})
   with patch.object(sys,'argv',argv),patch.object(module.api,'prepare',fn),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(module.main(),0)
-  fn.assert_called_once_with(plan_3a='p',audit_3a='a',verification_3a='v',expected_3a_commit='commit',output='fresh',profile='B2_SMOKE',adapter='Adapter_A',historical_r1_audit=None)
+  fn.assert_called_once_with(plan_3a='p',audit_3a='a',verification_3a='v',expected_3a_commit='commit',output='fresh',profile='B2_SMOKE',adapter='Adapter_A',historical_r1_audit=None,max_prompt_tokens=1280)
 
 if __name__=='__main__':unittest.main()
