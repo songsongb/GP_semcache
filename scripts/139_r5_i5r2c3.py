@@ -12,7 +12,9 @@ def main():
   for n in ('experiment','run-dir','audit-dir','output-dir'):a.add_argument('--'+n,type=Path,required=True)
   a.add_argument('--expected-historical-commit',required=True)
   if command=='stage-a':a.add_argument('--allow-incomplete',action='store_true')
-  else:a.add_argument('--base-prepared',type=Path,required=True)
+  else:
+   a.add_argument('--base-prepared',type=Path,required=True)
+   for n in ('companion-experiment','companion-run','companion-audit'):a.add_argument('--'+n,type=Path)
  a=sub.add_parser('run')
  for n in ('experiment','output-dir'):a.add_argument('--'+n,type=Path,required=True)
  a.add_argument('--source-commit',required=True)
@@ -21,7 +23,11 @@ def main():
  args=p.parse_args()
  try:
   if args.command=='stage-a':result=stage_a(args.experiment,args.run_dir,args.audit_dir,args.output_dir,args.expected_historical_commit,args.allow_incomplete)
-  elif args.command=='prepare':result=prepare(args.experiment,args.run_dir,args.audit_dir,args.base_prepared,args.output_dir,args.expected_historical_commit)
+  elif args.command=='prepare':
+   values=(args.companion_experiment,args.companion_run,args.companion_audit)
+   if any(values) and not all(values):raise ValueError('all three explicit B0 companion paths required')
+   companion=dict(zip(('experiment','run','audit'),values)) if all(values) else None
+   result=prepare(args.experiment,args.run_dir,args.audit_dir,args.base_prepared,args.output_dir,args.expected_historical_commit,companion=companion)
   else:
    from semcache.edgelora.r5_i5r2c3_runtime import execute,analyze
    result=execute(args.experiment,args.output_dir,args.source_commit) if args.command=='run' else analyze(args.experiment,args.run_dir,args.output_dir)
