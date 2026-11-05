@@ -20,13 +20,17 @@ Preparation verifies explicit 3A plan/audit/independent-verification directories
 all SHA inventories and archived source Git blobs. It recomputes 3A results from
 real sealed datasets and the verified offline tokenizer, rather than trusting
 summary counts. It checks the independent receipt's binding and re-prepares
-actual prompt text/IDs. Adapter evidence uses its R5 manifest. Qasper B2 token IDs
-must exactly equal the 3A audit IDs. The 32-token original QA reservation is retained
+actual prompt text/IDs. Adapter evidence uses its R5 manifest. Qasper B2 is now a separately labeled TRANSPORT_LIMITED_DERIVED_WORKLOAD; full prompt
+token IDs are not claimed equivalent to the original 3A audit IDs. An explicit B2-only `--max-prompt-tokens` defaults to 1280. Genuine prompts are
+re-prepared from original sealed records using the unchanged head/tail context-only
+policy, complete question/template and references. Original IDs, contexts and
+routing remain intact. The 32-token original QA reservation is retained
 for prompt preparation; target generation is then limited to eight real tokens.
 No additional context is silently inserted because the output budget shrinks.
 
-`i5r3b_protocol.json` records recomputed three-dataset summaries and Qasper pair
-counts >=512 / >=1000, distinct context counts and supplied 19/17 agreement or
+`i5r3b_protocol.json` records recomputed original three-dataset summaries and original
+Qasper pair counts >=512 / >=1000 separately from derived-workload eligibility.
+Distinct historical context counts and supplied 19/17 agreement or
 DISAGREEMENT (not forced equality). Different question strings, original IDs,
 distinct final prompts, exact identical original contexts and original authorized
 routing are all mandatory for B2. Selection is deterministic, with distinct
@@ -132,12 +136,14 @@ export I3B_RUN_ROOT="$I3B_ROOT/attempt_b2_$I3B_TAG"
 CUDA_VISIBLE_DEVICES='' python scripts/143_prepare_r5_i5r3b.py prepare \
  --plan-3a "$I3B_3A_PLAN" --audit-3a "$I3B_3A_AUDIT" \
  --verification-3a "$I3B_3A_VERIFY" --expected-3a-commit "$I3B_3A_COMMIT" \
- --profile B2_SMOKE --adapter Adapter_A --output "$I3B_EXPERIMENT"
+ --profile B2_SMOKE --adapter Adapter_A --max-prompt-tokens 1280 \
+ --output "$I3B_EXPERIMENT"
 CUDA_VISIBLE_DEVICES='' python scripts/143_prepare_r5_i5r3b.py inspect \
  --experiment "$I3B_EXPERIMENT"
 ```
 
-For B1 first, use the same prepare command with `--profile B1`, a fresh
+For B1 first, use the same prepare command with `--profile B1`, **omit**
+`--max-prompt-tokens` (B2-only), and use a fresh
 `plan_b1_...` directory and a fresh attempt root. Its strict 64:256 source/target
 profile is otherwise fixed. Optional historical R1 audit input is explicit.
 Inspect the actual selection table before submitting; absent Adapter_A pairs
@@ -179,7 +185,8 @@ Per-block analyses remain one-group descriptions; no fabricated pooled CI.
 
 ## Artifacts, testing and limitations
 
-Preparation: `i5r3b_protocol.json`, `i5r3b_selection.json`, and separate sealed
+Preparation: `i5r3b_protocol.json`, `i5r3b_selection.json`,
+`i5r3b_transport.json`, and separate sealed
 `abc/` and `a0/` I5 workload/dataset manifests. Inspection prints real original
 sample IDs, context hashes, users/adapters, actual token lengths, prefix hashes,
 source bytes, same-block completion prerequisites and independent group count.
@@ -207,7 +214,7 @@ and new GPU independent evidence audit are NOT_RUN locally. Hardware and timing
 estimates are preflight bounds, not measurements. No trained personalized adapters,
 remote-network measurements or full-model numerical correction are claimed.
 
-Final local validation: **88 PASS, 0 FAIL, 0 SKIP** across 26 focused I5R-3B
+Final local validation after the transport patch: **93 PASS, 0 FAIL, 0 SKIP** across 31 focused I5R-3B
 checks and 62 R1/controller/3A/preflight regressions. Python syntax/whitespace,
 all five CLI help paths and the bounded Slurm shell syntax passed. The source
 suite exercised CLI signature dispatch; sealed-plan tests used explicitly
@@ -220,3 +227,68 @@ The eight delivery files are this document, `jobs/r5_i5r3b_controlled.sh`,
 `src/semcache/edgelora/r5_i5r3b_analysis.py` and `tests/test_r5_i5r3b.py`.
 Include all eight in the manually reviewed commit. No production file changes,
 Git push, remote access, model download or GPU/Slurm execution were performed.
+
+
+## Transport-limited correction following failed job 153241
+
+The failed historical attempt is untouched. Its observed 2016-token request
+required 73683 header bytes (operator-verified handoff, not reproduced locally).
+The new limit is an explicit **maximum** of 1280 input tokens, not token-array
+slicing or a forced final length. OPT remains 2048 positions; source remains 512
+real tokenizer IDs, target generation eight tokens. All pair selection and the
+negative control are recomputed from derived complete prompts. An insufficient
+shared prefix/adapter/negative pool fails rather than rerouting or inventing data.
+B1 stays 64:256 and rejects an explicitly supplied B2 limit.
+
+`prepared.original_3a` and selection `source_records` bind each original ID to its
+frozen 3A prompt hash/length, exact context hash, source-record hash, routing and
+question/reference hashes. Derived hashes/lengths are separate. Old 3A statistics
+and the original 19/17 comparison use original token IDs; derived statistics are
+not compared as if they described the original full sequences. Do not pool old
+2016-token and new transport-limited latency or quality results.
+
+Before creating any plan output, every ABC and A0 task is converted to the real
+I5 request contract with actual prepared model, adapter and tokenizer metadata.
+A conservative placeholder GPU UUID longer than the expected runtime UUID is
+explicitly marked as a **prediction**, not an observed execution identity. Actual
+runtime contract fingerprints occupy fixed-length digest fields. No installed
+model contract or execution receipt is fabricated or replaced.
+
+The unchanged `wire_limits()` covers cold and near-full-prefix frames; additional
+frames use the existing `context()`, `header()` and canonical serializer for the
+specific 512-prefix and all decode steps, with conservative sequence/layer/token
+values. Predicted maximum plus **8192 bytes reserved headroom** must be <=65536.
+No transport constant, TCP schema or production preflight changes. No automatic
+retry or runtime truncation; an unsafe explicit limit fails during CPU prepare.
+The real allocated-runtime preflight remains mandatory.
+
+`i5r3b_transport.json` records per-request/control/scenario bytes, remaining and
+required headroom, maximum utilization, tokens and token hashes. All conditions
+share each control's identical requests. Inspection prints the complete prediction
+and the new selection table. Validation recomputes envelopes and original linkage;
+resealed false prediction receipts are rejected. Analysis labels its results
+TRANSPORT_LIMITED_DERIVED_WORKLOAD and retains original and derived statistics.
+
+CPU synthetic envelope fixture results (**not real Qasper selection**):
+
+| Control | Request | Input tokens | Predicted header bytes | Headroom bytes |
+|---|---|---:|---:|---:|
+| ABC | P000000S | 512 | 20144 | 45392 |
+| ABC | P000000T | 1280 | 53459 | 12077 |
+| ABC | P000001T | 1280 | 53459 | 12077 |
+| ABC | P000002T | 1280 | 53468 | 12068 |
+| A0 | P000000T | 1280 | 53459 | 12077 |
+| A0 | P000001T | 1280 | 53459 | 12077 |
+| A0 | P000002T | 1280 | 53468 | 12068 |
+
+Fixture maximum utilization: 81.5857%. A separate 2016-token synthetic fixture
+required 84371 bytes and was rejected; this reproduces the failure class, not the
+historical exact 73683-byte header. Real token/text/metadata values change sizes.
+Real predicted bytes and the **new Qasper selection table remain NOT_RUN locally**
+because the sealed SERAPH inputs are unavailable. Inspect must pass before any
+later manually authorized GPU attempt; this patch itself performs no GPU work.
+
+The new additive `src/semcache/edgelora/r5_i5r3b_transport.py` must also be included
+in the reviewed source commit. Use fresh corrected plan/run directories, never
+edit/reseal the failed attempt or previous plans. Existing numerical/quality
+limitations and unoptimized source-inclusive accounting remain unchanged.
