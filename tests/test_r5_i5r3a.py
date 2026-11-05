@@ -1,0 +1,101 @@
+"""Synthetic CPU fixtures only; never evidence of GPU reuse."""
+import copy,json,tempfile,unittest
+from pathlib import Path
+from semcache.edgelora.communication import digest
+from semcache.edgelora.r3a_artifacts import write,sha
+from semcache.edgelora.r5_i5_data import normalize,SOURCES,VERSIONS
+from semcache.edgelora.r5_i5_evidence import seal
+from semcache.edgelora.r5_multi_artifacts import registry_for
+from semcache.edgelora.r5_i5r3a import audit_dataset,pair_record,provenance,fresh
+
+class Tokenizer:
+ def encode(self,text,**kwargs):return list(text.encode())
+ def decode(self,ids,**kwargs):return bytes(ids).decode()
+
+def samples(contexts=('abc','abc'),questions=('why','how')):
+ return normalize('qasper',[dict(_id=str(i),context=c,input=questions[i],answers=['gold'],length=len(c),TEST_FIXTURE_ONLY=True) for i,c in enumerate(contexts)],fixture=True)
+
+def prepared(ids,rid,user='User_01',adapter='Adapter_A'):
+ return dict(sample=dict(id=rid,context='abc'),token_ids=ids,shared_context_key='key',route=dict(user_id=user,adapter_id=adapter))
+
+class Audit(unittest.TestCase):
+ def setUp(self):self.registry=registry_for(['Adapter_A','Adapter_B','Adapter_C'],'expanded')
+ def run_audit(self,rows,**kw):return audit_dataset(rows,Tokenizer(),self.registry,**kw)
+ def test_same_context_different_questions_not_prefix(self):
+  r=self.run_audit(samples());s=r['summary'];self.assertEqual(s['shared_context_request_pairs'],1);self.assertEqual(s['strict_prefix_pairs'],0);self.assertEqual(s['result'],'NO_NATURAL_ELIGIBLE_PAIR');self.assertEqual(len(r['pairs']),2)
+ def test_identical_complete_prompts_are_not_strict(self):
+  r=self.run_audit(samples(questions=('why','why')));self.assertEqual(r['summary']['strict_prefix_pairs'],0);self.assertEqual(r['samples'][0]['token_ids'],r['samples'][1]['token_ids'])
+ def test_genuine_complete_prompt_prefix_through_preparation(self):
+  class ExactTokenizer(Tokenizer):
+   def encode(self,text,**kwargs):
+    if text.endswith('Question: why\nAnswer:'):return [1,2]
+    if text.endswith('Question: how\nAnswer:'):return [1,2,3]
+    return super().encode(text,**kwargs)
+  r=audit_dataset(samples(),ExactTokenizer(),self.registry)
+  self.assertEqual(r['summary']['strict_prefix_pairs'],1)
+  self.assertEqual(r['samples'][0]['token_ids'],[1,2])
+ def test_complete_prefix_and_same_adapter_authorization(self):
+  a,b=prepared([1,2],'s'),prepared([1,2,3],'t','User_02');r=pair_record(a,b,{'s':[0,0],'t':[0,1]},self.registry,491520)
+  self.assertTrue(r['STATICALLY_ELIGIBLE']);self.assertEqual(r['suffix_tokens'],1);self.assertEqual(r['source_raw_qkv_bytes'],983040)
+ def test_unauthorized_cross_adapter(self):
+  r=pair_record(prepared([1],'s'),prepared([1,2],'t','User_11','Adapter_B'),{'s':[0,0],'t':[0,1]},self.registry,491520)
+  self.assertFalse(r['STATICALLY_ELIGIBLE']);self.assertIn('CROSS_ADAPTER_REUSE_FORBIDDEN',r['rejection_reasons'])
+ def test_unauthorized_same_adapter(self):
+  reg=copy.deepcopy(self.registry);reg['users']['User_02']['allow_cross_user_reuse']=False
+  r=pair_record(prepared([1],'s'),prepared([1,2],'t','User_02'),{'s':[0,0],'t':[0,1]},reg,491520);self.assertFalse(r['SAME_OR_AUTHORIZED_ADAPTER'])
+ def test_capacity(self):
+  r=pair_record(prepared([1,2],'s'),prepared([1,2,3],'t'),{'s':[0,0],'t':[0,1]},self.registry,491520,capacity=1);self.assertFalse(r['SOURCE_CAPACITY_ELIGIBLE'])
+ def test_reset_boundary(self):
+  r=pair_record(prepared([1],'s'),prepared([1,2],'t'),{'s':[0,0],'t':[1,1]},self.registry,491520);self.assertFalse(r['WITHIN_SAME_CACHE_LIFETIME'])
+ def test_reversed_temporal_order(self):
+  r=pair_record(prepared([1],'s'),prepared([1,2],'t'),{'s':[0,1],'t':[0,0]},self.registry,491520);self.assertFalse(r['SOURCE_PRECEDES_TARGET'])
+ def test_tokenizer_boundary_match_is_not_text_prefix(self):
+  r=pair_record(prepared([1,2],'s'),prepared([1,7,2],'t'),{'s':[0,0],'t':[0,1]},self.registry,491520);self.assertFalse(r['STRICT_TOKEN_PREFIX'])
+ def test_truncation_per_sample_not_group_stable(self):
+  rows=samples(('x'*600,'x'*600),('why','long question'*8));r=self.run_audit(rows,input_limit=250)
+  self.assertEqual(r['summary']['truncated_count'],2);self.assertNotEqual(r['samples'][0]['retained_context_tokens'],r['samples'][1]['retained_context_tokens']);self.assertEqual(rows[0]['context'],rows[1]['context'])
+ def test_fixed_fields_excluded(self):
+  r=self.run_audit(samples(questions=('q'*400,'why')),input_limit=150);self.assertEqual(r['summary']['excluded_count'],1);self.assertIn('INELIGIBLE_FIXED_FIELDS',r['exclusions'][0]['reason'])
+ def test_no_shared_contexts(self):
+  r=self.run_audit(samples(('abc','def')));self.assertEqual(r['summary']['shared_context_groups'],0);self.assertEqual(r['summary']['strict_prefix_pairs'],0)
+ def test_empty_or_duplicate_ids(self):
+  with self.assertRaises(ValueError):self.run_audit([])
+  rows=samples();rows[1]['id']=rows[0]['id']
+  with self.assertRaises(ValueError):self.run_audit(rows)
+ def test_deterministic_and_no_mutation(self):
+  rows=samples();old=copy.deepcopy(rows);self.assertEqual(self.run_audit(rows),self.run_audit(rows));self.assertEqual(rows,old)
+ def test_controlled_separation_and_block_bound(self):
+  r=self.run_audit(samples(),block_size=1);self.assertEqual(r['summary']['maximum_lifetime_requests'],1);self.assertEqual(r['summary']['context_groups_split_by_reset'],1);self.assertEqual(r['summary']['natural_actual_hit_status'],'NOT_EVALUATED');self.assertEqual(r['pilot']['controlled'][0]['category'],'CONTROLLED_DIAGNOSTIC')
+ def test_sealed_dataset_and_altered_provenance(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d);rows=samples();(p/'samples.jsonl').write_text(''.join(json.dumps(s)+'\n' for s in rows));m=dict(dataset='qasper',version=VERSIONS['qasper'],source=SOURCES['qasper'],split='test',revision='a'*40,source_files={'raw.jsonl':'b'*64},TEST_FIXTURE_ONLY=True,samples=2,samples_sha256=sha(p/'samples.jsonl'));write(p/'i5_dataset_manifest.json',m);seal(p)
+   self.assertEqual(len(provenance(p,'qasper',True)[0]),2)
+   with self.assertRaises(ValueError):provenance(p,'qasper',False)
+   m['source']='wrong';write(p/'i5_dataset_manifest.json',m);seal(p)
+   with self.assertRaises(ValueError):provenance(p,'qasper',True)
+   (p/'samples.jsonl').write_text('{}')
+   with self.assertRaises(ValueError):provenance(p,'qasper',True)
+ def test_historical_protection(self):
+  with tempfile.TemporaryDirectory() as d:
+   old=Path(d)/'old';old.mkdir()
+   with self.assertRaises(ValueError):fresh(old/'new',[old])
+   with self.assertRaises(ValueError):fresh(old,[])
+ def test_independent_verifier_rejects_resealed_positive_runtime_claim(self):
+  import subprocess
+  from unittest.mock import patch
+  from semcache.edgelora.r3a_artifacts import ROOT
+  from semcache.edgelora.communication import digest_bytes
+  from semcache.edgelora.r5_i5r3a import verify,summary_record
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);review=root/'audit';review.mkdir()
+   commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip();name='src/semcache/edgelora/r5_i5_data.py'
+   source=dict(commit=commit,files={name:digest_bytes(subprocess.check_output(['git','show',commit+':'+name],cwd=ROOT))})
+   p=dict(source=source,plan_id='fixture',datasets={},registry_path=str(root/'registry'),multi_prepared=str(root/'multi'))
+   result={'qasper':self.run_audit(samples())};summary=summary_record(p,result,source)
+   write(review/'i5r3a_results.json',result);write(review/'i5r3a_dataset_provenance.json',{});write(review/'i5r3a_summary.json',summary);seal(review)
+   with patch('semcache.edgelora.r5_i5r3a.compute',return_value=(p,result)),patch('semcache.edgelora.r5_i5r3a.source_identity',return_value=source):
+    self.assertEqual(verify(root/'plan',review,root/'verified')['status'],'PASS')
+    summary['runtime_semantics_admission_eviction_reuse_numerical_fidelity']='PASS';write(review/'i5r3a_summary.json',summary);seal(review)
+    with self.assertRaisesRegex(ValueError,'summary differs'):verify(root/'plan',review,root/'bad')
+
+if __name__=='__main__':unittest.main()
