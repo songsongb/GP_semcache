@@ -2,8 +2,8 @@
 import copy,importlib.util,json,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
-from semcache.edgelora.communication import digest_bytes
+from unittest.mock import patch,Mock
+from semcache.edgelora.communication import digest_bytes,digest
 from semcache.edgelora.r3a_artifacts import pack,write
 from semcache.edgelora.r5_i5_evidence import seal
 from semcache.edgelora.r5_i5r2_tensors import Evidence
@@ -183,5 +183,89 @@ class OperandCapture(unittest.TestCase):
     ref=a(hidden_states=x,attention_mask=mask,output_attentions=False)[0]
     with layer0_hooks(SimpleNamespace(adapter=adapter),save):out=a(hidden_states=x,attention_mask=mask,output_attentions=False)[0]
    self.assertTrue(torch.equal(ref,out));self.assertEqual(list(seen['q'].shape),[1,n,8]);self.assertEqual(list(seen['mask'].shape),[1,1,n,n]);self.assertEqual(list(seen['reference'].shape),[1,64,8])
+
+class ContractFailures(unittest.TestCase):
+ def writer(self,root):
+  writer=Mock();writer.write.side_effect=lambda path,value:write(path,value)
+  return writer
+ def contract(self):
+  return dict(config=dict(model_type='opt',hidden_size=2560),methods={'attention':dict(source='def forward():\n    native_attention()\n',source_sha256='a'*64)},r5_multi=dict(adapter_manifest_sha256='b'*64,rank=8,matrix_dtype='float32'))
+ def test_matching_contract_is_accepted_with_receipt(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);writer=self.writer(root);expected=self.contract();actual=copy.deepcopy(expected)
+   verify_contract(expected,actual,writer,root)
+   report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text())
+   self.assertTrue(report['exact_equal']);self.assertEqual(report['differences'],[]);self.assertEqual(actual,expected)
+ def test_meaningful_attention_source_hash_or_adapter_mismatch_rejected(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
+  for group,key in (('methods','attention'),('r5_multi','adapter_manifest_sha256'),('config','model_type')):
+   with self.subTest(group=group),tempfile.TemporaryDirectory() as d:
+    root=Path(d);expected=self.contract();actual=copy.deepcopy(expected)
+    if group=='methods':actual[group][key]['source_sha256']='c'*64
+    else:actual[group][key]='different'
+    with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs'):verify_contract(expected,actual,self.writer(root),root)
+    report=json.loads((root/'i5r2c3b0_contract_difference.json').read_text());self.assertFalse(report['exact_equal']);self.assertEqual(len(report['differences']),1)
+ def test_diff_exact_paths_missing_extra_types_hashes_and_no_source_dump(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  source='PRIVATE IMPLEMENTATION\n'*10000
+  a={'methods':{'attention':{'source':source}},'remove':None,'rank':8,'a/b~':1}
+  b={'methods':{'attention':{'source':source+'changed'}},'extra':[1,2],'rank':8.0,'a/b~':2}
+  report=contract_difference(a,b);rows={x['path']:x for x in report['differences']}
+  self.assertEqual(set(rows),{'/methods/attention/source','/remove','/extra','/rank','/a~1b~0'})
+  self.assertEqual(rows['/remove']['kind'],'missing_in_actual');self.assertEqual(rows['/extra']['kind'],'extra_in_actual');self.assertEqual(rows['/rank']['kind'],'type')
+  item=rows['/methods/attention/source'];self.assertEqual(item['expected']['sha256'],digest(source));self.assertEqual(item['actual']['type'],'str');self.assertNotIn('value',item['actual'])
+  self.assertNotIn('PRIVATE IMPLEMENTATION',json.dumps(report));self.assertLess(len(json.dumps(report)),65536)
+ def test_diff_bound_and_numeric_boolean_type_difference(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import contract_difference
+  report=contract_difference({str(i):0 for i in range(1000)},{str(i):1 for i in range(1000)})
+  self.assertTrue(report['truncated']);self.assertEqual(len(report['differences']),64)
+  report=contract_difference({'nested':{'enabled':True}},{'nested':{'enabled':1}})
+  self.assertFalse(report['exact_equal']);self.assertEqual(report['differences'][0]['path'],'/nested/enabled')
+  class RuntimeVersion(str):pass
+  report=contract_difference({'version':'2.0'},{'version':RuntimeVersion('2.0')});self.assertTrue(report['exact_equal']);self.assertEqual(report['differences'],[])
+ def test_primary_failure_survives_cleanup_reconcile_and_is_sealed(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);write(root/'available.json',{'partial':True});writer=self.writer(root);writer.reconcile.side_effect=OSError('ledger failed')
+   channel=Mock();channel.close.side_effect=OSError('close failed');process=Mock();process.poll.return_value=None;process.terminate.side_effect=OSError('terminate failed');finish=Mock(side_effect=OSError('finish failed'))
+   primary=ValueError('native OPT/adapter contract differs');status={'status':'COMPLETE'}
+   with self.assertRaises(ValueError) as caught:
+    try:raise primary
+    finally:finalize_attempt(root,writer,status,primary=primary,channel=channel,child=(process,),finish_child=finish)
+   self.assertIs(caught.exception,primary);saved=json.loads((root/'i5r2c3b0_status.json').read_text());self.assertEqual(saved['status'],'FAILED');self.assertIn('native OPT/adapter contract differs',saved['reason']);self.assertEqual(saved['evidence_accounting'],'FAILED');self.assertEqual(len(saved['finalization_errors']),4);finish.assert_called_once();Evidence(root).verify()
+ def test_real_writer_partial_attempt_is_sealed_with_primary_exception(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
+  from semcache.edgelora.r5_i5r2bs1_runtime import Store
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);store=Store(root,128*2**20);store.put('partial.json',{'partial':True});primary=ValueError('primary')
+   finalize_attempt(root,store.writer,{'status':'FAILED'},primary=primary)
+   self.assertEqual(json.loads((root/'i5r2c3b0_status.json').read_text())['reason'],'ValueError: primary');Evidence(root).verify()
+ def test_failed_writer_status_falls_back_without_clearing_accounting_failure(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);writer=self.writer(root);writer.write.side_effect=OSError('write unavailable');primary=ValueError('primary')
+   finalize_attempt(root,writer,{},primary=primary)
+   saved=json.loads((root/'i5r2c3b0_status.json').read_text());self.assertEqual(saved['status'],'FAILED');self.assertEqual(saved['reason'],'ValueError: primary');self.assertEqual(saved['evidence_accounting'],'FAILED');Evidence(root).verify()
+ def test_seal_failure_never_masks_primary_and_is_not_claimed_sealed(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);primary=ValueError('primary')
+   with patch('semcache.edgelora.r5_i5r2c3b0_runtime.seal',side_effect=OSError('cannot seal')):
+    with self.assertRaises(ValueError) as caught:
+     try:raise primary
+     finally:finalize_attempt(root,self.writer(root),{},primary=primary)
+   self.assertIs(caught.exception,primary);self.assertFalse((root/'i5_output_manifest.json').exists());self.assertEqual(json.loads((root/'i5r2c3b0_status.json').read_text())['failure_seal'],'FAILED')
+ def test_finalization_error_on_success_changes_status_to_failed_and_raises(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import finalize_attempt
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);writer=self.writer(root);writer.reconcile.side_effect=OSError('ledger failed')
+   with self.assertRaisesRegex(OSError,'ledger failed'):finalize_attempt(root,writer,{'status':'COMPLETE'})
+   self.assertEqual(json.loads((root/'i5r2c3b0_status.json').read_text())['status'],'FAILED');Evidence(root).verify()
+ def test_contract_receipt_write_failure_preserves_contract_rejection(self):
+  from semcache.edgelora.r5_i5r2c3b0_runtime import verify_contract
+  writer=Mock();writer.write.side_effect=OSError('disk write failed')
+  with self.assertRaisesRegex(ValueError,'native OPT/adapter contract differs') as caught:verify_contract(self.contract(),{},writer,'unused')
+  self.assertTrue(caught.exception.b0_secondary_failures)
 
 if __name__=='__main__':unittest.main()
