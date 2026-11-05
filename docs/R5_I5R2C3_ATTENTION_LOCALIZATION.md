@@ -185,3 +185,51 @@ All six delivery files are additive and await user review/commit:
 `src/semcache/edgelora/r5_i5r2c3_runtime.py`,
 `scripts/139_r5_i5r2c3.py`, `jobs/r5_i5r2c3_attention.sh`,
 `tests/test_r5_i5r2c3.py`, and this document.
+
+## Native matmul/rank-4 observer repair
+
+The operator's SERAPH CPU diagnostics report two native `matmul` calls and one
+rank-4 softmax input, rather than the older two-`bmm` rank-3 path. C3 now supports
+both eager layouts. It validates the actual QK/PV operation sequence, exact head,
+query/key and head-dimension shapes, non-broadcast unit batch, dtypes/devices,
+query view/scaling lineage, recorded K/V values, actual causal-mask add, softmax
+key axis, and probability cast/view/dropout lineage. Counts alone cannot pass.
+Fused, incompatible, incomplete and stochastic paths fail closed. In-place mask
+addition also fails closed because an after-operation observer cannot honestly
+capture its overwritten pre-add values.
+
+`scores` is the actual scaled score tensor supplied to the non-mutating native
+mask add. `masked_scores` is the actual softmax input, after any observed native
+clamp. `probabilities` is exactly the tensor consumed by PV, not a substituted
+pre-cast softmax result. Softmax input/output layouts/hashes, actual probability
+casts/views, observed or absent dropout, and native operation names/order are
+retained in `native_operations`. FP32 softmax output is hash/layout evidence;
+this patch does not invent a separate saved FP32 probability boundary.
+
+Rank-4 `[1,heads,query,key/head_dim]` snapshots drop only the unit batch dimension
+to the comparison representation `[heads,query,key/head_dim]`. Original rank,
+stride, contiguity, storage offset, dtype and device remain in `observed`.
+Output projection input/output and module output remain `[1,query,hidden]`.
+No live operand is replaced by this observational canonicalization. Query axis
+is `rank-2`; transposed K's key axis is `rank-1`; V's key axis is `rank-2`.
+Probability prefix receipts select both first64 query and first64 key regions.
+Independent analysis validates these axes, canonical shapes and probability hash
+lineage; it reconstructs K/V receipt hashes from recorded bytes and checks PV's
+probability-prefix hash against the actual saved probability tensor. All seven
+boundaries, including output-projection input, receive matched comparisons.
+
+Local focused C3/B0 validation: **70 PASS / 0 FAIL / 2 SKIP** across72 tests.
+The requested unittest command was run with a process-local `python` function
+forwarding to `python3` because this workstation has no `python` launcher.
+Torch, NumPy and Transformers are absent; installed OPT native CPU observation
+and the B0 native hook test are therefore NOT_RUN locally. Their dependency
+checks execute the tests when packages exist, with no API-failure skip fallback.
+The installed C3 test runs native eager CPU baselines and observed S64/F256,
+compares unchanged outputs/all projection weights, validates original/canonical
+shapes and emits `NATIVE_CPU_OBSERVATION` operation/softmax receipts.
+
+Native SERAPH CPU results above are the user's verified handoff, not locally
+reproduced findings. GPU numerical reproduction remains NOT_EVALUATED. Run the
+same focused command in the installed semcache environment before submitting
+any fresh source-pinned GPU replay plan. Exact historical output reproduction,
+same-shape repeatability, provenance and frozen numerical checks remain required.

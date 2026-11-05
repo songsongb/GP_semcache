@@ -17,7 +17,7 @@ from .r5_multi_artifacts import runtime_view
 
 VERSION='I5R2C3_ATTENTION_V1'
 NAMESPACE=ROOT/'results/r5/i5r/numerical_fidelity/attention_localization'
-BOUNDARIES=('scores','masked_scores','probabilities','pv','output_projection','module_output')
+BOUNDARIES=('scores','masked_scores','probabilities','pv','output_projection_input','output_projection','module_output')
 
 
 def fresh(path,protected=()):
@@ -45,7 +45,7 @@ def aligned_bytes(data,shape,dtype,role):
   require(len(shape)==3 and shape[1]>=64 and shape[2]>=64,'invalid head/query/key axes')
   data,s=slice_axis(data,shape,1,0,64,width)
   return slice_axis(data,s,2,0,64,width)[0]
- require(role in ('pv','output_projection','module_output') and len(shape)==3 and shape[1]>=64,'invalid output token axes')
+ require(role in ('pv','output_projection_input','output_projection','module_output') and len(shape)==3 and shape[1]>=64,'invalid output token axes')
  return slice_axis(data,shape,1,0,64,width)[0]
 
 
