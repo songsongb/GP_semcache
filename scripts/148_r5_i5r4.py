@@ -6,10 +6,13 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
-    a=sub.add_parser('prepare')
-    for key in ('output-dir','source-commit','plan-3a','audit-3a','verification-3a','expected-3a-commit','be-experiment','be-run','be-audit','be-verification','nf1-audit'):a.add_argument('--'+key,required=True)
-    for key,value in (('trace-units',4),('rotations',2),('max-prompt-tokens',1280),('quality-tokens',32),('seed',42),('ttl-idle-requests',4),('exploration-every',3),('startup-seconds',180)):a.add_argument('--'+key,type=int,default=value)
-    for key,value in (('quality-margin-f1',2.),('expected-reuses',2.),('retention-ms-per-mib-request',1.),('runtime-safety-factor',2.)):a.add_argument('--'+key,type=float,default=value)
+    for name in ('prepare','budget'):
+        a=sub.add_parser(name)
+        for key in ('source-commit','plan-3a','audit-3a','verification-3a','expected-3a-commit','be-experiment','be-run','be-audit','be-verification','nf1-audit'):a.add_argument('--'+key,required=True)
+        if name=='prepare':a.add_argument('--output-dir',required=True)
+        else:a.add_argument('--disk-path',help='Read-only filesystem free-space probe; defaults to repository results')
+        for key,value in (('trace-units',4 if name=='prepare' else 2),('rotations',2),('max-prompt-tokens',1280),('quality-tokens',32),('seed',42),('ttl-idle-requests',4),('exploration-every',3),('startup-seconds',180)):a.add_argument('--'+key,type=int,default=value)
+        for key,value in (('quality-margin-f1',2.),('expected-reuses',2.),('retention-ms-per-mib-request',1.),('runtime-safety-factor',2.)):a.add_argument('--'+key,type=float,default=value)
     a=sub.add_parser('cpu-validate')
     for key in ('experiment','output-dir'):a.add_argument('--'+key,required=True)
     a=sub.add_parser('inspect')
@@ -44,7 +47,9 @@ def main(argv=None):
             result=getattr(api,action.replace('-','_'))(**args)
         print(json.dumps(result,indent=2,allow_nan=False));return 0
     except (ValueError,KeyError,FileNotFoundError,ImportError) as exc:
-        print(json.dumps(dict(status='REJECTED',action=action,reason=str(exc))),file=sys.stderr);return 2
+        receipt=dict(status='REJECTED',action=action,reason=str(exc))
+        if hasattr(exc,'report'):receipt['resource_diagnostics']=exc.report
+        print(json.dumps(receipt,indent=2,allow_nan=False),file=sys.stderr);return 2
 
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda s,f:sys.exit(128+s));sys.exit(main())
