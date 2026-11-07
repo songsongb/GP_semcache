@@ -15,6 +15,7 @@ from .r5_i5_workload import prepare_prompt,routing,requests,resources,CONDITIONS
 from .r5_multi_artifacts import validate,sharing
 from .r5_i5r3b_transport import preflight as transport
 from .r5_i5r4_policy import Engine,POLICIES,CAPACITY,parameters
+from .r5_i5r4_plan_io import write_plan,read_plan
 
 SCHEMA='I5R4_CAMPAIGN_V1'
 HISTORICAL_BE='f7157c9b8b97fdce56f87dcbc3566cb677404bb8'
@@ -328,7 +329,7 @@ def prepare(output_dir,source_commit,plan_3a,audit_3a,verification_3a,expected_3
            numerical_thresholds=deepcopy(THRESHOLDS),preparation_disk_observation=dict(path=str(parent),free_bytes=shutil.disk_usage(parent).free),instrumentation=dict(measurement='SCALABLE_EVALUATION uniform',sentinel='STRICT_AUDIT separate empty ES/cache/model/UD; excluded from performance'),
            source_cost='All priming/reentry requests charged to source-inclusive span; source forward is never incremental admission cost in policy score',GPU_NOT_RUN=True)
     p['plan_id']=digest(p);protected=[*be['paths'].values(),*p['input_3a']['paths'].values(),old['multi_prepared'],*[x['path'] for x in prov.values()],*[x['manifest']['source_path'] for x in prov.values()]]
-    out=output(output_dir,protected);write(out/'i4_plan.json',p);seal(out)
+    out=output(output_dir,protected);write_plan(out,p);seal(out)
     return dict(status='SEALED_CPU_PREPARED_GPU_NOT_RUN',plan_id=p['plan_id'],resources=rp,trace_checks=checks)
 
 def budget(**kwargs):
@@ -336,7 +337,11 @@ def budget(**kwargs):
 
 def load(experiment,source_commit=None,recheck_inputs=True):
     require(recheck_inputs is True,'immutable input verification cannot be disabled')
-    ev=Evidence(experiment,max_input_bytes=128*2**20);receipt=ev.verify();p=ev.json('i4_plan.json');q=dict(p);pid=q.pop('plan_id')
+    ev=Evidence(experiment,max_input_bytes=128*2**20)
+    # Report the actual filename/size before the unchanged Evidence reader rejects.
+    for name,size in ev.files.items():
+        if name.endswith('.json'):require(size<=16*2**20,f'I4 JSON artifact {name}: measured={size} bytes, limit={16*2**20} bytes; fresh preparation required')
+    receipt=ev.verify();p=read_plan(ev);q=dict(p);pid=q.pop('plan_id')
     require(p['schema']==SCHEMA and digest(q)==pid,'plan identity differs');require(p['source']==reviewed(source_commit or p['source_commit']),'reviewed implementation source differs')
     require(p['numerical_thresholds']==THRESHOLDS and p['capacity_per_adapter_bytes']==CAPACITY and p['max_entries']==64 and p['clusters']==1 and p['policies']==list(POLICIES),'frozen constraints differ')
     archived_source(p['source'])
