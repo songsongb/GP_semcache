@@ -1,5 +1,5 @@
 """CPU-only policy/campaign fixtures; no GPU performance or HIT claims."""
-import copy,importlib.util,json,os,re,subprocess,sys,tempfile,time,unittest
+import copy,importlib.util,json,os,re,subprocess,sys,tempfile,time,unittest,contextlib,io
 from pathlib import Path
 from unittest.mock import patch
 from semcache.edgelora.communication import digest
@@ -471,5 +471,111 @@ class NativeCPU(unittest.TestCase):
     def test_installed_native_contract(self):
         from semcache.edgelora.r5_i5_preflight import installed_opt_check
         installed_opt_check()
+
+# Numbers supplied by the researcher from archived BE, not locally SHA-verified
+# GPU measurements. Used only to reproduce the declared budget arithmetic.
+BE_RATE_HANDOFF=dict(prefill_seconds_per_token=.021003049537109377,decode_seconds_per_token=3.932975382,
+                     admission_seconds=1.932976289,other_request_seconds=3.073750925)
+
+def budget_templates(units,rotations,foreign=False):
+    """Length/count-only CPU templates; NOT genuine dataset or experiment inputs."""
+    source=dict(token_ids=[1]*512,policy={'max_new_tokens':1},strict=False,scored=False)
+    target=dict(token_ids=[1]*1280,policy={'max_new_tokens':32},strict=False,scored=True)
+    traces=[[copy.deepcopy(source) for _ in range(4)]+[copy.deepcopy(target) for _ in range(15+int(foreign))] for _ in range(units)]
+    sentinel=[dict(copy.deepcopy(source),strict=True),*[dict(copy.deepcopy(target),strict=True,policy={'max_new_tokens':8}) for _ in range(2)]]
+    return schedule(traces,sentinel,rotations,42)
+
+class BudgetDiagnosticsTests(unittest.TestCase):
+    def test_archived_rates_reproduce_rejection_and_fallbacks(self):
+        expected={(2,2):121228,(2,1):62404,(3,1):91816}
+        for (units,rotations),seconds in expected.items():
+            r=resource_plan(budget_templates(units,rotations),BE_RATE_HANDOFF,diagnostic_only=True)
+            self.assertEqual(r['GPU_phase_seconds'],seconds);self.assertEqual(r['GPU_excess_seconds'],max(0,seconds-68400));self.assertEqual(r['accepted'],(units,rotations)==(2,1))
+        r=resource_plan(budget_templates(2,2),BE_RATE_HANDOFF,diagnostic_only=True)
+        measured_decode=sum(x['conservative_components_seconds']['decoding'] for x in r['children'] if x['segment']=='MEASUREMENT')
+        self.assertGreater(measured_decode,86400);self.assertEqual(r['dominant_contributing_factors'][0]['component'],'decoding')
+    def test_optional_foreign_request_bound_still_fits_only_two_by_one(self):
+        for profile,seconds in (((2,2),128620),((2,1),66100),((3,1),97360)):
+            r=resource_plan(budget_templates(*profile,foreign=True),BE_RATE_HANDOFF,diagnostic_only=True)
+            self.assertEqual(r['GPU_phase_seconds'],seconds);self.assertEqual(r['accepted'],profile==(2,1))
+        r=resource_plan(budget_templates(2,1,True),BE_RATE_HANDOFF)
+        self.assertEqual(r['GPU_headroom_seconds'],2300);self.assertEqual(r['required_free_disk_bytes'],320*2**30)
+    def test_all_components_and_policy_totals_reconcile(self):
+        r=resource_plan(budget_templates(2,1),BE_RATE_HANDOFF)
+        self.assertAlmostEqual(sum(r['components_seconds'].values()),r['GPU_phase_seconds'])
+        self.assertEqual(sum(x['duration_seconds'] for x in r['by_policy'].values())+900,r['GPU_phase_seconds']);self.assertEqual(set(r['by_policy']),set(('P0','P1','P2','P3','P4','P5')))
+        for child in r['children']:
+            self.assertAlmostEqual(sum(child['conservative_components_seconds'].values()),child['duration_seconds'])
+            self.assertAlmostEqual(child['safety_factor_contribution_seconds'],sum(child['raw_components_seconds'].values()))
+        self.assertEqual(r['safety_factor'],2.);self.assertEqual(r['startup_seconds'],180)
+    def test_resource_rejection_has_complete_numerical_receipt(self):
+        from semcache.edgelora.r5_i5r4 import ResourceBudgetError
+        with self.assertRaises(ResourceBudgetError) as caught:resource_plan(budget_templates(2,2),BE_RATE_HANDOFF)
+        r=caught.exception.report;self.assertEqual(r['GPU_phase_seconds'],121228);self.assertEqual(r['GPU_excess_seconds'],52828);self.assertEqual(len(r['children']),30)
+        self.assertIn('estimate=121228',str(caught.exception));self.assertIn('bound=68400',str(caught.exception));self.assertFalse(r['accepted'])
+    def test_bad_rates_and_safety_rejected(self):
+        for rates in (dict(BE_RATE_HANDOFF,decode_seconds_per_token=float('nan')),dict(BE_RATE_HANDOFF,admission_seconds=-1)):
+            with self.assertRaises(ValueError):resource_plan(budget_templates(2,1),rates)
+        with self.assertRaises(ValueError):resource_plan(budget_templates(2,1),BE_RATE_HANDOFF,safety=1.)
+    def test_recommendation_never_resizes_requested_plan(self):
+        from semcache.edgelora.r5_i5r4 import compare_budgets
+        r=compare_budgets(budget_templates,BE_RATE_HANDOFF,2.,180,2**50,(2,2))
+        self.assertFalse(r['accepted']);self.assertEqual(r['recommended_profile'],{'trace_units':2,'rotations':1});self.assertFalse(r['automatic_resize']);self.assertFalse(r['plan_sealed'])
+        self.assertEqual(r['requested'],{'trace_units':2,'rotations':2})
+        fast=compare_budgets(budget_templates,{k:v*.01 for k,v in BE_RATE_HANDOFF.items()},2.,180,2**50,(2,2))
+        self.assertEqual(fast['recommended_profile'],{'trace_units':2,'rotations':2}) # Synthetic unit control, never a new performance claim.
+    def test_no_feasible_configuration_is_not_positive(self):
+        from semcache.edgelora.r5_i5r4 import compare_budgets
+        r=compare_budgets(budget_templates,BE_RATE_HANDOFF,2.,180,1,(2,2))
+        self.assertIsNone(r['recommended_profile']);self.assertFalse(r['accepted'])
+        for c in r['configurations'].values():self.assertTrue(any(x['metric']=='required_free_disk_bytes' for x in c['failures']))
+    def test_inadequate_genuine_groups_not_replaced_by_templates(self):
+        from semcache.edgelora.r5_i5r4 import compare_budgets
+        def make(units,rotations):
+            if units==3:raise ValueError('INSUFFICIENT_DISJOINT_REAL_GROUPS')
+            return budget_templates(units,rotations)
+        r=compare_budgets(make,BE_RATE_HANDOFF,2.,180,2**50,(2,2));self.assertFalse(r['configurations']['3x1']['accepted']);self.assertNotIn('resources',r['configurations']['3x1'])
+    def test_cli_budget_dispatch_and_structured_rejection(self):
+        from semcache.edgelora.r5_i5r4 import ResourceBudgetError
+        spec=importlib.util.spec_from_file_location('budget_cli',Path(__file__).resolve().parents[1]/'scripts/148_r5_i5r4.py');cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(cli)
+        args=['budget']
+        for k in ('source-commit','plan-3a','audit-3a','verification-3a','expected-3a-commit','be-experiment','be-run','be-audit','be-verification','nf1-audit'):args+=['--'+k,k]
+        with patch('semcache.edgelora.r5_i5r4.budget',return_value={'CPU_FIXTURE_ONLY':True}) as run,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(args),0);self.assertEqual(run.call_args.kwargs['trace_units'],2);self.assertNotIn('output_dir',run.call_args.kwargs)
+        report=resource_plan(budget_templates(2,2),BE_RATE_HANDOFF,diagnostic_only=True);stderr=io.StringIO()
+        with patch('semcache.edgelora.r5_i5r4.budget',side_effect=ResourceBudgetError(report)),contextlib.redirect_stderr(stderr):self.assertEqual(cli.main(args),2)
+        receipt=json.loads(stderr.getvalue());self.assertEqual(receipt['status'],'REJECTED');self.assertEqual(receipt['resource_diagnostics']['GPU_phase_seconds'],121228)
+
+class PrepareBudgetTests(unittest.TestCase):
+    def setup_inputs(self,stack):
+        from types import SimpleNamespace
+        from test_r5_i5r3b import Tokenizer,Transport
+        from semcache.edgelora import r5_i5r4 as api
+        WorkloadTests.setUpClass();ps=copy.deepcopy(WorkloadTests.prompts);helper=Transport();helper.setUp()
+        old=dict(seed=42,registry_path='/CPU_FIXTURE/registry',multi_prepared='/CPU_FIXTURE/adapters')
+        result={'qasper':{'samples':[dict(id=p['sample']['id'],route=p['route']) for p in ps]}}
+        be=dict(rates=BE_RATE_HANDOFF,calibration_contexts=[],inventories={'CPU_FIXTURE_ONLY':True},historical_source={'recorded_source_commit':'CPU_FIXTURE'},paths={})
+        data={'qasper':[p['sample'] for p in ps]};by={p['sample']['id']:p for p in ps}
+        patches=[patch.object(api,'reviewed',return_value={'CPU_FIXTURE_ONLY':True}),patch.object(api,'baseline',return_value=be),
+                 patch.object(api,'history',return_value=(old,result,{})),patch.object(api,'inputs',return_value=(SimpleNamespace(tokenizer=Tokenizer()),WorkloadTests.users,{'qasper':{'path':'/CPU_FIXTURE/qasper'}},data,helper.pm,{'base_prepared':'/CPU_FIXTURE/base','tokenizer':helper.tokenizer})),
+                 patch('semcache.edgelora.r5_i5_preflight.readiness',return_value={'status':'READY_FOR_MANUAL_GPU_SMOKE','runtime':{}}),
+                 patch.object(api,'prepare_prompt',side_effect=lambda s,*a,**k:copy.deepcopy(by[s['id']])),patch.object(api,'original_link',return_value={'CPU_FIXTURE_ONLY':True}),
+                 patch.object(api,'validate',return_value=({},helper.pm,helper.specs,WorkloadTests.users)),patch.object(api,'transport',return_value={}),
+                 patch.object(api.shutil,'disk_usage',return_value=SimpleNamespace(free=2**50))]
+        for item in patches:stack.enter_context(item)
+        return api
+    def args(self):
+        return dict(source_commit='CPU_FIXTURE',plan_3a='/p',audit_3a='/a',verification_3a='/v',expected_3a_commit='CPU_FIXTURE',be_experiment='/be',be_run='/br',be_audit='/ba',be_verification='/bv',nf1_audit='/nf',trace_units=2,rotations=2)
+    def test_failed_prepare_never_creates_or_seals_plan(self):
+        with contextlib.ExitStack() as stack,tempfile.TemporaryDirectory() as d:
+            api=self.setup_inputs(stack)
+            with patch.object(api,'output') as out,patch.object(api,'seal') as sealed,self.assertRaises(api.ResourceBudgetError) as caught:api.prepare(output_dir=str(Path(d)/'plan'),**self.args())
+            out.assert_not_called();sealed.assert_not_called();self.assertFalse((Path(d)/'plan').exists());self.assertEqual(caught.exception.report['recommended_profile'],{'trace_units':2,'rotations':1})
+    def test_budget_only_reports_all_profiles_without_plan(self):
+        with contextlib.ExitStack() as stack:
+            api=self.setup_inputs(stack)
+            with patch.object(api,'output') as out,patch.object(api,'seal') as sealed:result=api.budget(**self.args())
+            out.assert_not_called();sealed.assert_not_called();self.assertEqual(result['status'],'CPU_BUDGET_DIAGNOSTIC_COMPLETE');self.assertFalse(result['accepted']);self.assertFalse(result['plan_sealed'])
+            self.assertEqual(set(result['configurations']),{'2x2','2x1','3x1'})
 
 if __name__=='__main__':unittest.main()

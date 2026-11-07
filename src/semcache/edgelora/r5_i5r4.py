@@ -21,6 +21,14 @@ HISTORICAL_BE='f7157c9b8b97fdce56f87dcbc3566cb677404bb8'
 NAMESPACE=ROOT/'results/r5/i5r/controlled_hit/i5r4'
 GPU_SECONDS=68400
 
+class ResourceBudgetError(ValueError):
+    """Numerical rejection receipt; never a partially sealed experiment."""
+    def __init__(self,report):
+        self.report=report
+        failures=report.get('failures',[])
+        reason='; '.join(f"{x['metric']}: estimate={x['estimate']} bound={x['bound']} excess={x['excess']} {x['unit']}" for x in failures)
+        super().__init__(reason or 'campaign resource preflight rejected')
+
 def output(path,protected=()):
     p=Path(path).resolve()
     require(not p.is_relative_to(ROOT) or p.is_relative_to(NAMESPACE),'I4 fresh namespace required')
@@ -156,26 +164,54 @@ def schedule(traces,sentinel,rotations,seed):
         b=task_block(tasks,0,0,'STRICT_SENTINEL');b['block_id']=digest(b);jobs.append(dict(child_id='s_'+policy,policy=policy,block=b))
     return jobs
 
-def resource_plan(jobs,rates,safety=2.,startup_seconds=180):
+def resource_plan(jobs,rates,safety=2.,startup_seconds=180,*,diagnostic_only=False):
     require(1.5<=safety<=4 and 120<=startup_seconds<=600,'conservative planning factors required')
-    rows=[]
+    require(jobs and all(k in rates and type(rates[k]) in (int,float) and math.isfinite(rates[k]) and rates[k]>=0 for k in ('prefill_seconds_per_token','decode_seconds_per_token','admission_seconds','other_request_seconds')),'finite nonnegative historical rate envelope required')
+    rows=[];failures=[]
+    def limit(metric,estimate,bound,unit,child_id=None,exclusive=False):
+        if estimate>bound or exclusive and estimate==bound:failures.append(dict(metric=metric,estimate=estimate,bound=bound,excess=estimate-bound,unit=unit,child_id=child_id,comparison='<' if exclusive else '<='))
     for job in jobs:
         ts=job['block']['tasks'];r=job['block']['resources']
-        seconds=startup_seconds+safety*(sum(len(t['token_ids'])*rates['prefill_seconds_per_token']+(t['policy']['max_new_tokens']-1)*rates['decode_seconds_per_token']+rates['admission_seconds']+rates['other_request_seconds'] for t in ts)+3*16*rates['prefill_seconds_per_token'])
-        require(seconds<=10800,'individual bounded condition exceeds three hours')
-        rows.append(dict(child_id=job['child_id'],duration_seconds=math.ceil(seconds),maximum_forwards=r['expected_maximum_forwards'],
+        # Exact original estimator: no credited HITs or early EOS, same 2x
+        # safety when requested. Decomposition exposes rather than discounts it.
+        raw=dict(prefill=(sum(len(t['token_ids']) for t in ts)+3*16)*rates['prefill_seconds_per_token'],
+                 decoding=sum(t['policy']['max_new_tokens']-1 for t in ts)*rates['decode_seconds_per_token'],
+                 admission=len(ts)*rates['admission_seconds'],other_overhead=len(ts)*rates['other_request_seconds'])
+        seconds=startup_seconds+safety*sum(raw.values());rounded=math.ceil(seconds)
+        scaled=dict(model_startup=startup_seconds,**{k:safety*v for k,v in raw.items()},rounding=rounded-seconds)
+        limit('child_duration_seconds',rounded,10800,'seconds',job['child_id'])
+        rows.append(dict(child_id=job['child_id'],policy=job.get('policy','UNSPECIFIED'),segment=job['block'].get('segment','UNSPECIFIED'),
+                         duration_seconds=rounded,duration_hours=rounded/3600,raw_components_seconds=raw,conservative_components_seconds=scaled,
+                         safety_factor=safety,safety_factor_contribution_seconds=(safety-1)*sum(raw.values()),
+                         scored_target_executions=sum(t['scored'] for t in ts),maximum_decode_steps=sum(t['policy']['max_new_tokens']-1 for t in ts),
+                         maximum_forwards=r['expected_maximum_forwards'],
                          evidence_budget_bytes=r['evidence_budget_bytes'],estimated_evidence_bytes=r['estimated_evidence_bytes'],
                          logit_bytes=sum(t['policy']['max_new_tokens'] for t in ts)*50272*4,strict_requests=sum(t['strict'] for t in ts)))
     children_seconds=sum(x['duration_seconds'] for x in rows);total=children_seconds+900;budget=sum(x['evidence_budget_bytes'] for x in rows)
-    require(total<=GPU_SECONDS,'GPU campaign conservative bound exceeds 19h; explicitly reduce trace units/rotations before sealing; no silent dropping')
-    gpu=max(j['block']['resources']['gpu_estimate_bytes'] for j in jobs);require(gpu<22*2**30,'GPU peak estimate exceeds 22GiB')
+    limit('GPU_phase_seconds',total,GPU_SECONDS,'seconds')
+    gpu=max(j['block']['resources']['gpu_estimate_bytes'] for j in jobs)
+    limit('GPU_peak_estimate_bytes',gpu,22*2**30,'bytes',exclusive=True)
     host_peak=8*2**30+6*max(j['block']['resources']['expected_maximum_forwards']*2*32*(32768+j['block']['resources']['maximum_input_tokens']*100) for j in jobs)
-    require(host_peak<56*2**30,'bounded legacy per-child CPU replay exceeds 56GiB estimate; explicitly resize token/request workload')
+    limit('CPU_audit_peak_estimate_bytes',host_peak,56*2**30,'bytes',exclusive=True)
     estimated=sum(x['estimated_evidence_bytes'] for x in rows)
     # Transparent CPU planning assumptions, enforced again by allocation timeouts.
     verify_seconds=900+estimated/(128*2**20)+sum(x['maximum_forwards'] for x in rows)*.06
-    require(verify_seconds<=3600,'estimated independent verification exceeds one hour; explicitly resize campaign')
-    return dict(children=rows,model_loads=len(jobs),ES_process_launches=len(jobs),CPU_UD_process_launches=3*len(jobs),GPU_preflight_processes=1,total_worker_launches=4*len(jobs)+1,
+    limit('estimated_CPU_verification_seconds',verify_seconds,3600,'seconds')
+    totals={k:sum(x['conservative_components_seconds'][k] for x in rows) for k in ('model_startup','prefill','decoding','admission','other_overhead','rounding')};totals['provenance_preflight']=900
+    by_policy={}
+    for policy in (*POLICIES,'UNSPECIFIED'):
+        xs=[x for x in rows if x['policy']==policy]
+        if not xs:continue
+        by_policy[policy]=dict(children=len(xs),duration_seconds=sum(x['duration_seconds'] for x in xs),
+            duration_hours=sum(x['duration_seconds'] for x in xs)/3600,
+            components_seconds={k:sum(x['conservative_components_seconds'][k] for x in xs) for k in ('model_startup','prefill','decoding','admission','other_overhead','rounding')})
+    report=dict(children=rows,model_loads=len(jobs),ES_process_launches=len(jobs),CPU_UD_process_launches=3*len(jobs),GPU_preflight_processes=1,total_worker_launches=4*len(jobs)+1,
+                estimator='UNCHANGED_BE_COMPONENT_MAXIMA_NO_HIT_OR_EOS_CREDIT',rates=deepcopy(rates),safety_factor=safety,startup_seconds=startup_seconds,
+                components_seconds=totals,by_policy=by_policy,
+                safety_factor_contribution_seconds=sum(x['safety_factor_contribution_seconds'] for x in rows),
+                GPU_phase_hours=total/3600,GPU_bound_hours=GPU_SECONDS/3600,GPU_excess_seconds=max(0,total-GPU_SECONDS),GPU_headroom_seconds=GPU_SECONDS-total,
+                dominant_contributing_factors=sorted([dict(component=k,seconds=v,hours=v/3600) for k,v in totals.items()],key=lambda x:(-x['seconds'],x['component'])),
+                accepted=not failures,failures=failures,
                 total_maximum_forwards=sum(x['maximum_forwards'] for x in rows),GPU_phase_seconds=total,GPU_phase_limit_seconds=GPU_SECONDS,
                 GPU_children_seconds=children_seconds,provenance_preflight_reserve_seconds=900,estimated_CPU_verification_seconds=verify_seconds,
                 CPU_analysis_assumptions='128MiB/s sealed-file read/hash plus .06s per forward receipt and 900s archive/input margin; must be checked against actual filesystem, timeout remains fail-closed',
@@ -185,10 +221,44 @@ def resource_plan(jobs,rates,safety=2.,startup_seconds=180):
                 logit_bytes=sum(x['logit_bytes'] for x in rows),disk_reserve_bytes=32*2**30,required_free_disk_bytes=budget+32*2**30,
                 GPU_peak_estimate_bytes=gpu,GPU_limit_bytes=22*2**30,host_RAM_required_bytes=64*2**30,host_available_reserve_bytes=32*2**30,CPU_audit_peak_estimate_bytes=host_peak,
                 uncertainty='BE maximum observed per-token costs x pinned safety factor, no HIT speed credit; startup floor includes full fingerprint/session warmups. This is a conservative estimate, not a runtime guarantee. Timeout/incomplete is failure, never automatic retry.')
+    report['pessimism_review']=[
+        'Component maxima come from different archived rows; their sum is an envelope, not an observed joint request.',
+        'The maximum admission interval is charged even to P5 and oversized target requests; this can overcharge, but has NOT been discounted.',
+        'Strict historical instrumentation costs are retained. No unmeasured scalable-mode speed credit or guaranteed HIT/EOS is used.',
+        '32-token decoding extrapolates an 8-token historical run. The declared factor is retained; neither kernels nor run-to-run variance are guaranteed.',
+        'Original four-rate estimator is preserved, not represented as a formal runtime guarantee; actual stage timeouts remain fail-closed.']
+    if failures and not diagnostic_only:raise ResourceBudgetError(report)
+    return report
+
+def compare_budgets(make_jobs,rates,safety,startup_seconds,available_disk_bytes,requested):
+    """Diagnose only; never resize the selected campaign or write a plan."""
+    cases={};profiles=list(dict.fromkeys([requested,(2,2),(2,1),(3,1)]))
+    for units,rotations in profiles:
+        name=f'{units}x{rotations}'
+        try:
+            jobs=make_jobs(units,rotations)
+            rp=resource_plan(jobs,rates,safety,startup_seconds,diagnostic_only=True)
+            failures=deepcopy(rp['failures'])
+            if available_disk_bytes<rp['required_free_disk_bytes']:
+                failures.append(dict(metric='required_free_disk_bytes',estimate=rp['required_free_disk_bytes'],bound=available_disk_bytes,
+                                     excess=rp['required_free_disk_bytes']-available_disk_bytes,unit='bytes',child_id=None))
+            cases[name]=dict(trace_units=units,rotations=rotations,accepted=not failures,failures=failures,resources=rp)
+        except ValueError as exc:
+            cases[name]=dict(trace_units=units,rotations=rotations,accepted=False,failures=[dict(metric='workload_or_transport_eligibility',estimate=None,bound=None,excess=None,unit='NOT_EVALUATED',reason=str(exc))])
+    # Preserve two rotations when possible. If 2x2 cannot fit, the user asked to
+    # prioritize 2x1; 3x1 is still evaluated and never silently substituted.
+    recommendation=next((dict(trace_units=u,rotations=r) for u,r in ((2,2),(2,1),(3,1)) if cases[f'{u}x{r}']['accepted']),None)
+    selected=cases[f'{requested[0]}x{requested[1]}']
+    return dict(schema='I5R4_BUDGET_DIAGNOSTIC_V1',scope='CPU_ONLY_HISTORICAL_BE_ENVELOPE_NOT_A_BENCHMARK',
+                requested=dict(trace_units=requested[0],rotations=requested[1]),accepted=selected['accepted'],failures=selected['failures'],
+                available_disk_bytes=available_disk_bytes,configurations=cases,recommended_profile=recommendation,
+                automatic_resize=False,stage_budgets_changed=False,plan_sealed=False,
+                interpretation='Recommendation is conditional on verified inputs and declared bounds, not a runtime guarantee. Explicitly re-run prepare with chosen counts; no policy/task is dropped.')
 
 def prepare(output_dir,source_commit,plan_3a,audit_3a,verification_3a,expected_3a_commit,be_experiment,be_run,be_audit,be_verification,nf1_audit,
             trace_units=4,rotations=2,max_prompt_tokens=1280,quality_tokens=32,quality_margin_f1=2.,seed=42,
-            expected_reuses=2.,retention_ms_per_mib_request=1.,ttl_idle_requests=4,exploration_every=3,runtime_safety_factor=2.,startup_seconds=180):
+            expected_reuses=2.,retention_ms_per_mib_request=1.,ttl_idle_requests=4,exploration_every=3,runtime_safety_factor=2.,startup_seconds=180,
+            budget_only=False,disk_path=None):
     require(2<=trace_units<=4 and 1<=rotations<=2,'predeclare two..four independent multi-source units and one..two rotations')
     require(max_prompt_tokens==1280 and 32<=quality_tokens<=64 and 0<=quality_margin_f1<=2,'fixed transport/quality contract required')
     src=reviewed(source_commit);be=baseline(be_experiment,be_run,be_audit,be_verification,nf1_audit)
@@ -214,9 +284,32 @@ def prepare(output_dir,source_commit,plan_3a,audit_3a,verification_3a,expected_3
     check_trace(sentinel,users,old['seed'],True)
     jobs=schedule(traces,sentinel,rotations,seed);_,_,specs,_=validate(old['multi_prepared'])
     plans={j['child_id']:dict(blocks=[j['block']],conditions=[CONDITIONS[0] if j['policy']=='P5' else CONDITIONS[2]]) for j in jobs}
-    wire=transport(plans,pm,specs,m['tokenizer'],users);rp=resource_plan(jobs,be['rates'],runtime_safety_factor,startup_seconds)
-    dest=Path(output_dir).resolve();parent=next((p for p in (dest,*dest.parents) if p.exists()),None)
-    require(parent and shutil.disk_usage(parent).free>=rp['required_free_disk_bytes'],'campaign evidence budget plus 32GiB disk reserve unavailable')
+    wire=transport(plans,pm,specs,m['tokenizer'],users)
+    require(budget_only or output_dir is not None,'prepare requires a fresh output directory')
+    require(budget_only or disk_path is None,'prepare checks the actual output filesystem; --disk-path is diagnostic-only')
+    dest=Path(disk_path or output_dir or ROOT/'results').resolve();parent=next((p for p in (dest,*dest.parents) if p.exists()),None)
+    require(parent is not None,'budget disk filesystem unavailable');free=shutil.disk_usage(parent).free
+    def alternatives(units,repeat):
+        if units==trace_units and repeat==rotations:return jobs
+        gs,_=choose(prompts,users,units,set(be['calibration_contexts']))
+        ats=[build_trace(g,tok.tokenizer,special,old['seed'],quality_tokens) for g in gs]
+        for ts in ats:check_trace(ts,users,old['seed'])
+        ss=deepcopy([ats[0][i] for i in (0,2,7)])
+        for i,t in enumerate(ss):t.update(request_id=f'I4S{i:03d}',request_sequence_number=i,strict=True);t['policy']['max_new_tokens']=1 if not t['scored'] else 8
+        check_trace(ss,users,old['seed'],True)
+        js=schedule(ats,ss,repeat,seed)
+        ps={j['child_id']:dict(blocks=[j['block']],conditions=[CONDITIONS[0] if j['policy']=='P5' else CONDITIONS[2]]) for j in js}
+        transport(ps,pm,specs,m['tokenizer'],users)
+        return js
+    report=compare_budgets(alternatives,be['rates'],runtime_safety_factor,startup_seconds,free,(trace_units,rotations))
+    report.update(source=src,baseline_inventories=be['inventories'],historical_rate_source=be['historical_source']['recorded_source_commit'],quality_tokens=quality_tokens)
+    if budget_only:
+        if report['recommended_profile'] is None:raise ResourceBudgetError(report)
+        return dict(status='CPU_BUDGET_DIAGNOSTIC_COMPLETE',**report)
+    if not report['accepted']:raise ResourceBudgetError(report)
+    # Hard guard remains enabled for preparation and load/run/analysis. The
+    # diagnostic-only calculation above cannot seal or authorize execution.
+    rp=resource_plan(jobs,be['rates'],runtime_safety_factor,startup_seconds)
     params=parameters(be['saving_ms'],be['admission_ms'],expected_reuses=expected_reuses,retention_ms_per_mib_request=retention_ms_per_mib_request,ttl_idle_requests=ttl_idle_requests,exploration_every=exploration_every)
     p=dict(schema=SCHEMA,source=src,source_commit=source_commit,historical_BE_source=HISTORICAL_BE,baseline=be,
            input_3a=dict(paths=dict(plan_3a=str(Path(plan_3a).resolve()),audit_3a=str(Path(audit_3a).resolve()),verification_3a=str(Path(verification_3a).resolve())),expected_commit=expected_3a_commit,proof=proof),
@@ -227,7 +320,7 @@ def prepare(output_dir,source_commit,plan_3a,audit_3a,verification_3a,expected_3
            policy_parameters=params,policies=list(POLICIES),clusters=1,capacity_per_adapter_bytes=CAPACITY,max_entries=64,
            trace_units=trace_units,rotations=rotations,trace_checks=checks,availability=availability,exclusions=exclusions,jobs=jobs,
            independent_positive_contexts=3*trace_units,context_groups=[[g['context_sha256'] for g in unit] for unit in groups],
-           resources=rp,resources_safety_factor=runtime_safety_factor,startup_seconds=startup_seconds,transport=wire,readiness=ready,max_prompt_tokens=1280,quality_tokens=quality_tokens,validation_test_sha256=sha(ROOT/'tests/test_r5_i5r4.py'),
+           resources=rp,budget_comparison=report,resources_safety_factor=runtime_safety_factor,startup_seconds=startup_seconds,transport=wire,readiness=ready,max_prompt_tokens=1280,quality_tokens=quality_tokens,validation_test_sha256=sha(ROOT/'tests/test_r5_i5r4.py'),
            quality=dict(metric='Qasper QA_F1',scale='0..100',margin_f1_points=quality_margin_f1,confidence=.95,
                         inference='Paired context/trace cluster bootstrap, repeats and rotations collapsed first; fewer than 8 independent traces DESCRIPTIVE_ONLY',
                         minimum_independent_traces_for_confirmatory=8,policy_target_noninferiority_reference='P0 and P5 separately',
@@ -237,6 +330,9 @@ def prepare(output_dir,source_commit,plan_3a,audit_3a,verification_3a,expected_3
     p['plan_id']=digest(p);protected=[*be['paths'].values(),*p['input_3a']['paths'].values(),old['multi_prepared'],*[x['path'] for x in prov.values()],*[x['manifest']['source_path'] for x in prov.values()]]
     out=output(output_dir,protected);write(out/'i4_plan.json',p);seal(out)
     return dict(status='SEALED_CPU_PREPARED_GPU_NOT_RUN',plan_id=p['plan_id'],resources=rp,trace_checks=checks)
+
+def budget(**kwargs):
+    return prepare(output_dir=None,budget_only=True,**kwargs)
 
 def load(experiment,source_commit=None,recheck_inputs=True):
     require(recheck_inputs is True,'immutable input verification cannot be disabled')

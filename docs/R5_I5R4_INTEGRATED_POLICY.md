@@ -193,8 +193,9 @@ The current **static template arithmetic**, without real data/calibration, estim
 rejected before sealing by the present conservative estimator.3x2 similarly
 forecasts3685.3s. Explicit2x2 gives158.95GiB,11791 maximum forwards and2879.0s
 verification forecast; it still needs actual group/GPU-time/disk readiness.
-These are estimates, never benchmark results. The example below explicitly
-selects2x2 for this reason; the CLI retains4x2 as the original proposal default.
+These are IO/count estimates, never benchmark results. They do not establish
+GPU-time feasibility. The archived-rate review below supersedes the earlier
+2x2 recommendation; the CLI retains4x2 as the original proposal default.
 Two independent traces cannot support an uncertainty interval under the declared
 minimum-three-trace bootstrap rule.3x1 is an explicit alternative with three
 independent units but no repeated rotation; neither establishes confirmatory NI.
@@ -203,8 +204,56 @@ children,457 physical requests,11791 maximum forwards,6 positive context groups,
 2 independent trace units. Its hard child budgets total480GiB plus32GiB reserve
 (512GiB free required), distinct from158.95GiB estimated output. The declared
 full-prefill GPU estimate is12726892032 bytes (11.85GiB), below the unchanged
-22GiB limit; actual peak remains unmeasured. Unknown BE rates still determine
-whether the conservative GPU-time bound accepts this explicit smaller proposal.
+22GiB limit; actual peak remains unmeasured.
+
+### Archived-rate GPU budget review
+
+The researcher recovered these rates using the existing `baseline()` formulas
+from archived BE A/C request rows: prefill0.021003049537109377s/token,
+decode3.932975382s/token, admission1.932976289s/request and
+other3.073750925s/request. The archive is absent locally: the following reproduces
+the supplied rate arithmetic using count/length fixtures, not a new local archive
+verification or GPU measurement. SERAPH `budget` and `prepare` independently
+verify the original BE/NF1/3A inventories and source blobs before using rates.
+
+All cases retain32 target tokens, safety2.0, startup180s, full-prefill costing,
+all six policies and six isolated sentinels. No HIT or early-EOS credit is used.
+
+| Explicit profile | GPU seconds / hours | Excess above19h | Required free disk | Verification forecast |
+|---|---:|---:|---:|---:|
+|2 traces x2 rotations|121228 /33.6744h|52828s|512GiB|2879.03s|
+|2 traces x1 rotation|62404 /17.3344h|0s (5996s headroom)|320GiB|2072.73s|
+|3 traces x1 rotation|91816 /25.5044h|23416s|416GiB|2475.88s|
+
+These rows omit optional foreign-adapter negatives. When each trace includes
+one, the respective GPU estimates are128620,66100 and97360s; only2x1 still fits,
+with2300s GPU headroom and2125.79s verification estimate. Actual selection,
+transport, memory and available disk must also pass; a forecast is not a runtime
+guarantee.2x2 measurement decoding alone costs12.192h before safety,24.384h
+after safety. Thus a stage rebalance cannot safely rescue2x2 within24h.
+
+Recommend **explicit2x1** in a fresh plan, without changing stage caps or
+policy/quality parameters. It contains12 measured children plus6 isolated
+sentinels,237 requests without foreign negatives (220 measured +17 sentinel),
+5955 maximum forwards,6 positive contexts and2 independent trace units.
+One rotation provides no repeated-order variance estimate; inference remains
+descriptive, with no confirmatory non-inferiority claim.
+
+For2x1 without foreign negatives the conservative GPU breakdown is:
+startup3240s, prefill11327.533s, decoding44552.745s,
+admission916.231s, other overhead1456.958s, child rounding10.533s,
+and provenance allowance900s. P0..P4 each total10298s, P5 totals10014s,
+plus the shared900s allowance. Safety contributes29126.733s already included
+in these components; it must not be added again.
+Each measured P0..P4 child forecasts4923s, P5 forecasts4797s; isolated strict
+sentinels forecast452s each for P0..P4 and420s for P5. The structured receipt
+retains each child's startup/prefill/decode/admission/other/safety breakdown.
+
+The component-maxima envelope can overcharge independent maxima and admission
+for P5/oversized targets. Those conservative charges remain unchanged: there is
+no verified replacement calibration justifying a discount. Startup is outside
+the safety multiplier, exactly as before. Instrumentation and32-token scaling
+remain uncertain. Actual stage timeouts remain fail-closed.
 
 ## Resource preflight and evidence
 
@@ -226,6 +275,14 @@ child, plus900s provenance/preflight allowance. Total must fit68400s. Independen
 verification estimate must fit3600s using a declared128MiB/s hash/read assumption,
 .06s per forward receipt and900s provenance margin. Actual analysis/verification
 also have hard timeouts. Inspect these assumptions on SERAPH before approval.
+
+`budget` is a read-only CPU command sharing preparation's verified inputs,
+genuine group selection and transport checks. It reports2x2,2x1,3x1, each
+child/policy/component duration, safety contribution, dominant factors, memory,
+IO and exact failed bounds. No plan is written; recommendations never resize
+the requested preparation. `prepare` returns a structured `REJECTED` receipt
+with `resource_diagnostics` before creating an output directory when a resource
+limit fails. No feasible alternative means rejection, never partial acceptance.
 
 Existing bounded16GiB evidence budget per child (including accounting reserve),
 54 proposed children =>864GiB hard budget plus32GiB free disk reserve; actual
@@ -334,13 +391,24 @@ print(json.dumps(r,indent=2))
 assert r['status']=='READY_FOR_MANUAL_GPU_SMOKE'
 PY
 
+# Read-only diagnosis: reports all three profiles; no sealed output is created.
+python scripts/148_r5_i5r4.py budget \
+ --source-commit "$I4_SOURCE_COMMIT" --disk-path "$PWD/results" \
+ --plan-3a "$I4_3A_PLAN" --audit-3a "$I4_3A_AUDIT" \
+ --verification-3a "$I4_3A_VERIFICATION" --expected-3a-commit "$I4_3A_SHA" \
+ --be-experiment "$I4_BE_PLAN" --be-run "$I4_BE_RUN" \
+ --be-audit "${I4_BE_RUN}_be_audit" --be-verification "${I4_BE_RUN}_be_audit_verification" \
+ --nf1-audit "$I4_NF1_AUDIT" --trace-units 2 --rotations 2 \
+ --quality-tokens 32 --runtime-safety-factor 2 --startup-seconds 180
+
+# Explicitly select2x1 only after reviewing the resource/selection receipt.
 python scripts/148_r5_i5r4.py prepare \
  --output-dir "$I4_EXPERIMENT" --source-commit "$I4_SOURCE_COMMIT" \
  --plan-3a "$I4_3A_PLAN" --audit-3a "$I4_3A_AUDIT" \
  --verification-3a "$I4_3A_VERIFICATION" --expected-3a-commit "$I4_3A_SHA" \
  --be-experiment "$I4_BE_PLAN" --be-run "$I4_BE_RUN" \
  --be-audit "${I4_BE_RUN}_be_audit" --be-verification "${I4_BE_RUN}_be_audit_verification" \
- --nf1-audit "$I4_NF1_AUDIT" --trace-units 2 --rotations 2 \
+ --nf1-audit "$I4_NF1_AUDIT" --trace-units 2 --rotations 1 \
  --quality-tokens 32 --max-prompt-tokens 1280 --quality-margin-f1 2 \
  --expected-reuses 2 --retention-ms-per-mib-request 1 \
  --ttl-idle-requests 4 --exploration-every 3 --runtime-safety-factor 2 --startup-seconds 180
@@ -534,3 +602,31 @@ policy parameters or workload changed. Real-data discrimination is **NOT_RUN**;
 it must be recomputed from the fresh sealed plan/CPU audit after review and commit.
 Identical P1 behavior is a scientific limitation, not permission to retune it
 using future workload accesses. Existing plan/audit seals must never be edited.
+
+## GPU budget diagnostic patch validation
+
+The original early `require(total<=68400)` concealed the completed estimate and
+its components. `ResourceBudgetError` now carries numerical bound/excess
+receipts, and the CLI exports them on rejection. The original estimator and
+resource guards remain active. Count/length fixtures reproduce the researcher
+rate handoff for2x2/2x1/3x1; they never substitute for real selected records.
+The read-only `budget` command compares genuine candidate workloads, while
+failed `prepare` creates no plan. Recommendations never select an alternative
+without a new explicit operator preparation.
+
+Final local CPU checks:
+
+- New budget/prepare tests:11 PASS /0 FAIL /0 SKIP.
+- Focused I4 suite:67 PASS /0 FAIL /1 SKIP (68 tests).
+- Combined I4/BE/3B/3A/I5 controller/preflight/multi/NF1/R1/B1/B2 regressions:
+  239 PASS /0 FAIL /2 SKIP (241 tests, includes focused tests).
+- CLI argument/actual shell invocation tests, `budget --help`, three Python
+  AST checks, `bash -n jobs/r5_i5r4_integrated.sh` and `git diff --check`:PASS.
+- Skips are installed native OPT CPU and actual HF OPT cache integration;
+  required Torch/Transformers/NumPy packages are absent locally. No dependency
+  installation or download was attempted. SERAPH readiness must run them.
+
+The single23:50 wrapper is unchanged. No real BE archive was available locally
+to verify the supplied rates, and no real plan or CPU approval was produced.
+Real source/group/transport/disk acceptance remains pending the fresh SERAPH
+preparation. GPU_NOT_RUN. Historical evidence is unchanged; no Slurm or push.
