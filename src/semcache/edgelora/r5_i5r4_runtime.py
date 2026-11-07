@@ -98,7 +98,8 @@ def run(experiment,source_commit,output_dir,runtime_budget_seconds=GPU_SECONDS,e
     try:
         # Allocation checks run in a separate short-lived process. Its CUDA
         # context exits BEFORE any ES child starts; the coordinator is CPU-only.
-        write(out/'i4_preflight_input.json',dict(plan=p,output=str(out),remaining=runtime_budget_seconds-(time.monotonic()-begin)))
+        # Allocation preflight needs identities/resources, never all child prompts.
+        write(out/'i4_preflight_input.json',dict(plan={k:p[k] for k in ('multi_prepared','tokenizer_identity','resources')},output=str(out),remaining=runtime_budget_seconds-(time.monotonic()-begin)))
         checked=subprocess.run([sys.executable,str(ROOT/'scripts/148_r5_i5r4.py'),'_gpu-preflight','--plan',str(out/'i4_preflight_input.json')],cwd=ROOT,capture_output=True,timeout=300)
         require(len(checked.stdout)+len(checked.stderr)<=2**20,'preflight output exceeds bound')
         (out/'i4_preflight.stdout').write_bytes(checked.stdout);(out/'i4_preflight.stderr').write_bytes(checked.stderr)

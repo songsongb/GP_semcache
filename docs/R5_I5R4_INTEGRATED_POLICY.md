@@ -630,3 +630,73 @@ The single23:50 wrapper is unchanged. No real BE archive was available locally
 to verify the supplied rates, and no real plan or CPU approval was produced.
 Real source/group/transport/disk acceptance remains pending the fresh SERAPH
 preparation. GPU_NOT_RUN. Historical evidence is unchanged; no Slurm or push.
+
+## Bounded plan storage patch (fresh preparation required)
+
+The SERAPH2x1 plan passed resource planning but could not be read by CPU
+validation: the expanded campaign repeated whole Qasper contexts, prepared
+samples and task records in18 child blocks inside one `i4_plan.json`.
+`Evidence.json()` permits16MiB per JSON. Raw SERAPH bytes are unavailable locally;
+I4 now reports the actual filename, measured bytes and limit before rejection,
+so oversized legacy artifacts can be identified without changing their seals.
+
+New preparations use `I4_SHARDED_PLAN_V1`: `i4_plan.json` indexes canonical,
+content-addressed `plan_shards/<sha256>.json` files. Repeated contexts, prepared
+records and tasks share stored bytes. Reconstruction returns exactly the same
+logical dictionary, requests, token IDs and policy order; the existing logical
+plan ID check and independent real-data reconstruction remain active. SHA256
+inventory verification precedes reconstruction, and each referenced shard also
+has its content identity checked. Individual files retain the16MiB limit;
+packed storage is bounded below120MiB,8192 shards, depth128,8million expanded
+nodes and512MiB expanded scalar JSON. Large strings are chunked losslessly.
+No production serializer, fingerprint, threshold or evidence reader was changed.
+
+All campaign stages already use the common I4 loader, so CPU validation,
+inspect, runtime, analysis, verification and reporting receive the identical
+expanded plan. GPU allocation preflight now exports only the model/tokenizer
+identities and resources it actually uses, rather than another expanded campaign
+copy. The single23:50 job and19h GPU budget remain unchanged.
+
+After reviewing/committing/pushing and pulling the corrected code on SERAPH,
+run the CPU setup above, binding `I4_SOURCE_COMMIT` to the new reviewed HEAD.
+Keep the existing plan `ccd8ac60b2738970b65adef15a2ebff8045de46bb344409156561b49dc6bc0dc`
+and any failed audit attempts untouched. Choose fresh paths:
+
+```bash
+I4_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+export I4_SOURCE_COMMIT="$(git rev-parse HEAD)"
+export I4_EXPERIMENT="$PWD/results/r5/i5r/controlled_hit/i5r4/plan_jsonfix_$I4_STAMP"
+export I4_CPU_AUDIT="$PWD/results/r5/i5r/controlled_hit/i5r4/cpu_jsonfix_$I4_STAMP"
+export I4_RUN_ROOT="$PWD/results/r5/i5r/controlled_hit/i5r4/runs_jsonfix_$I4_STAMP"
+mkdir -p "$I4_RUN_ROOT" logs
+
+python scripts/148_r5_i5r4.py prepare \
+ --output-dir "$I4_EXPERIMENT" --source-commit "$I4_SOURCE_COMMIT" \
+ --plan-3a "$I4_3A_PLAN" --audit-3a "$I4_3A_AUDIT" \
+ --verification-3a "$I4_3A_VERIFICATION" --expected-3a-commit "$I4_3A_SHA" \
+ --be-experiment "$I4_BE_PLAN" --be-run "$I4_BE_RUN" \
+ --be-audit "${I4_BE_RUN}_be_audit" --be-verification "${I4_BE_RUN}_be_audit_verification" \
+ --nf1-audit "$I4_NF1_AUDIT" --trace-units 2 --rotations 1 \
+ --quality-tokens 32 --max-prompt-tokens 1280 --quality-margin-f1 2 \
+ --expected-reuses 2 --retention-ms-per-mib-request 1 \
+ --ttl-idle-requests 4 --exploration-every 3 --runtime-safety-factor 2 --startup-seconds 180
+python scripts/148_r5_i5r4.py cpu-validate \
+ --experiment "$I4_EXPERIMENT" --output-dir "$I4_CPU_AUDIT"
+python scripts/148_r5_i5r4.py inspect \
+ --experiment "$I4_EXPERIMENT" --cpu-audit "$I4_CPU_AUDIT" \
+ --source-commit "$I4_SOURCE_COMMIT" --require-cpu-validation
+```
+
+Do not convert or reseal the historical plan in place. Recompute resources from
+verified inputs; the handed-off64252s/18-load forecast is not a new local
+measurement. CPU stress fixtures exercise actual prepare storage, sealed readers,
+simulation, CPU audit and inspect with external dataset/source prerequisites
+explicitly mocked. They do not establish real SERAPH asset readiness or GPU
+execution. Native dependency checks still must run on SERAPH.
+
+Final JSON-storage patch validation:6 new stress/storage tests PASS; combined
+I4/storage/BE/3B/3A/I5 controller/preflight/multi/NF1/R1/B1/B2 regressions:
+245 PASS /0 FAIL /2 SKIP (247 tests, includes the6 new tests). Skips remain
+native OPT/HF cache tests with unavailable local dependencies. Actual shell CLI
+contract tests, CLI help, four Python syntax checks, `bash -n` and
+`git diff --check` passed. GPU_NOT_RUN; real-data re-preparation NOT_RUN locally.
