@@ -276,30 +276,110 @@ def simulate(tasks,policy,params,registry,capacity=CAPACITY):
     """Behavior oracle sees supplied arrivals; Engine sees one request at a time.
     Not TinyBERT, not a physical HIT measurement, and not a forecast oracle.
     """
-    engines={};metadata={};rows=[]
+    engines={};metadata={};completed={};rows=[]
     for t in tasks:
         aid=t['adapter_id'];e=engines.setdefault(aid,Engine(policy,params,capacity));stored=metadata.setdefault(aid,{})
+        previous=completed.setdefault(aid,{})
+        def removal(key):return dict(entry_id=key,source_request_id=stored[key]['source_request_id'],bytes=e.entries[key]['bytes'])
         expired=e.begin(t['request_id'])
+        expirations=[removal(k) for k in expired]
         for k in expired:e.remove(k);stored.pop(k)
+        # Reporting oracle only: all previously completed, capacity-eligible
+        # standalone requests, including denied/evicted sources. It is NEVER
+        # passed to Engine, nor evidence of actual completion or a physical HIT.
+        completed_matches=[k for k,s in previous.items() if len(s['token_ids'])<len(t['token_ids']) and t['token_ids'][:len(s['token_ids'])]==s['token_ids'] and sharing(registry,s['user_id'],t['user_id'],aid,aid) is None]
         possible=[k for k,s in stored.items() if len(s['token_ids'])<len(t['token_ids']) and t['token_ids'][:len(s['token_ids'])]==s['token_ids'] and sharing(registry,s['user_id'],t['user_id'],aid,aid) is None]
         key=sorted(possible,key=lambda k:(-len(stored[k]['token_ids']),k))[0] if possible and policy!='P5' else None
-        victims=[];admitted=None
+        victims=[];victim_details=[];admitted=None;d=None
         if key:e.hit(key)
         elif policy!='P5':
             size=len(t['token_ids'])*491520;token_hash=digest(t['token_ids']);d=e.admission(token_hash,size)
             if d['allowed']:
                 victims=e.victims(size,token_hash)
+                victim_details=[removal(k) for k in victims]
                 if token_hash in stored:e.remove(token_hash);stored.pop(token_hash)
                 for k in victims:e.remove(k);stored.pop(k)
-                e.admitted(token_hash,token_hash,size);stored[token_hash]=dict(token_ids=t['token_ids'],user_id=t['user_id']);admitted=token_hash
-        rows.append(dict(request_id=t['request_id'],adapter_id=aid,expired=expired,victims=victims,simulated_prefix_opportunity=key,admitted=admitted,state=e.snapshot(),scope='CPU_BEHAVIOR_ORACLE_ONLY_NOT_RUNTIME_HIT'))
+                e.admitted(token_hash,token_hash,size);stored[token_hash]=dict(token_ids=t['token_ids'],user_id=t['user_id'],source_request_id=t['request_id']);admitted=token_hash
+        if policy!='P5' and key is None and len(t['token_ids'])*491520<=capacity and len(t['token_ids'])<2048:
+            previous[digest(t['token_ids'])]=dict(token_ids=t['token_ids'],user_id=t['user_id'])
+        rows.append(dict(request_id=t['request_id'],adapter_id=aid,input_tokens=len(t['token_ids']),scored=t['scored'],
+                         expired=expired,expiration_details=expirations,victims=victims,capacity_eviction_details=victim_details,
+                         admission_decision=d,exploration_admission=policy in ('P1','P4') and d is not None and d['allowed'] and d['exploration'],
+                         completed_source_prefix_opportunities=sorted(completed_matches),
+                         simulated_prefix_opportunity=key,admitted=admitted,state=e.snapshot(),scope='CPU_BEHAVIOR_ORACLE_ONLY_NOT_RUNTIME_HIT'))
     return rows
+
+def discrimination(p,simulations):
+    """Read-only decision/coverage comparison, never tuning or a physical HIT rate.
+
+    Scores alone, policy names and unused exploration flags do not discriminate
+    policies. Compare observable simulated actions on identical arrivals. P5's
+    different source traffic is never labeled an admission/TTL/eviction ablation.
+    """
+    groups={};children={}
+    for job in p['jobs']:
+        b=job['block'];key=(b['segment'],b['trace_unit'],b['repetition']);group=groups.setdefault(key,{})
+        require(job['policy'] not in group,'duplicate policy discrimination unit');group[job['policy']]=job['child_id']
+        rs=simulations[job['child_id']];require([r['request_id'] for r in rs]==[t['request_id'] for t in b['tasks']],'simulation/request coverage differs')
+        evaluated=[r for r in rs if r['admission_decision'] is not None];eligible=[r for r in evaluated if r['input_tokens']==512]
+        def counts(xs):return dict(candidates=len(xs),admissions=sum(r['admitted'] is not None for r in xs),denials=sum(not r['admission_decision']['allowed'] for r in xs),exploration_admissions=sum(r['exploration_admission'] for r in xs))
+        opportunities=[r for r in rs if r['completed_source_prefix_opportunities']]
+        children[job['child_id']]=dict(policy=job['policy'],segment=b['segment'],trace_unit=b['trace_unit'],rotation=b['repetition'],
+            admissions=dict(all_candidates=counts(evaluated),eligible_512=counts(eligible),
+                decisions=[dict(request_id=r['request_id'],input_tokens=r['input_tokens'],admitted=r['admitted'],exploration_admission=r['exploration_admission'],decision=r['admission_decision']) for r in evaluated]),
+            TTL_expirations=[dict(at_request_id=r['request_id'],**x) for r in rs for x in r['expiration_details']],
+            capacity_eviction_victims=[dict(at_request_id=r['request_id'],**x) for r in rs for x in r['capacity_eviction_details']],
+            exact_prefix_opportunities=dict(denominator='Requests with a previously completed capacity-eligible exact source under the CPU sequential-completion assumption',
+                requests=len(opportunities),retained=sum(r['simulated_prefix_opportunity'] is not None for r in opportunities),
+                lost=sum(r['simulated_prefix_opportunity'] is None for r in opportunities),
+                retained_request_ids=[r['request_id'] for r in rs if r['simulated_prefix_opportunity'] is not None],
+                lost_request_ids=[r['request_id'] for r in opportunities if r['simulated_prefix_opportunity'] is None]))
+    pairwise=[]
+    def actions(r):return dict(admitted=r['admitted'],expired=r['expired'],victims=r['victims'],retained_prefix=r['simulated_prefix_opportunity'])
+    for key,group in sorted(groups.items()):
+        require(set(group)==set(POLICIES),'incomplete policy discrimination unit')
+        for i,a in enumerate(POLICIES):
+            for b in POLICIES[i+1:]:
+                item=dict(segment=key[0],trace_unit=key[1],rotation=key[2],reference=a,policy=b)
+                if b=='P5':
+                    pairwise.append(dict(item,status='NOT_COMPARABLE_DIFFERENT_SOURCE_TRAFFIC',reason='Target-only economic control, not an identical-arrival policy ablation'));continue
+                ar,br=simulations[group[a]],simulations[group[b]]
+                require([r['request_id'] for r in ar]==[r['request_id'] for r in br],'policy arrivals differ')
+                changed=[]
+                for x,y in zip(ar,br):
+                    ax,by=actions(x),actions(y);fields=[f for f in ax if ax[f]!=by[f]]
+                    if fields:changed.append(dict(request_id=x['request_id'],fields=fields,reference=ax,candidate=by))
+                lost=[x['request_id'] for x,y in zip(ar,br) if x['simulated_prefix_opportunity'] is not None and y['simulated_prefix_opportunity'] is None]
+                gained=[x['request_id'] for x,y in zip(ar,br) if x['simulated_prefix_opportunity'] is None and y['simulated_prefix_opportunity'] is not None]
+                pairwise.append(dict(item,status='DISCRIMINATED_BY_WORKLOAD' if changed else 'NOT_DISCRIMINATED_BY_WORKLOAD',changed_request_count=len(changed),changes=changed,exact_prefix_opportunities_lost_vs_reference=lost,exact_prefix_opportunities_gained_vs_reference=gained))
+    summary={};ablations={}
+    for policy in POLICIES:
+        cs=[c for c in children.values() if c['policy']==policy and c['segment']=='MEASUREMENT']
+        def totals(name):return {k:sum(c['admissions'][name][k] for c in cs) for k in ('candidates','admissions','denials','exploration_admissions')}
+        summary[policy]=dict(measurement_child_runs=len(cs),trace_units=len({c['trace_unit'] for c in cs}),rotations=len({c['rotation'] for c in cs}),admission_decisions=totals('all_candidates'),eligible_512_admission_decisions=totals('eligible_512'),
+            TTL_expirations=sum(len(c['TTL_expirations']) for c in cs),capacity_evictions=sum(len(c['capacity_eviction_victims']) for c in cs),
+            exact_prefix_opportunities={k:sum(c['exact_prefix_opportunities'][k] for c in cs) for k in ('requests','retained','lost')})
+        if policy in ('P0','P5'):continue
+        ps=[x for x in pairwise if x['segment']=='MEASUREMENT' and x['reference']=='P0' and x['policy']==policy]
+        differences=sum(x['changed_request_count'] for x in ps)
+        relevant={'P1':('admitted',),'P2':('expired',),'P3':('victims',),'P4':('admitted','expired','victims','retained_prefix')}[policy]
+        mechanism=sum(any(k in c['fields'] for k in relevant) for x in ps for c in x['changes'])
+        ablations[policy]=dict(status='DISCRIMINATED_BY_WORKLOAD' if differences else 'NOT_DISCRIMINATED_BY_WORKLOAD',
+            changed_requests_vs_P0=differences,mechanism_exercised=mechanism>0,mechanism_changed_requests=mechanism,
+            interpretation='Simulated action difference, not benefit, runtime semantic retrieval or physical reuse')
+    return dict(schema='I5R4_CPU_DISCRIMINATION_V1',scope='STATIC_ONLY',physical_HIT_status='NOT_EVALUATED',
+                parameters=deepcopy(p['policy_parameters']),policy_summary=summary,ablations=ablations,
+                not_discriminated_ablations=[policy for policy,a in ablations.items() if a['status']=='NOT_DISCRIMINATED_BY_WORKLOAD'],children=children,pairwise=pairwise,
+                limitations=['Repeated requests/rotations are dependent observations; counts are decisions, not independent samples.',
+                            'Previously completed sources are a CPU trace assumption, not measured runtime completion/admission.',
+                            'Sentinels are reported separately and excluded from ablation discrimination summaries.',
+                            'Identical decisions are reported honestly; no automatic parameter/workload adjustment.'])
 
 def invariant_tests():
     # Run real tensor-owner/controller invariant tests, not simulator alone.
     import unittest,sys
     sys.path.insert(0,str(ROOT/'tests'))
-    suite=unittest.defaultTestLoader.loadTestsFromNames(['test_r5_i5r4.PolicyOwnerTests','test_r5_i5r4.PolicyTests'])
+    suite=unittest.defaultTestLoader.loadTestsFromNames(['test_r5_i5r4.PolicyOwnerTests','test_r5_i5r4.PolicyTests','test_r5_i5r4.DiscriminationTests'])
     outcome=unittest.TestResult();suite.run(outcome)
     require(outcome.testsRun>0 and not outcome.failures and not outcome.errors and not outcome.skipped,'required no-Torch policy invariant suite failed')
     return dict(run=outcome.testsRun,passed=outcome.testsRun,failed=0,skipped=0)
@@ -307,20 +387,26 @@ def invariant_tests():
 def cpu_validate(experiment,output_dir):
     p,receipt=load(experiment);results={j['child_id']:simulate(j['block']['tasks'],j['policy'],p['policy_parameters'],p['registry']) for j in p['jobs']}
     tests=invariant_tests()
+    report=discrimination(p,results)
     out=output(output_dir,(experiment,p['multi_prepared'],*[x['prepared_path'] for x in p['datasets'].values()],*[x['source_path'] for x in p['datasets'].values()]))
-    write(out/'i4_cpu_audit.json',dict(status='PASS',source=p['source'],plan_id=p['plan_id'],plan_inventory=receipt,simulations=results,
+    write(out/'i4_policy_discrimination.json',report)
+    write(out/'i4_cpu_audit.json',dict(status='PASS',source=p['source'],plan_id=p['plan_id'],plan_inventory=receipt,simulations=results,policy_discrimination_sha256=digest(report),
           policy_tests=tests,GPU_NOT_RUN=True,scope='Real CPU owner invariants plus arrival-only simulation; no actual semantic/GPU HIT guarantee'))
-    seal(out);return dict(status='PASS',plan_id=p['plan_id'],GPU_NOT_RUN=True,tests=tests['run'])
+    seal(out);return dict(status='PASS',plan_id=p['plan_id'],GPU_NOT_RUN=True,tests=tests['run'],policy_discrimination=report)
 
 def cpu_receipt(p,plan_receipt,path):
     e=Evidence(path,max_input_bytes=128*2**20);receipt=e.verify();a=e.json('i4_cpu_audit.json')
     require(a['status']=='PASS' and a['source']==p['source'] and a['plan_id']==p['plan_id'] and a['plan_inventory']==plan_receipt and a['GPU_NOT_RUN'],'CPU validation does not bind exact source/plan')
     require(a['policy_tests']==invariant_tests(),'CPU owner-invariant receipt differs from independent rerun')
-    require(a['simulations']=={j['child_id']:simulate(j['block']['tasks'],j['policy'],p['policy_parameters'],p['registry']) for j in p['jobs']},'CPU simulations changed')
+    expected={j['child_id']:simulate(j['block']['tasks'],j['policy'],p['policy_parameters'],p['registry']) for j in p['jobs']}
+    require(a['simulations']==expected,'CPU simulations changed')
+    report=discrimination(p,expected)
+    require(a['policy_discrimination_sha256']==digest(report) and e.json('i4_policy_discrimination.json')==report,'CPU policy discrimination changed')
     return receipt
 
 def inspect(experiment,cpu_audit,source_commit,require_cpu_validation=False):
     require(require_cpu_validation,'--require-cpu-validation required')
     p,r=load(experiment,source_commit);cpu=cpu_receipt(p,r,cpu_audit)
     return dict(status='PREAPPROVED_SEALED_CAMPAIGN_GPU_NOT_RUN',plan_id=p['plan_id'],source=p['source']['commit'],cpu_audit=cpu,
+                policy_discrimination=Evidence(cpu_audit).json('i4_policy_discrimination.json'),
                 resources=p['resources'],execution_order=[j['child_id'] for j in p['jobs']],trace_checks=p['trace_checks'],selection=[dict(trace=j['block']['trace_unit'],request_id=t['request_id'],sample_id=t['sample_id'],context_sha256=digest_bytes(t['prepared']['sample']['context'].encode()),user=t['user_id'],adapter=t['adapter_id'],input_tokens=len(t['token_ids']),prefix_sha256=digest(t['token_ids'][:512]),role=t['role']) for j in p['jobs'] if j['policy']=='P0' and j['block']['repetition']==0 for t in j['block']['tasks']],transport_maximum=p['transport']['maximum_header_bytes'])

@@ -1,11 +1,11 @@
 """CPU-only policy/campaign fixtures; no GPU performance or HIT claims."""
-import copy,importlib.util,json,os,subprocess,sys,tempfile,time,unittest
+import copy,importlib.util,json,os,re,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 from semcache.edgelora.communication import digest
 from semcache.edgelora.r3a_artifacts import THRESHOLDS,write
 from semcache.edgelora.r5_i5r4_policy import Engine,parameters,PolicyOwner,PolicyController,CAPACITY,factories
-from semcache.edgelora.r5_i5r4 import resource_plan,simulate,cpu_receipt,reviewed,output,schedule,choose,build_trace,check_trace,task_block
+from semcache.edgelora.r5_i5r4 import resource_plan,simulate,cpu_receipt,reviewed,output,schedule,choose,build_trace,check_trace,task_block,discrimination
 from semcache.edgelora.r5_i5r4_analysis import policy_replay,seal_bundle,bundle,aggregate
 from semcache.edgelora.r5_i5r2_tensors import Evidence
 from semcache.edgelora.r5_i5_evidence import seal
@@ -242,6 +242,73 @@ import semcache.edgelora.r5_i5r4,semcache.edgelora.r5_i5r4_policy,semcache.edgel
         self.assertIn('[[ -d logs',text);self.assertIn('set -Eeuo pipefail',text)
         self.assertEqual(subprocess.run(['bash','-n',str(path)],capture_output=True).returncode,0)
 
+class SlurmInvocationTests(unittest.TestCase):
+    """Execute the actual SH with parser-only command recorders, never Slurm/GPU.
+
+    The fake python loads the real argparse parser but does not call main/run.
+    No real git, Conda, timeout or inference command is invoked by this fixture.
+    """
+    def run_shell(self,root,*,omit_cpu=False,logs=True):
+        root=Path(root);binpath=root/'bin';binpath.mkdir();conda=root/'conda/etc/profile.d';conda.mkdir(parents=True)
+        (conda/'conda.sh').write_text('conda() { :; }\n')
+        if logs:(root/'logs').mkdir()
+        for name in ('plan','cpu','runs'):(root/name).mkdir()
+        repo=Path(__file__).resolve().parents[1];script=(repo/'jobs/r5_i5r4_integrated.sh').read_text()
+        if omit_cpu:
+            before,sep,after=script.partition('stage=GPU_CAMPAIGN');gpu,sep2,tail=after.partition('stage=INDEPENDENT_ANALYSIS')
+            self.assertIn('    --cpu-audit "$I4_CPU_AUDIT" \\\n',gpu)
+            gpu=gpu.replace('    --cpu-audit "$I4_CPU_AUDIT" \\\n','',1);script=before+sep+gpu+sep2+tail
+        (root/'job.sh').write_text(script)
+        command={
+            'git':'''#!/bin/bash
+case "$*" in
+ 'branch --show-current') echo exp/raw-semcache-r5-integration ;;
+ 'rev-parse HEAD') echo "$I4_SOURCE_COMMIT" ;;
+ 'status --porcelain --untracked-files=no') : ;;
+ *) exit 90 ;;
+esac
+''',
+            'timeout':'''#!/bin/bash
+while [[ "$1" == --* ]]; do shift; done
+printf '%s\\n' "$1" >> "$I4_TEST_TIMEOUTS"
+shift
+exec "$@"
+''',
+            'python':f'''#!{sys.executable}
+import importlib.util,json,os,sys
+args=sys.argv[1:]
+if args[0]=='-u':args.pop(0)
+assert args.pop(0)=='scripts/148_r5_i5r4.py'
+spec=importlib.util.spec_from_file_location('real_i4_parser',os.environ['I4_TEST_CLI'])
+cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(cli)
+with open(os.environ['I4_TEST_ARGV'],'a') as f:f.write(json.dumps(args)+'\\n')
+cli.parser().parse_args(args)
+'''}
+        for name,text in command.items():p=binpath/name;p.write_text(text);p.chmod(0o700)
+        env=dict(os.environ,PATH=str(binpath)+os.pathsep+os.environ['PATH'],SLURM_JOB_ID='CPU_FIXTURE',SLURMD_NODENAME='moana-y3',I4_NODE='moana-y3',
+                 I4_EXPERIMENT=str(root/'plan'),I4_CPU_AUDIT=str(root/'cpu'),I4_RUN_ROOT=str(root/'runs'),I5_CONDA_ROOT=str(root/'conda'),
+                 I4_SOURCE_COMMIT='e'*40,I4_ENABLE_GPU='1',R5_I5_ENABLE_GPU='1',R5_ENABLE_GPU='1',
+                 I4_TEST_CLI=str(repo/'scripts/148_r5_i5r4.py'),I4_TEST_ARGV=str(root/'argv.jsonl'),I4_TEST_TIMEOUTS=str(root/'timeouts.txt'))
+        env.pop('SLURM_ARRAY_TASK_ID',None);env.pop('SLURM_ARRAY_JOB_ID',None)
+        result=subprocess.run(['bash',str(root/'job.sh')],cwd=root,env=env,capture_output=True,text=True,timeout=20)
+        argv=[json.loads(line) for line in (root/'argv.jsonl').read_text().splitlines()] if (root/'argv.jsonl').exists() else []
+        return result,argv
+    def test_actual_shell_commands_satisfy_real_parser(self):
+        with tempfile.TemporaryDirectory() as d:
+            result,calls=self.run_shell(d);self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual([c[0] for c in calls],['inspect','run','analyze','verify','report'])
+            for c in calls:
+                if c[0]!='report':self.assertEqual(c[c.index('--cpu-audit')+1],str(Path(d)/'cpu'))
+            run=calls[1];self.assertEqual(run[run.index('--runtime-budget-seconds')+1],'68400');self.assertIn('--enable-gpu-experiment',run)
+            self.assertEqual((Path(d)/'timeouts.txt').read_text().splitlines(),['15m','19h','3h','1h','20m'])
+    def test_missing_cpu_audit_in_actual_run_command_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            result,calls=self.run_shell(d,omit_cpu=True);self.assertEqual(result.returncode,2)
+            self.assertEqual([c[0] for c in calls],['inspect','run']);self.assertIn('--cpu-audit',result.stderr);self.assertIn('stage=GPU_CAMPAIGN',result.stderr)
+    def test_missing_logs_rejected_before_any_cli_execution(self):
+        with tempfile.TemporaryDirectory() as d:
+            result,calls=self.run_shell(d,logs=False);self.assertNotEqual(result.returncode,0);self.assertFalse(calls);self.assertIn('logs must exist before job submission',result.stderr)
+
 class WorkloadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -316,6 +383,88 @@ class WorkloadTests(unittest.TestCase):
         rows=[dict(trace_unit=i,reference='P0',policy='P4',D_ms=-10,quality_delta_f1_points=0,warm_target_mean_delta_ms=-1) for i in range(3)]
         r=aggregate({'policies':['P0','P4'],'quality':{'minimum_independent_traces_for_confirmatory':8,'margin_f1_points':2.}},rows,[dict(reference='P0',policy='P4',frozen_tolerance_pass=False,generated_tokens_equal=True,generated_text_equal=True)])['P0_vs_P4']
         self.assertEqual(r['quality_noninferiority'],'DESCRIPTIVE_ONLY');self.assertEqual(r['NUMERICAL_FIDELITY'],'FAIL');self.assertEqual(r['CORRECTNESS_QUALIFIED_SPEEDUP'],'NOT_ESTABLISHED');self.assertEqual(r['independent_traces'],3)
+
+class DiscriminationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):WorkloadTests.setUpClass()
+    def plan(self,parameter=None):
+        from test_r5_i5r3b import Tokenizer
+        groups,_=choose(copy.deepcopy(WorkloadTests.prompts),WorkloadTests.users,2,set())
+        traces=[build_trace(g,Tokenizer(),WorkloadTests.special,42,32) for g in groups]
+        sentinel=copy.deepcopy([traces[0][i] for i in (0,2,7)])
+        for i,t in enumerate(sentinel):
+            t.update(strict=True,request_sequence_number=i);t['policy']['max_new_tokens']=1 if not t['scored'] else 8
+        return dict(jobs=schedule(traces,sentinel,2,42),registry=WorkloadTests.users,policy_parameters=parameter or params())
+    def report(self,p):
+        rs={j['child_id']:simulate(j['block']['tasks'],j['policy'],p['policy_parameters'],p['registry']) for j in p['jobs']}
+        return discrimination(p,rs),rs
+    def test_identical_admission_is_not_discriminated(self):
+        r,_=self.report(self.plan());p0,p1=r['policy_summary']['P0'],r['policy_summary']['P1']
+        self.assertEqual(p0['eligible_512_admission_decisions'],p1['eligible_512_admission_decisions']);self.assertEqual(p1['eligible_512_admission_decisions']['denials'],0)
+        self.assertGreater(p1['admission_decisions']['denials'],0) # Oversized full prompts alone prove nothing about admission policy.
+        self.assertEqual(r['ablations']['P1']['status'],'NOT_DISCRIMINATED_BY_WORKLOAD');self.assertFalse(r['ablations']['P1']['mechanism_exercised'])
+    def test_ttl_capacity_victims_and_lost_opportunities(self):
+        r,_=self.report(self.plan());p0,p2=r['policy_summary']['P0'],r['policy_summary']['P2']
+        self.assertGreater(p2['TTL_expirations'],0);self.assertGreater(p0['capacity_evictions'],0)
+        self.assertGreater(p2['exact_prefix_opportunities']['lost'],0);self.assertEqual(p0['exact_prefix_opportunities']['lost'],0)
+        self.assertTrue(r['ablations']['P2']['mechanism_exercised']);self.assertTrue(r['ablations']['P3']['mechanism_exercised'])
+        child=r['children']['m_t0_r0_P3'];self.assertTrue(all(x['source_request_id'] and x['bytes']==240*2**20 for x in child['capacity_eviction_victims']))
+    def test_pairwise_and_target_only_traffic_separate(self):
+        r,_=self.report(self.plan());self.assertEqual(len(r['pairwise']),5*15)
+        self.assertTrue(all(x['status']=='NOT_COMPARABLE_DIFFERENT_SOURCE_TRAFFIC' for x in r['pairwise'] if x['policy']=='P5'))
+        self.assertEqual(r['physical_HIT_status'],'NOT_EVALUATED');self.assertEqual(r['scope'],'STATIC_ONLY')
+    def test_exploration_cost_denial_reported_without_retuning(self):
+        p=self.plan(parameters(0.,9999.));before=copy.deepcopy(p['policy_parameters']);r,_=self.report(p)
+        a=r['policy_summary']['P1']['eligible_512_admission_decisions'];self.assertGreater(a['denials'],0);self.assertGreater(a['exploration_admissions'],0)
+        self.assertTrue(r['ablations']['P1']['mechanism_exercised']);self.assertEqual(p['policy_parameters'],before);self.assertEqual(r['parameters'],before)
+    def test_scores_or_unused_exploration_flags_do_not_imply_difference(self):
+        p=self.plan();r,rs=self.report(p)
+        for j in p['jobs']:
+            if j['policy']=='P1':
+                for row in rs[j['child_id']]:
+                    if row['admission_decision'] is not None:row['admission_decision']['admission_net_ms']+=1
+        changed=discrimination(p,rs);self.assertEqual(changed['ablations']['P1']['status'],'NOT_DISCRIMINATED_BY_WORKLOAD')
+    def test_missing_policy_or_bad_coverage_rejected(self):
+        p=self.plan();_,rs=self.report(p);bad=copy.deepcopy(p);bad['jobs']=bad['jobs'][1:]
+        with self.assertRaises(ValueError):discrimination(bad,rs)
+        rs[p['jobs'][0]['child_id']].pop()
+        with self.assertRaises(ValueError):discrimination(p,rs)
+    def test_sentinels_do_not_discriminate_measurement_ablations(self):
+        p=self.plan();r,rs=self.report(p)
+        for j in p['jobs']:
+            if j['policy']=='P1' and j['block']['segment']=='STRICT_SENTINEL':rs[j['child_id']][0]['admitted']=None
+        changed=discrimination(p,rs);self.assertEqual(changed['ablations'],r['ablations']);self.assertEqual(changed['policy_summary'],r['policy_summary'])
+    def test_deterministic_report_and_complete_source_denominator(self):
+        p=self.plan();r,rs=self.report(p);self.assertEqual(r,discrimination(p,rs))
+        self.assertEqual(r['policy_summary']['P0']['exact_prefix_opportunities'],{'requests':32,'retained':32,'lost':0})
+        self.assertEqual(r['policy_summary']['P1']['eligible_512_admission_decisions']['candidates'],16)
+
+class CPUReportTests(unittest.TestCase):
+    def plan(self):
+        DiscriminationTests.setUpClass();p=DiscriminationTests().plan()
+        p.update(plan_id='CPU_FIXTURE',source={'commit':'CPU_FIXTURE'},multi_prepared='/fixture_adapters',datasets={})
+        p['resources']=resource_plan(p['jobs'],dict(prefill_seconds_per_token=.001,decode_seconds_per_token=.01,admission_seconds=2,other_request_seconds=.1))
+        p.update(trace_checks=[],transport={'maximum_header_bytes':12345})
+        return p
+    def test_cpu_audit_inspect_and_tamper_recomputation(self):
+        from semcache.edgelora import r5_i5r4 as api
+        p=self.plan();tests={'run':1,'passed':1,'failed':0,'skipped':0}
+        with tempfile.TemporaryDirectory() as d,patch.object(api,'load',return_value=(p,{'TEST_FIXTURE_ONLY':True})),patch.object(api,'invariant_tests',return_value=tests):
+            root=Path(d);r=api.cpu_validate(root/'plan',root/'cpu');self.assertEqual(r['policy_discrimination']['scope'],'STATIC_ONLY')
+            result=api.inspect(root/'plan',root/'cpu','CPU_FIXTURE',require_cpu_validation=True)
+            self.assertEqual(result['policy_discrimination'],r['policy_discrimination']);self.assertEqual(result['resources']['required_free_disk_bytes'],512*2**30)
+            report=json.loads((root/'cpu/i4_policy_discrimination.json').read_text());report['ablations']['P1']['status']='DISCRIMINATED_BY_WORKLOAD'
+            write(root/'cpu/i4_policy_discrimination.json',report);seal(root/'cpu')
+            with self.assertRaisesRegex(ValueError,'discrimination changed'):api.inspect(root/'plan',root/'cpu','CPU_FIXTURE',require_cpu_validation=True)
+    def test_two_by_two_budget_and_timeout_totals(self):
+        p=self.plan();r=p['resources'];self.assertEqual(len(p['jobs']),30);self.assertEqual(r['evidence_budget_bytes'],480*2**30);self.assertEqual(r['required_free_disk_bytes'],512*2**30)
+        self.assertAlmostEqual(r['estimated_CPU_verification_seconds'],2878.99,places=1);self.assertLess(r['estimated_CPU_verification_seconds'],3600)
+        self.assertEqual(r['GPU_phase_limit_seconds'],68400);self.assertEqual(r['allocation_seconds'],85800);self.assertEqual(r['allocation_headroom_seconds'],750)
+        self.assertEqual(sum(r[k] for k in ('GPU_phase_limit_seconds','analysis_limit_seconds','verification_limit_seconds','report_limit_seconds','inspect_limit_seconds','timeout_kill_after_reserve_seconds','allocation_headroom_seconds')),r['allocation_seconds'])
+        script=(Path(__file__).resolve().parents[1]/'jobs/r5_i5r4_integrated.sh').read_text()
+        limits=re.findall(r'timeout --signal=TERM --kill-after=(\d+)s (\d+)([mh])',script)
+        self.assertEqual(len(limits),5);self.assertEqual(sum(int(k) for k,n,u in limits),r['timeout_kill_after_reserve_seconds'])
+        self.assertEqual(sum(int(n)*{'m':60,'h':3600}[u]+int(k) for k,n,u in limits)+r['allocation_headroom_seconds'],r['allocation_seconds'])
 
 class NativeCPU(unittest.TestCase):
     @unittest.skipUnless(all(importlib.util.find_spec(n) for n in ('torch','transformers','numpy')),'installed native OPT CPU integration NOT_RUN: dependencies unavailable')

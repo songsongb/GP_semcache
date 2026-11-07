@@ -99,6 +99,30 @@ Receipts separate engine compute, retention/expiration, and original admission
 intervals. Receipt IO and synchronization perturb measurements; component timers
 are nested in application time and must not be added to it.
 
+CPU validation now seals `i4_policy_discrimination.json` and binds its SHA in
+`i4_cpu_audit.json`. `inspect` prints the independently recomputed report. It lists
+all admission decisions/scores by policy, capacity denials separately from eligible
+512-token source denials, actual-use-of-exploration flags, simulated TTL expiry
+and capacity victims, and exact-prefix opportunities retained/lost. Victim keys
+are simulated token digests, not physical cache grants. The reporting oracle may
+remember previously completed capacity-eligible sources; the on-line Engine is
+unchanged and never receives that oracle or future requests.
+
+Pairwise P0..P4 comparisons use action outcomes on identical arrivals, not score
+values, unused flags or policy names. P5 is labeled
+`NOT_COMPARABLE_DIFFERENT_SOURCE_TRAFFIC`. Measurement and sentinel reports are
+separate; sentinel differences cannot make a measured ablation count as exercised.
+An ablation with identical actions to P0 is explicitly
+`NOT_DISCRIMINATED_BY_WORKLOAD`, even when its admission score was evaluated or
+it denied oversized1280-token prompts exactly as the baseline would.
+
+In particular, positive expected value for every eligible512-token source can
+make P1 identical to P0. A valid CPU audit is not proof that every mechanism was
+discriminated. Review `not_discriminated_ablations` before GPU approval. Parameters
+are never adjusted by validation. Any alternative prior/cost requires a scientific
+justification, operator pre-registration and a fresh sealed plan under reviewed
+source; do not change the old plan or select parameters from future trace accesses.
+
 ## Fixed real-data workload
 
 Preparation reconstructs Qasper prompts from sealed original records using the
@@ -293,7 +317,7 @@ I4_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 export I4_EXPERIMENT="$PWD/results/r5/i5r/controlled_hit/i5r4/plan_$I4_STAMP"
 export I4_CPU_AUDIT="$PWD/results/r5/i5r/controlled_hit/i5r4/cpu_$I4_STAMP"
 export I4_RUN_ROOT="$PWD/results/r5/i5r/controlled_hit/i5r4/runs_$I4_STAMP"
-mkdir -p logs
+mkdir -p logs "$I4_RUN_ROOT"
 df -h "$PWD/results"
 free -h
 
@@ -327,17 +351,12 @@ python scripts/148_r5_i5r4.py inspect \
  --experiment "$I4_EXPERIMENT" --cpu-audit "$I4_CPU_AUDIT" \
  --source-commit "$I4_SOURCE_COMMIT" --require-cpu-validation
 
-# Inspect simulation tradeoffs before manual approval. These are potential
-# exact-prefix opportunities, NEVER measured semantic/physical HITs.
+# Inspect the sealed discrimination table before manual approval. These are
+# STATIC_ONLY opportunities, NEVER measured semantic/physical HITs.
 python - <<'PY'
 import os,json,pathlib
-p=json.loads((pathlib.Path(os.environ['I4_EXPERIMENT'])/'i4_plan.json').read_text())
-a=json.loads((pathlib.Path(os.environ['I4_CPU_AUDIT'])/'i4_cpu_audit.json').read_text())
-for j in p['jobs']:
- if j['block']['segment']!='MEASUREMENT': continue
- rows=a['simulations'][j['child_id']]
- print('STATIC_ONLY',j['child_id'],'prefix_opportunities',sum(x['simulated_prefix_opportunity'] is not None for x in rows),
-       'expired',sum(len(x['expired']) for x in rows),'victims',sum(len(x['victims']) for x in rows))
+r=json.loads((pathlib.Path(os.environ['I4_CPU_AUDIT'])/'i4_policy_discrimination.json').read_text())
+print(json.dumps({k:r[k] for k in ('scope','physical_HIT_status','policy_summary','ablations','not_discriminated_ablations')},indent=2))
 PY
 ```
 
@@ -369,23 +388,28 @@ No array, nested submission, automatic retry, alternate node fallback or automat
 campaign extension. The job requires actual Slurm job/node/CPU/RAM, all three GPU
 opt-ins, absolute explicit paths, clean tracked source and pinned reviewed commit.
 Log directory must exist before submission because Slurm opens logs first.
+The existing run-root parent must also exist. Run `mkdir -p logs "$I4_RUN_ROOT"`
+before submission; the job explicitly checks both and does not create Slurm's
+log directory too late. The run invocation now passes mandatory
+`--cpu-audit "$I4_CPU_AUDIT"`, just as inspect/analyze/verify do.
 
 Output names are printed by the job:
 
 ```
-$I4_RUN_ROOT/campaign_<SLURM_JOB_ID>/
+$I4_RUN_ROOT/run_<SLURM_JOB_ID>/
   i4_run_config.json, i4_run_status.json, i4_bundle_manifest.json
   i4_preflight_input.json, i4_preflight.stdout, i4_preflight.stderr
   children/<sealed_child_id>/i4_child_status.json, i5_output_manifest.json
   children/<sealed_child_id>/condition/<original I5 ES/UD evidence>
-$I4_RUN_ROOT/campaign_<SLURM_JOB_ID>_audit/
+$I4_RUN_ROOT/run_<SLURM_JOB_ID>_audit/
   i4_results.json, i4_independent_audit.json, i4_summary.json
   i4_policy_totals.json, i4_numerical_fidelity.json, i4_request_metrics.jsonl
-$I4_RUN_ROOT/campaign_<SLURM_JOB_ID>_verification/i4_verification.json
-$I4_RUN_ROOT/campaign_<SLURM_JOB_ID>_report/i4_final_decision.json, i4_report.md
+$I4_RUN_ROOT/run_<SLURM_JOB_ID>_verification/i4_verification.json
+$I4_RUN_ROOT/run_<SLURM_JOB_ID>_report/i4_final_decision.json, i4_report.md
 ```
 
-Plan: `i4_plan.json`; CPU audit: `i4_cpu_audit.json`; all regular output directories
+Plan: `i4_plan.json`; CPU audit: `i4_cpu_audit.json` plus
+`i4_policy_discrimination.json`; all regular output directories
 have separate `i5_output_manifest.json` SHA inventories. Coordinator uses its own
 child-referencing bundle seal. Engine receipts live in each `i4_policy.jsonl`;
 actual backend/environment receipts are separate from historical identities.
@@ -429,7 +453,7 @@ in this initial campaign; future3C covers broader datasets. Trained personalized
 LoRA,30 physical devices, general multi-model benefit and a numerical correction
 are not evaluated. No NF1 GPU causality experiment is run in this stage.
 
-## Final local validation and delivery
+## Original implementation local validation and delivery
 
 Added8 files: the four `r5_i5r4*.py` modules,148 CLI, integrated shell job,
 `test_r5_i5r4.py` and this guide. No existing tracked production source or
@@ -458,3 +482,55 @@ reason to tune parameters using future requests or suppress negative outcomes.
 Real BE/NF1/3A inputs are absent locally, so real preparation, CPU asset/resource
 validation and new GPU results remain **NOT_RUN**. No plan, preapproval or GPU
 success is claimed from fixtures. No Slurm submission, remote access or Git push.
+
+## Pre-GPU review patch validation
+
+The reviewed wrapper had omitted `run --cpu-audit`, lacked the required log
+directory check, and used unbounded inspect/120s kill-after settings inconsistent
+with its resource accounting. The patch adds the missing argument/check and
+uses the already-declared inspect15m/five30s cleanup reserves. The automatic
+19h/3h/1h/20m run/analyze/verify/report chain and23:50 allocation are preserved.
+
+New tests execute the actual shell script with parser-only command recorders and
+the real148 argparse parser. They never call inference or Slurm. All five public
+invocations must parse; intentionally removing `run --cpu-audit` rejects in the
+GPU_CAMPAIGN stage and prevents later stages. Missing logs rejects before CLI
+dispatch. Existing static assertions were retained, with no weakening.
+
+Final CPU checks for this patch:
+
+- Focused I4:56 PASS /0 FAIL /1 SKIP (57 tests).
+- Relevant combined regressions, including focused:228 PASS /0 FAIL /2 SKIP
+  (230 tests; do not double-count focused results).
+- Required CPU audit invariant entry point:30 PASS /0 FAIL /0 SKIP, overlapping
+  the suites above. This now includes policy-discrimination tests.
+- CLI help/dispatch, actual shell invocation/parser checks, `bash -n`, Python
+  syntax/whitespace and `git diff --check`:PASS.
+- Native OPT CPU and actual HF OPT cache tests remain NOT_RUN locally because
+  Torch/Transformers/NumPy dependencies are unavailable. These must run in the
+  SERAPH semcache environment; real prepare still requires installed OPT checks.
+
+The fixed2x2 template was rechecked:30 child budgets *16GiB +32GiB reserve =
+**512GiB required free disk**, and estimated verification **2878.99s** under the
+existing declared IO/CPU assumptions. Actual available SERAPH disk and GPU-time
+acceptance remain NOT_VERIFIED. No cells or policies were removed.
+
+For the positive-score **synthetic CPU fixture only** (saving100ms,
+admission20ms, retention.001ms/MiB/request; not campaign calibration or proposed
+new settings), four measured cells produce:
+
+| Policy | Eligible source admissions/denials | TTL expirations | Capacity victims | Prefix opportunities retained/lost | Versus P0 |
+|---|---|---|---|---|---|
+| P0 |16/0|0|8|32/0|Baseline|
+| P1 |16/0|0|8|32/0|NOT_DISCRIMINATED_BY_WORKLOAD|
+| P2 |16/0|8|4|24/8|Discriminated; no benefit implied|
+| P3 |16/0|0|4|28/4|Discriminated; no benefit implied|
+| P4 |16/0|8|4|24/8|Discriminated; no benefit implied|
+| P5 |0/0|0|0|0/0|Different-source-traffic economic control|
+
+Exploration admissions are zero in that fixture. Separate loss/cold-start tests
+verify that exploration and cost denials are reported when they occur. No real
+policy parameters or workload changed. Real-data discrimination is **NOT_RUN**;
+it must be recomputed from the fresh sealed plan/CPU audit after review and commit.
+Identical P1 behavior is a scientific limitation, not permission to retune it
+using future workload accesses. Existing plan/audit seals must never be edited.

@@ -10,7 +10,7 @@
 #SBATCH --chdir=/data/khuss/repos/GP_semcache
 #SBATCH --output=/data/khuss/repos/GP_semcache/logs/r5_i5r4_%j.out
 #SBATCH --error=/data/khuss/repos/GP_semcache/logs/r5_i5r4_%j.err
-# The user supplies --nodelist="$I4_NODE" at sbatch submission.
+# The user supplies --nodelist="$I4_NODE" at submission.
 # This job runs one GPU campaign and automatically audits/verifies/reports it.
 # Requires the I5R-4 CLI implemented to the contract below.
 set -Eeuo pipefail
@@ -33,6 +33,7 @@ trap 'rc=$?; echo "I5R4_ABORTED stage=${stage} exit=${rc} job=${SLURM_JOB_ID:-un
 [[ -d "$I4_EXPERIMENT" ]] || { echo 'I4_EXPERIMENT missing' >&2; exit 2; }
 [[ -d "$I4_CPU_AUDIT" ]] || { echo 'I4_CPU_AUDIT missing' >&2; exit 2; }
 [[ -d "$I4_RUN_ROOT" ]] || { echo 'I4_RUN_ROOT parent must exist before submission' >&2; exit 2; }
+[[ -d logs ]] || { echo 'logs must exist before job submission (Slurm opens logs before this script)' >&2; exit 2; }
 
 source "$I5_CONDA_ROOT/etc/profile.d/conda.sh"
 conda activate semcache
@@ -41,6 +42,7 @@ export HF_HOME=/data/khuss/huggingface HF_HUB_CACHE=/data/khuss/huggingface/hub
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
+export PYTHONHASHSEED=42
 export TMPDIR="${SLURM_TMPDIR:-/tmp}"
 
 I4_RUN="$I4_RUN_ROOT/run_${SLURM_JOB_ID}"
@@ -53,7 +55,8 @@ done
 
 stage=PREFLIGHT
 printf '\n[I5R4 %s] %s\n' "$stage" "$(date -u +%FT%TZ)"
-python -u scripts/148_r5_i5r4.py inspect \
+timeout --signal=TERM --kill-after=30s 15m \
+ python -u scripts/148_r5_i5r4.py inspect \
   --experiment "$I4_EXPERIMENT" \
   --cpu-audit "$I4_CPU_AUDIT" \
   --source-commit "$I4_SOURCE_COMMIT" \
@@ -61,9 +64,10 @@ python -u scripts/148_r5_i5r4.py inspect \
 
 stage=GPU_CAMPAIGN
 printf '\n[I5R4 %s] %s\n' "$stage" "$(date -u +%FT%TZ)"
-timeout --signal=TERM --kill-after=120s 19h \
+timeout --signal=TERM --kill-after=30s 19h \
   python -u scripts/148_r5_i5r4.py run \
     --experiment "$I4_EXPERIMENT" \
+    --cpu-audit "$I4_CPU_AUDIT" \
     --source-commit "$I4_SOURCE_COMMIT" \
     --output-dir "$I4_RUN" \
     --runtime-budget-seconds 68400 \
@@ -71,7 +75,7 @@ timeout --signal=TERM --kill-after=120s 19h \
 
 stage=INDEPENDENT_ANALYSIS
 printf '\n[I5R4 %s] %s\n' "$stage" "$(date -u +%FT%TZ)"
-timeout --signal=TERM --kill-after=120s 3h \
+timeout --signal=TERM --kill-after=30s 3h \
   python -u scripts/148_r5_i5r4.py analyze \
     --experiment "$I4_EXPERIMENT" \
     --run "$I4_RUN" \
@@ -80,7 +84,7 @@ timeout --signal=TERM --kill-after=120s 3h \
 
 stage=INDEPENDENT_VERIFY
 printf '\n[I5R4 %s] %s\n' "$stage" "$(date -u +%FT%TZ)"
-timeout --signal=TERM --kill-after=120s 1h \
+timeout --signal=TERM --kill-after=30s 1h \
   python -u scripts/148_r5_i5r4.py verify \
     --experiment "$I4_EXPERIMENT" \
     --run "$I4_RUN" \
@@ -90,7 +94,7 @@ timeout --signal=TERM --kill-after=120s 1h \
 
 stage=FINAL_REPORT
 printf '\n[I5R4 %s] %s\n' "$stage" "$(date -u +%FT%TZ)"
-timeout --signal=TERM --kill-after=120s 20m \
+timeout --signal=TERM --kill-after=30s 20m \
   python -u scripts/148_r5_i5r4.py report \
     --experiment "$I4_EXPERIMENT" \
     --run "$I4_RUN" \
