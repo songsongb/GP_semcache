@@ -14,13 +14,24 @@ def main(argv=None):
     p.add_argument('--expected-source-commit',default=api.REFERENCE_COMMIT)
     p.add_argument('--prepare-revalidation',action='store_true')
     p.add_argument('--source-commit');p.add_argument('--cuda-events',action='store_true')
-    args=vars(p.parse_args(argv));prepare=args.pop('prepare_revalidation');source=args.pop('source_commit');cuda=args.pop('cuda_events')
+    p.add_argument('--validation-mode',choices=('EAGER_FULL_PROOF','REQUEST_SCOPED_VERIFIED'))
+    p.add_argument('--compare-validation',action='store_true')
+    for name in ('verification','other-experiment','other-run','other-audit','other-verification'):p.add_argument('--'+name)
+    args=vars(p.parse_args(argv));prepare=args.pop('prepare_revalidation');source=args.pop('source_commit');cuda=args.pop('cuda_events');validation=args.pop('validation_mode');compare=args.pop('compare_validation')
+    comparison={name:args.pop(name) for name in ('verification','other_experiment','other_run','other_audit','other_verification')}
     try:
+        if compare:
+            if prepare or source or cuda or validation:p.error('--compare-validation cannot prepare or override modes')
+            if not all(comparison.values()):p.error('--compare-validation requires both verification directories and all --other-* paths')
+            from semcache.edgelora.r5_subsequence_integrity import compare_validation
+            result=compare_validation(**args,**comparison)
+            print(json.dumps(result,indent=2));return 0
+        if any(comparison.values()):p.error('comparison paths require --compare-validation')
         if prepare:
             if not source:p.error('--prepare-revalidation requires --source-commit')
-            result=api.prepare_revalidation(**args,source_commit=source,cuda_events=cuda)
+            result=api.prepare_revalidation(**args,source_commit=source,cuda_events=cuda,validation_mode=validation)
         else:
-            if source or cuda:p.error('--source-commit/--cuda-events require --prepare-revalidation')
+            if source or cuda or validation:p.error('--source-commit/--cuda-events/--validation-mode require --prepare-revalidation')
             result=api.diagnose(**args)
         print(json.dumps(result,indent=2));return 0
     except (ValueError,KeyError,OSError,ImportError) as exc:

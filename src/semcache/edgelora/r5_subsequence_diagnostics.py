@@ -19,7 +19,7 @@ CONDITIONS=('FULL_RECOMPUTE','SEMANTIC_NO_REUSE','SEMCACHE_SUBSEQUENCE')
 UNKNOWN='NOT_OBSERVABLE'
 
 def current_source():
-    files=[ROOT/'src/semcache/edgelora'/name for name in ('r5_subsequence_diagnostics.py','r5_subsequence_profile.py','r5_subsequence_audit.py',
+    files=[ROOT/'src/semcache/edgelora'/name for name in ('r5_subsequence_diagnostics.py','r5_subsequence_profile.py','r5_subsequence_integrity.py','r5_subsequence_audit.py',
         'r5_i5r2_tensors.py','r5_i5r2_analysis.py','r5_i5_evidence.py','r5_multi_artifacts.py','communication.py','r3a_artifacts.py','r3a_tiny.py')]
     files.append(ROOT/'scripts/152_r5_subsequence_diagnostics.py')
     return dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
@@ -223,6 +223,8 @@ def diagnose(experiment,run,audit,output_dir,expected_source_commit=REFERENCE_CO
     identity=records[CONDITIONS[2]]['config']['physical'];entry_bytes=3*3*identity['layers']*identity['hidden_size']*DTYPES[identity['dtype']][1]
     hotpath=dict(measurement=UNKNOWN,reconstructed_valid_calls=validations,reconstructed_entry_proof_tensor_serialization_bytes=validations*entry_bytes,
         scope='static reconstruction for original valid() implementation and selected exact-mode windows; NOT measured time/transfer traffic; additional evidence/protocol serialization excluded',provenance=provenance['source']['historical_source_verification'])
+    hotpath['validation_mode']=records[CONDITIONS[2]]['results'][1].get('validation_mode','EAGER_FULL_PROOF')
+    hotpath['reconstruction_scope']='original eager behavior only; not a scoped-mode measurement'
     target_profile=records[CONDITIONS[2]]['results'][1].get('diagnostics')
     if target_profile is not None:
         from .r5_subsequence_profile import validate_receipt
@@ -270,16 +272,25 @@ def diagnose(experiment,run,audit,output_dir,expected_source_commit=REFERENCE_CO
     (out/'subsequence_diagnosis.md').write_text('\n'.join(text)+'\n');seal(out)
     return dict(status=result['status'],ROOT_CAUSE=result['ROOT_CAUSE'],first_difference=first,layer_count=len(layers),output_dir=str(out))
 
-def prepare_revalidation(experiment,run,audit,output_dir,source_commit,expected_source_commit=REFERENCE_COMMIT,cuda_events=False):
+def prepare_revalidation(experiment,run,audit,output_dir,source_commit,expected_source_commit=REFERENCE_COMMIT,cuda_events=False,validation_mode=None):
     p,records,export,provenance=history(experiment,run,audit,expected_source_commit)
     from .r5_i5r1_plan import source_identity
     from .r5_subsequence_profile import VERSION
     from .r5_i5r_parallel import output
     current=source_identity();require(current['commit']==source_commit and current['commit']!=p['source']['commit'],'reviewed NEW revalidation source differs')
     new=copy.deepcopy(p);new['source']=current;new['validation_test_sha256']=sha(ROOT/'tests/test_r5_subsequence_generation.py')
+    # Do not carry an earlier D5 mode into an otherwise ordinary D1-D4 plan.
+    require('integrity_validation' not in new or validation_mode is not None,'D5 input requires an explicit new validation mode')
     new['diagnostics']=dict(version=VERSION,cuda_events=cuda_events,historical_inputs=provenance,classification='DIAGNOSTIC_ONLY_UNCHANGED_ARITHMETIC',instrumentation_files=diagnostic_source_files(source_commit))
+    if validation_mode is not None:
+        from .r5_subsequence_integrity import MODES,SCHEMA,THREAT_MODEL
+        require(validation_mode in MODES,'invalid validation mode')
+        name='tests/test_r5_subsequence_validation.py';blob=subprocess.run(['git','show',source_commit+':'+name],cwd=ROOT,capture_output=True)
+        require(blob.returncode==0 and digest_bytes(blob.stdout)==sha(ROOT/name),'commit reviewed D5 tests')
+        new['integrity_validation']=dict(schema=SCHEMA,mode=validation_mode,threat_model=THREAT_MODEL,test_file=name,test_sha256=sha(ROOT/name))
+        new['diagnostics']['instrumentation_files'][name]=sha(ROOT/name)
     out=output(output_dir,(experiment,run,audit,p['multi'],p['dataset']));write(out/'subsequence_plan.json',new);seal(out)
-    return dict(status='SEALED_CPU_PREPARED_GPU_NOT_RUN',source=source_commit,workload='identical historical sealed tasks',output_dir=str(out))
+    return dict(status='SEALED_CPU_PREPARED_GPU_NOT_RUN',source=source_commit,workload='identical historical sealed tasks',validation_mode=validation_mode or 'EAGER_FULL_PROOF',output_dir=str(out))
 
 def diagnostic_source_files(commit):
     names=('scripts/151_r5_subsequence_generation.py','scripts/152_r5_subsequence_diagnostics.py','jobs/r5_subsequence_generation.sh','tests/test_r5_subsequence_diagnostics.py')
