@@ -63,7 +63,16 @@ def load(experiment):
         from .r5_subsequence_profile import VERSION as PROFILE_VERSION
         d=p['diagnostics'];require(d['version']==PROFILE_VERSION and type(d['cuda_events']) is bool and d['classification']=='DIAGNOSTIC_ONLY_UNCHANGED_ARITHMETIC','unknown diagnostic configuration')
         from .r5_subsequence_diagnostics import diagnostic_source_files
-        require(d['instrumentation_files']==diagnostic_source_files(p['source']['commit']),'diagnostic CLI/job/test source changed')
+        expected_files=diagnostic_source_files(p['source']['commit'])
+        if 'integrity_validation' in p:
+            from .r5_subsequence_integrity import SCHEMA,MODES,THREAT_MODEL
+            validation=p['integrity_validation'];name='tests/test_r5_subsequence_validation.py'
+            require(validation==dict(schema=SCHEMA,mode=validation['mode'],threat_model=THREAT_MODEL,test_file=name,test_sha256=sha(ROOT/name)) and validation['mode'] in MODES,'sealed validation configuration differs')
+            expected_files[name]=sha(ROOT/name)
+            blob=subprocess.run(['git','show',p['source']['commit']+':'+name],cwd=ROOT,capture_output=True)
+            require(blob.returncode==0 and __import__('hashlib').sha256(blob.stdout).hexdigest()==expected_files[name],'D5 test source differs')
+        require(d['instrumentation_files']==expected_files,'diagnostic CLI/job/test source changed')
+    require('integrity_validation' not in p or 'diagnostics' in p,'D5 requires explicit diagnostic plan')
     require(sha(p['registry_path'])==p['registry_sha256'],'dataset registry changed')
     paths,m,pm,specs,users,tok=assets(p['registry_path'],p['multi']);samples,_=provenance(p['dataset'],'qasper')
     require(m['base_prepared']==p['base_prepared'],'base model preparation differs')
@@ -140,13 +149,18 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
         writer=Writer(out/'es',budget_bytes=p['budget_bytes_per_condition'])
         channel=Channel(connect(read(out/'ud/ready.json')['port']),session,spec['matrix_sha256'],timeout=1800,trace=lambda r:append(out/'es/wire.jsonl',r))
         index=None if condition=='FULL_RECOMPUTE' else SemanticIndex(encoder_for({'fixture':False,'semantic_revision':TINYBERT_REVISION},p['tasks']),clusters=1)
-        owner=None if index is None else PhysicalOwner(identity,registry,evidence=writer,trace=lambda r:append(out/'es/policy.jsonl',r))
+        validation_mode=p.get('integrity_validation',{}).get('mode','EAGER_FULL_PROOF')
+        owner=None if index is None else PhysicalOwner(identity,registry,evidence=writer,trace=lambda r:append(out/'es/policy.jsonl',r),validation_mode=validation_mode)
         initialized=time.monotonic_ns();rows=[];reqs=[]
         for task in p['tasks']:
             req=request(task,task['token_ids'],task['policy'],identity);reqs.append(req)
             from .r5_subsequence_profile import Profiler
             profiler=None if 'diagnostics' not in p else Profiler(cuda_events=p['diagnostics']['cuda_events'],device=driver.device)
             result=generate(driver.model,driver.adapter,tokenizer,req,channel,owner,index,condition=condition,mode=p['mode'],allow_approximate=p['allow_approximate'],evidence=writer,profiler=profiler)
+            result['validation_mode']=validation_mode
+            if 'diagnostics' in result:
+                result['diagnostics']['validation_mode']=validation_mode
+                result['diagnostics']['integrity_validation']=None if owner is None else {k:v for k,v in owner.validation.report().items() if k!='authorizations'}
             data=result.pop('logits_blob');result['logits']=dict(file=writer.blob(data,req['request_id']+'_logits.bin'),dtype='float32',shape=result['logits_shape'],sha256=__import__('hashlib').sha256(data).hexdigest())
             result.update(sample_id=task['sample_id'],scored=task['scored'],quality=score(task['prepared']['sample'],result['generated_text'],task['prepared']['template_version']) if task['scored'] else None)
             end=time.monotonic_ns();result['post_generation_evidence_quality_ms']=(end-result['completion_ns'])/1e6
@@ -155,7 +169,7 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
         channel.send(header('STOP','shutdown',-1));channel.recv(kind='BYE');process.wait(timeout=60);require(process.returncode==0,'CPU UD failed')
         write(out/'requests.json',reqs);write(out/'results.json',rows);writer.check()
         require(torch.cuda.max_memory_allocated(0)<22*2**30,'actual GPU allocation peak exceeded22GiB')
-        write(out/'identity.json',dict(physical=identity,contract=contract,model_identity=runtime_view(pm,spec)['identity'],gpu=gpu,gpu_identity_receipt=gpu_identity_receipt,gpu_loaded_bytes=gpu_loaded_bytes,gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(0),gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(0),registry=registry,source=p['source'],plan_inventory=pr,condition=condition,semantic_encoder=None if index is None else index.encoder.metadata,initialization_ms=(initialized-begin)/1e6,warmup_requests=0))
+        write(out/'identity.json',dict(physical=identity,contract=contract,model_identity=runtime_view(pm,spec)['identity'],gpu=gpu,gpu_identity_receipt=gpu_identity_receipt,gpu_loaded_bytes=gpu_loaded_bytes,gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(0),gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(0),registry=registry,source=p['source'],plan_inventory=pr,condition=condition,validation_mode=validation_mode,semantic_encoder=None if index is None else index.encoder.metadata,initialization_ms=(initialized-begin)/1e6,warmup_requests=0))
         status['status']='COMPLETE'
     except BaseException as exc:primary=exc;status['reason']=repr(exc);raise
     finally:
@@ -210,6 +224,9 @@ def cpu_validate(experiment,output_dir):
     if 'diagnostics' in p:
         from test_r5_subsequence_diagnostics import Diagnostics
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(Diagnostics))
+    if 'integrity_validation' in p:
+        from test_r5_subsequence_validation import Validation
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(Validation))
     result=unittest.TestResult();suite.run(result)
     failed=len(result.failures)+len(result.errors);skipped=len(result.skipped)
     require(not failed and not skipped,'native CPU generation validation failed/skipped: '+str(result.errors+result.failures+result.skipped))

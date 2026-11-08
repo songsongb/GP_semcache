@@ -97,15 +97,20 @@ def generate_loop(req,forward,complete,decode_text,*,synchronize=lambda:None):
                 application_ttft_ms=(steps[0]['available_ns']-begin)/1e6,model_ttft_ms=(steps[0]['available_ns']-begin)/1e6,prefill_ms=(prefill_end-begin)/1e6,decode_ms=sum(s['wall_ms'] for s in steps[1:]),admission_completion_ms=(end-model_end)/1e6)
 
 def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None,profiler=None):
-    if profiler is None:return _generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+    if profiler is None:
+        try:return _generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+        except BaseException:
+            if owner is not None:owner.abort()
+            raise
     try:
         with profiler.activate(req['request_id']):
             result=_generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
     except BaseException as primary:
+        if owner is not None:owner.abort()
         if evidence is not None:
             try:
                 import json
-                record=dict(status='FAILED',reason=repr(primary),profile=profiler.finish());data=json.dumps(record,sort_keys=True).encode()
+                record=dict(status='FAILED',reason=repr(primary),profile=profiler.finish(),integrity_validation=None if owner is None else owner.validation.report());data=json.dumps(record,sort_keys=True).encode()
                 require(len(data)<=8*2**20,'failed profile metadata exceeds8MiB')
                 evidence.blob(data,req['request_id']+'_FAILED_profile.json')
             except BaseException as exc:

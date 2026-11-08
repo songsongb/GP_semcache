@@ -12,6 +12,7 @@ from semcache.cache.cache_entry import CacheEntry
 from semcache.cache.metric_manager import actual_attention_impact
 from semcache.semantic.hit_selection import select_nonoverlapping
 from .r5_subsequence_profile import CURRENT,call,profiled
+from .r5_subsequence_integrity import EAGER,SCOPED,RequestValidation
 
 EXACT='EXACT_CONTEXT_VERIFIED'
 APPROX='APPROXIMATE_SUBSEQUENCE_TOTAL_QKV'
@@ -21,16 +22,18 @@ def tensor_proof(t):
     data=call('tensor_serialization_host_transfer_inclusive',blob,t,byte_count=t.numel()*t.element_size())
     return dict(shape=list(t.shape),dtype=str(t.dtype),sha256=call('tensor_sha256',digest_bytes,data,byte_count=len(data)))
 @profiled('entry_proof_all_layers')
-def entry_proof(entry):
+def entry_proof(entry,*,fingerprints=None):
     p=CURRENT.get()
     if p is not None:p.entry(entry.key)
-    return digest(dict(metadata=entry.qkv_metadata,positions=entry.positions,tokens=entry.token_ids,size=entry.size_bytes,
-                       tensors={str(i):[tensor_proof(t) for t in ts] for i,ts in entry.tensors.items()}))
+    tensors={str(i):[tensor_proof(t) for t in ts] for i,ts in entry.tensors.items()}
+    if fingerprints is not None:fingerprints.update(tensors)
+    return digest(dict(metadata=entry.qkv_metadata,positions=entry.positions,tokens=entry.token_ids,size=entry.size_bytes,tensors=tensors))
 
 class PhysicalOwner:
-    def __init__(self,identity,registry,*,capacity=512*2**20,trace=lambda r:None,evidence=None):
+    def __init__(self,identity,registry,*,capacity=512*2**20,trace=lambda r:None,evidence=None,validation_mode=EAGER):
         self.bridge=MStageShadow(identity,registry,capacity=capacity,trace=trace);self.trace=trace;self.active=None;self.proofs={}
-        self.evidence=evidence
+        self.evidence=evidence;self.admission_bindings={}
+        self.validation_mode=validation_mode;self.validation=RequestValidation(self,validation_mode,entry_proof,tensor_proof)
     @property
     def cache(self):return self.bridge.cache
     def begin(self,req,assignment,*,mode=EXACT,allow_approximate=False,reuse=True):
@@ -39,6 +42,7 @@ class PhysicalOwner:
         selected=p['selected'] if reuse else []
         if mode==EXACT:selected=[h for h in selected if h.entry.positions==(h.window.start,h.window.end) and h.entry.qkv_metadata['source_token_ids'][:h.window.end]==req['token_ids'][:h.window.end]]
         self.active=dict(req=p['req'],cluster=p['cluster'],windows=p['windows'],selected=selected,mode=mode,captures={},inputs={},records=[],consumed=set(),seen=set())
+        self.validation.start(p['req'],selected)
         observer=CURRENT.get()
         if observer is not None:
             filtered=[]
@@ -57,14 +61,29 @@ class PhysicalOwner:
         return report
     @profiled('owner_valid')
     def valid(self,entry):
+        start=time.monotonic_ns()
+        try:return self._valid(entry)
+        except BaseException:
+            if self.validation_mode==EAGER and self.validation.metrics is not None:self.validation.metrics['integrity_check_failures']+=1
+            raise
+        finally:
+            if self.validation.metrics is not None:self.validation.metrics['owner_valid_wall_ms']+=(time.monotonic_ns()-start)/1e6
+    def _valid(self,entry):
+        if self.validation_mode==SCOPED:
+            try:self.validation.verify(entry);return None
+            except BaseException:self.abort();raise
         require(self.cache.entries.get(entry.key) is entry and entry.tensors is not None,'stale/missing tensor grant')
         require(entry.qkv_metadata['physical_identity']==self.bridge.identity and entry.qkv_metadata['completed'] and entry.qkv_metadata['component_scope']=='total_qkv','QKV ownership differs')
-        require(self.proofs.get(entry.key)==entry_proof(entry),'cached tensor/metadata integrity failure; no fallback')
+        require(self.proofs.get(entry.key)==self.validation.full(entry),'cached tensor/metadata integrity failure; no fallback')
     def project(self,layer,role,x,native,session):
         p=CURRENT.get()
-        if p is None:return self._project(layer,role,x,native,session)
-        with p.location(layer,role),p.scope('projection_path_inclusive'):
-            return self._project(layer,role,x,native,session)
+        try:
+            if p is None:return self._project(layer,role,x,native,session)
+            with p.location(layer,role),p.scope('projection_path_inclusive'):
+                return self._project(layer,role,x,native,session)
+        except BaseException:
+            if self.validation_mode==SCOPED:self.abort()
+            raise
     def _project(self,layer,role,x,native,session):
         a=self.active;require(a is not None and (layer,role) not in a['seen'],'duplicate/inactive projection');a['seen'].add((layer,role))
         n=len(a['req']['token_ids']);h=self.bridge.identity['hidden_size'];require(list(x.shape)==[1,n,h],'projection full shape differs')
@@ -92,24 +111,36 @@ class PhysicalOwner:
             from .r3a_tiny import f32
             total=None if base is None else ArrayTensor([f32(v+d) for v,d in zip(base.values,delta.values)],base.shape)
         else:total=None if base is None else call('delta_add_cast',lambda:(base+delta).to(base.dtype),cuda=True)
-        reused=[]
+        reused=[];consumption_checks=[]
         for hit in hits:
-            self.valid(hit.entry);t=hit.entry.tensors[layer]['qkv'.index(role)]
+            self.valid(hit.entry)
+            if self.validation_mode==SCOPED:
+                try:t,check=self.validation.consume(hit.entry,layer,role)
+                except BaseException:self.abort();raise
+            else:t=hit.entry.tensors[layer]['qkv'.index(role)];check=None
+            consumption_checks.append(check)
             reused.append((hit.window.start,t));a['consumed'].add((hit.entry.key,hit.window.start,hit.window.end))
         out=call('ordered_scatter',scatter,total,fresh,reused,n,h,x,cuda=True)
         a['captures'].setdefault(layer,{})[role]=call('qkv_capture_clone',lambda:out.detach().clone(),cuda=True)
         if role=='q':a['inputs'][layer]=call('hidden_capture_clone',lambda:x.detach().clone(),cuda=True)
-        a['records'].append(dict(layer=layer,role=role,fresh_positions=fresh,reused_positions=sorted(used),native_projection_rows=len(fresh),cpu_lora_rows=len(fresh),consumed=[dict(key=hit.entry.key,source_request_id=hit.entry.qkv_metadata['source_request_id'],source_positions=hit.entry.positions,target_positions=[hit.window.start,hit.window.end],tensor=tensor_proof(hit.entry.tensors[layer]['qkv'.index(role)])) for hit in hits],output=tensor_proof(out),mode=a['mode'],numerical_equivalence='NOT_ESTABLISHED',past_kv_grant=False))
+        consumed=[]
+        for i,hit in enumerate(hits):
+            check=consumption_checks[i]
+            item=dict(key=hit.entry.key,source_request_id=hit.entry.qkv_metadata['source_request_id'],source_positions=hit.entry.positions,target_positions=[hit.window.start,hit.window.end],tensor=tensor_proof(hit.entry.tensors[layer]['qkv'.index(role)]) if check is None else check['actual'])
+            if check is not None:item['integrity_validation']=check
+            consumed.append(item)
+        a['records'].append(dict(layer=layer,role=role,fresh_positions=fresh,reused_positions=sorted(used),native_projection_rows=len(fresh),cpu_lora_rows=len(fresh),consumed=consumed,output=tensor_proof(out),mode=a['mode'],numerical_equivalence='NOT_ESTABLISHED',past_kv_grant=False))
         if self.evidence is not None:
             tag=a['req']['request_id']+f'_l{layer}_{role}';record=a['records'][-1]
             if role=='q':a['input_evidence']=call('evidence_save_inclusive',self.evidence.save,x,tag+'_input')
             record['input']=a['input_evidence'];record['output']=call('evidence_save_inclusive',self.evidence.save,out,tag+'_output')
             record['fresh_base']=None if base is None else call('evidence_save_inclusive',self.evidence.save,base,tag+'_base')
             record['fresh_delta']=None if delta is None else call('evidence_save_inclusive',self.evidence.save,delta,tag+'_delta')
-            for i,hit in enumerate(hits):record['consumed'][i]['tensor']=call('evidence_save_inclusive',self.evidence.save,hit.entry.tensors[layer]['qkv'.index(role)],tag+f'_cached_{i}')
+            for i,hit in enumerate(hits):record['consumed'][i]['tensor']=call('evidence_save_inclusive',self.evidence.save,reused[i][1],tag+f'_cached_{i}')
         return out
     @profiled('owner_completion_inclusive')
     def complete(self,*,completed,attentions,valid_attention_mask=None):
+        self.validation.close()  # No live authorization may overlap CHU/PBR/admission.
         begin=time.monotonic_ns();materialization_ns=0;integrity_ns=0;insert_ns=0
         a=self.active;require(a is not None and completed is True,'complete real source required')
         layers=self.bridge.identity['layers'];require(len(a['records'])==3*layers and set(a['captures'])==set(range(layers)),'incomplete all-layer projections')
@@ -129,7 +160,7 @@ class PhysicalOwner:
                 metrics.reused(hit.entry,per_span[hit.window.start])
                 self.trace(dict(kind='CHU',key=hit.entry.key,old_F=old_frequency,F=hit.entry.frequency,old_I=old_impact,I=hit.entry.impact,actual_impact=per_span[hit.window.start]))
         def event(kind,entry,score):
-            if kind=='EVICT':self.proofs.pop(entry.key,None)
+            if kind=='EVICT':self.proofs.pop(entry.key,None);self.admission_bindings.pop(entry.key,None)
             self.trace(dict(kind=kind,key=entry.key,score=score,component_scope='physical_total_qkv'))
         policy_updated=time.monotonic_ns();seen=set()
         for w in a['windows']:
@@ -149,15 +180,20 @@ class PhysicalOwner:
             self.cache.insert(candidate,metrics.frequencies[key],metrics.frequencies,materialize=materialize,on_event=event)
             insert_ns+=time.monotonic_ns()-start
             if key in self.cache.entries:
-                start=time.monotonic_ns();e=self.cache.entries[key];self.proofs[key]=entry_proof(e);integrity_ns+=time.monotonic_ns()-start
+                start=time.monotonic_ns();e=self.cache.entries[key];self.proofs[key]=self.validation.full(e,admission=True);integrity_ns+=time.monotonic_ns()-start
+                if self.validation_mode==SCOPED:
+                    from .r5_subsequence_integrity import structure
+                    self.admission_bindings[key]=dict(entry=e,proof=self.proofs[key],metadata_root=e.qkv_metadata,tensors_root=e.tensors,structure=structure(e))
         if self.cache.now%self.bridge.pbr_interval==0:self.trace(dict(kind='PBR',updates=metrics.pbr(a['cluster'])))
         require(self.cache.logical_cache_bytes<=self.cache.capacity_bytes and self.cache.physical_tensor_bytes<=self.cache.capacity_bytes,'physical capacity exceeded')
         result=dict(mode=a['mode'],records=a['records'],physical_projection_rows_reused=sum(len(r['reused_positions']) for r in a['records']),physical_tensor_bytes=self.cache.physical_tensor_bytes,kv_prefix_reuse=False,correctness_qualified_speedup='NOT_ESTABLISHED')
         result['costs']=dict(owner_completion_ms=(time.monotonic_ns()-begin)/1e6,impact_history_chu_ms=(policy_updated-begin)/1e6,
                              insert_eviction_inclusive_ms=insert_ns/1e6,materialization_nested_ms=materialization_ns/1e6,tensor_integrity_sealing_ms=integrity_ns/1e6,
                              timing_scope='instrumented wall; materialization nested in insert; do not sum overlapping scopes')
+        result['integrity_validation']=self.validation.report()
         self.trace(dict(kind='PHYSICAL_SUBSEQUENCE_COMPLETE',**result));self.active=None;self.bridge.pending=None;return result
-    def dispose(self):self.bridge.dispose();self.proofs.clear();self.active=None
+    def abort(self):self.validation.close();self.active=None;self.bridge.pending=None
+    def dispose(self):self.validation.close();self.bridge.dispose();self.proofs.clear();self.admission_bindings.clear();self.active=None
 
 @contextmanager
 def projection_path(adapter,owner,session):

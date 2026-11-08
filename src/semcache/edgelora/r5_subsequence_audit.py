@@ -24,7 +24,7 @@ def request_costs(result):
     return dict(request_id=result['request_id'],native_projection_rows=fresh,cpu_lora_projection_rows=fresh,physically_reused_projection_rows=reused,
         es_to_ud_projection_wire_bytes=sum(r['sent']['wire_bytes'] for r in receipts),ud_to_es_projection_wire_bytes=sum(r['received']['wire_bytes'] for r in receipts),
         projection_frame_count=2*len(receipts),cpu_lora_ms=sum(r['received']['header']['metadata'].get('cpu_lora_ms',0.) for r in receipts),
-        owner_costs=None if physical is None else physical['costs'],scope='actual prefill+decode projection frames; completion controls in condition wire totals; summed rows are not unique tokens')
+        owner_costs=None if physical is None else physical['costs'],integrity_validation=None if physical is None else {k:v for k,v in physical.get('integrity_validation',{}).items() if k!='authorizations'},scope='actual prefill+decode projection frames; completion controls in condition wire totals; summed rows are not unique tokens')
 
 def rows(data,shape,dtype,positions):
     require(len(shape)==3 and shape[0]==1,'batch-one projection required');stride=shape[2]*DTYPES[dtype][1]
@@ -60,6 +60,70 @@ def replay_projection(ev,record,ud,req,sources):
     require(used==set(range(n)),'incomplete physical output coverage')
     return sum(c['target_positions'][1]-c['target_positions'][0] for c in record.get('consumed',[]))
 
+def replay_validation(ev,req,result,sources):
+    """D5 verify admission fingerprints from completed source bytes, not counters."""
+    from .r5_subsequence_integrity import SCHEMA,EAGER,SCOPED,THREAT_MODEL
+    physical=result['completion']['physical']
+    if physical is None:return
+    report=physical.get('integrity_validation')
+    if report is None:return  # Original sealed evidence predates D5.
+    require(report['schema']==SCHEMA and report['validation_mode'] in (EAGER,SCOPED) and report['request_sha256']==req['request_sha256'] and report['request_id']==req['request_id'],'validation receipt/request differs')
+    require(report['records_expired'] and report['integrity_check_failures']==0 and report['threat_model']==THREAT_MODEL,'failed/live/unknown validation scope')
+    expected_keys=set();exact_windows=0
+    if result['condition']=='SEMCACHE_SUBSEQUENCE':
+        selected={tuple(x) for x in result['matching']['selected_spans']}
+        for candidate in result['matching']['candidates']:
+            start,end=candidate['target_positions'];sid=candidate['source_request_id']
+            if (start,end) not in selected:continue
+            require(sid in sources,'selected validation source incomplete')
+            source=sources[sid][0]
+            if list(candidate['source_positions'])==[start,end] and source['token_ids'][:end]==req['token_ids'][:end] and sharing(ev.registry,source['user_id'],req['user_id'],source['adapter_id'],req['adapter_id']) is None:
+                exact_windows+=1;expected_keys.add(digest([result['assignment']['cluster_id'],req['token_ids'][start:end]]))
+    for key,value in report.items():
+        if key.endswith(('_count','_entries','_bytes','_ms')):
+            require(isinstance(value,(int,float)) and math.isfinite(value) and value>=0,'invalid integrity count/timing')
+    authorized={};auth_bytes=0
+    for auth in report['authorizations']:
+        original=dict(auth);aid=original.pop('authorization_id');require(digest(original)==aid and aid not in authorized,'authorization digest/uniqueness differs')
+        require(auth['request_sha256']==req['request_sha256'] and auth['request_epoch']==report['request_epoch'],'stale request authorization')
+        h=auth['header'];m=h['metadata'];sid=m['source_request_id'];require(sid in sources,'authorization references incomplete/future source')
+        sr,records=sources[sid];lo,hi=h['positions'];positions=list(range(lo,hi));key=auth['key']
+        require(hi-lo==3 and 0<=lo<hi<=len(sr['token_ids']) and list(h['tokens'])==sr['token_ids'][lo:hi] and list(key[1])==list(h['tokens']) and key[0]==result['assignment']['cluster_id'],'authorization window/key differs')
+        require(sharing(ev.registry,sr['user_id'],req['user_id'],sr['adapter_id'],req['adapter_id']) is None and sr['physical_identity']==req['physical_identity'],'authorization source ownership differs')
+        layers=req['physical_identity']['layers'];hidden=req['physical_identity']['hidden_size'];dtype=req['physical_identity']['dtype'];tag=auth['tensors']['0'][0]['dtype']
+        require(tag in (dtype,'torch.'+dtype),'authorization tensor dtype differs')
+        inputs={};tensors={}
+        for layer in range(layers):
+            rec=records[layer,'q'];data=rows(ev.tensor('es',rec['input']),rec['input']['shape'],dtype,positions)
+            inputs[str(layer)]=dict(shape=[1,3,hidden],dtype=tag,sha256=digest_bytes(data));tensors[str(layer)]=[]
+            for role in 'qkv':
+                spec=records[layer,role]['output'];data=rows(ev.tensor('es',spec),spec['shape'],dtype,positions)
+                tensors[str(layer)].append(dict(shape=[1,3,hidden],dtype=tag,sha256=digest_bytes(data)))
+        metadata=dict(component_scope='total_qkv',completed=True,provenance_mode=physical['mode'],physical_identity=sr['physical_identity'],source_user=sr['user_id'],source_adapter=sr['adapter_id'],source_request_id=sid,source_token_ids=sr['token_ids'],input_proofs=inputs)
+        size=3*3*layers*hidden*DTYPES[dtype][1];expected=dict(metadata=metadata,positions=[lo,hi],tokens=sr['token_ids'][lo:hi],size=size)
+        require(digest(h)==digest(expected) and auth['tensors']==tensors and auth['admission_proof']==digest(dict(expected,tensors=tensors)),'authorization does not reproduce source admission strong proof')
+        auth_bytes+=size;authorized[aid]=auth
+    consumed=0;consumed_bytes=0
+    for record in physical['records']:
+        for item in record['consumed']:
+            if report['validation_mode']==EAGER:
+                require('integrity_validation' not in item,'eager path silently changed validation semantics');continue
+            check=item['integrity_validation'];aid=check['authorization_id'];require(aid in authorized,'unauthenticated consumed tensor')
+            auth=authorized[aid];expected=auth['tensors'][str(record['layer'])]['qkv'.index(record['role'])]
+            require(check['private_snapshot'] is True and check['expected']==check['actual']==expected and digest(auth['key'])==digest(item['key']) and list(auth['header']['positions'])==list(item['source_positions']),'consumption snapshot/source differs')
+            spec=item['tensor'];require(spec['sha256']==expected['sha256'] and spec['shape']==expected['shape'] and spec['dtype']==expected['dtype'].removeprefix('torch.'),'consumed evidence differs from authenticated snapshot')
+            consumed+=1;consumed_bytes+=math.prod(spec['shape'])*DTYPES[spec['dtype']][1]
+    require(report['request_validation_wall_ms']==sum(report[k] for k in ('owner_valid_wall_ms','consumed_operation_wall_ms','request_scope_setup_wall_ms','request_scope_cleanup_wall_ms')),'validation wall accounting differs')
+    if report['validation_mode']==SCOPED:
+        require({digest(a['key']) for a in authorized.values()}==expected_keys,'selected-entry authorization coverage differs')
+        require(report['request_authorized_entries']==report['full_entry_proof_count']==len(authorized) and report['full_entry_serialized_bytes']==auth_bytes,'request full-proof accounting differs')
+        require(report['consumed_tensor_proof_count']==consumed and report['consumed_tensor_serialized_bytes']==consumed_bytes,'consumed-proof accounting differs')
+    else:
+        require(not authorized and report['request_authorized_entries']==report['consumed_tensor_proof_count']==report['consumed_tensor_serialized_bytes']==0,'eager receipt has scoped authorizations')
+        expected_full=exact_windows*req['physical_identity']['layers']+sum(len(r['consumed']) for r in physical['records'])
+        size=3*3*req['physical_identity']['layers']*req['physical_identity']['hidden_size']*DTYPES[req['physical_identity']['dtype']][1]
+        require(report['full_entry_proof_count']==expected_full and report['full_entry_serialized_bytes']==expected_full*size,'eager original full-proof accounting differs')
+
 def condition(path):
     ev=Evidence(path,max_input_bytes=128*2**30,max_tensor_bytes=128*2**20);inventory=ev.verify()
     require(ev.json('status.json')['status']=='COMPLETE','failed condition')
@@ -80,6 +144,9 @@ def condition(path):
         if 'diagnostics' in result:
             from .r5_subsequence_profile import validate_receipt
             validate_receipt(result['diagnostics'],req['request_id'],result['completion']['physical'])
+            if 'integrity_validation' in result['diagnostics']:
+                physical=result['completion']['physical'];expected=None if physical is None else {k:v for k,v in physical['integrity_validation'].items() if k!='authorizations'}
+                require(result['diagnostics']['integrity_validation']==expected and result['diagnostics']['validation_mode']==result['validation_mode'],'profile/physical validation summary differs')
         step_receipts=[receipt for step in result['steps'] for receipt in step['record']['sparse']]
         require(step_receipts==result['sparse_receipts'],'aggregate sparse receipts differ')
         for receipt in step_receipts:
@@ -123,6 +190,7 @@ def condition(path):
                 prob=prob.double()  # One bounded conversion per layer, same as capture.
                 require(set(map(int,record['span_values']))==set(range(n-2)),'missing impact windows')
                 for start,value in record['span_values'].items():require(math.isclose(actual_attention_impact([prob],int(start),int(start)+3),value,rel_tol=1e-12,abs_tol=1e-12),'attention impact replay differs')
+        replay_validation(ev,req,result,sources)
         sources[req['request_id']]=(req,prefill_records)
     require(results[0]['completion_ns']<=results[1]['arrival_ns'],'requests overlap or source not completed first')
     replay_policy(ev,reqs,results)
@@ -177,6 +245,9 @@ def analyze(experiment,run,output_dir):
     for c,r in reports.items():
         require(r['config']['source']==p['source'] and r['config']['plan_inventory']==pr,'source/plan differs')
         require(r['config']['condition']==c and all(row['condition']==c and row['context_mode']==p['mode'] for row in r['results']),'condition/context-mode evidence differs')
+        if 'integrity_validation' in p:
+            expected=p['integrity_validation']['mode'];require(r['config'].get('validation_mode')==expected and all(row.get('validation_mode')==expected for row in r['results']),'sealed validation mode differs')
+            require(all(row['completion']['physical'] is None or row['completion']['physical']['integrity_validation']['validation_mode']==expected for row in r['results']),'physical validation mode differs')
         require(r['config']['physical']==baseline['config']['physical'],'model/adapter/position implementation differs across conditions')
         if c=='FULL_RECOMPUTE':require(all(row['completion']['physical'] is None and row['completion']['impact'] is None and row['assignment'] is None for row in r['results']),'Full Recompute performed semantic/cache work')
         else:require(all(row['completion']['physical'] is not None and row['completion']['impact'] is not None for row in r['results']),'missing semantic/policy/impact path')
@@ -211,6 +282,15 @@ def analyze(experiment,run,output_dir):
     for c,r in reports.items():
         rs=r['results'];gate='PASS' if all(x['numerical']['passed'] for x in comparisons if x['condition']==c) else 'FAIL'
         lines.append(f"| {c} | {rs[0]['application_e2e_ms']} | {rs[1]['application_e2e_ms']} | {rs[1]['application_ttft_ms']} | {r['reused_projection_rows']} | {gate} |")
+    if 'integrity_validation' in p:
+        lines+=['','Validation mode: '+p['integrity_validation']['mode'],
+            '| Condition | Full validation proofs | Consumed proofs | Validation wall ms | Full serialized bytes | Consumed bytes |',
+            '|---|---:|---:|---:|---:|---:|']
+        for c,r in reports.items():
+            physical=r['results'][1]['completion']['physical']
+            if physical is not None:
+                v=physical['integrity_validation'];lines.append(f"| {c} | {v['full_entry_proof_count']} | {v['consumed_tensor_proof_count']} | {v['request_validation_wall_ms']} | {v['full_entry_serialized_bytes']} | {v['consumed_tensor_serialized_bytes']} |")
+        lines+=['Admission proofs are separate and remain in application E2E. Full/consumed proof subscopes are inclusive; do not add them to validation wall again. Unconsumed tensor content is not continuously rehashed in scoped mode.']
     lines+=['','CORRECTNESS_QUALIFIED_SPEEDUP=NOT_ESTABLISHED. ROOT_CAUSE=UNRESOLVED.','Economic reference is the measured warm A target interval, not a separately executed A0 workload. True target-only break-even is NOT_ESTABLISHED.','All probability capture/reduction, policy, tensor materialization and request evidence costs are instrumented. Initialization/process lifecycle are separate. No production latency or statistical quality claim.']
     (out/'subsequence_report.md').write_text('\n'.join(lines)+'\n');seal(out);return dict(status=result['status'],comparisons=comparisons)
 
