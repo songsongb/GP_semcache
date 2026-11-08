@@ -1,4 +1,4 @@
-"""Separate sparse projection TCP V1. No changes to I5 prefix protocols."""
+"""Separate sparse projection TCP V2. No changes to I5 prefix protocols."""
 from copy import deepcopy
 import time
 from .communication import require,digest,digest_bytes,header
@@ -8,7 +8,7 @@ from .r5_i5_contracts import validate_request
 from .r5_multi_artifacts import resolve
 from .user_device import cpu_deltas
 
-VERSION='R5_SPARSE_TOTAL_QKV_TCP_V1'
+VERSION='R5_SPARSE_TOTAL_QKV_TCP_V2'
 
 def blob(t):return t.fixture_bytes() if isinstance(t,ArrayTensor) else tensor_bytes(t)
 def gather(t,positions):
@@ -37,26 +37,34 @@ def scatter(fresh,positions,reused,n,h,like):
     for start,t in reused:out[:,start:start+t.shape[1],:]=t.to(out)
     return out
 
-def envelope(req,layer,positions,pass_id):
-    validate_request(req);n=len(req['token_ids'])
+def envelope(req,layer,positions,pass_id,generated=()):
+    validate_request(req);generated=list(generated);step=len(generated);n=1 if step else len(req['token_ids'])
+    require(step<req['generation_policy']['max_new_tokens'] and all(type(t) is int and t>=0 for t in generated),'invalid sparse decode history')
+    require(not step or not req['generation_policy']['stop_at_eos'] or req['generation_policy']['eos_token_id'] not in generated,'decode after EOS forbidden')
+    past=len(req['token_ids'])+step-1 if step else 0
+    require(past+n<=2048,'decode position limit exceeded')
     require(type(layer) is int and 0<=layer<req['physical_identity']['layers'] and positions==sorted(set(positions)) and all(type(p) is int and 0<=p<n for p in positions),'invalid sparse coordinates')
     require(isinstance(pass_id,str) and pass_id,'unique prefill pass required')
     return dict(version=VERSION,request=req,pass_id=pass_id,layer=layer,fresh_positions=positions,roles=list('qkv'),
-                full_length=n,absolute_positions=[req['positions'][p] for p in positions],mask_sha256=digest(req['attention_mask']))
+                full_length=n,absolute_positions=[past+p for p in positions],mask_sha256=digest([1]*(past+n)),generated_token_ids=generated,phase='DECODE' if step else 'PREFILL')
 
 class SparseOrder:
-    def __init__(self,identity,registry):self.identity=identity;self.registry=registry;self.current=None;self.layer=0;self.seen=set()
+    def __init__(self,identity,registry):self.identity=identity;self.registry=registry;self.current=None;self.layer=0;self.seen=set();self.parents={}
     def accept(self,c):
-        require(set(c)=={'version','request','pass_id','layer','fresh_positions','roles','full_length','absolute_positions','mask_sha256'},'sparse schema differs')
-        req=c['request'];require(c==envelope(req,c['layer'],c['fresh_positions'],c['pass_id']),'sparse context differs')
+        require(set(c)=={'version','request','pass_id','layer','fresh_positions','roles','full_length','absolute_positions','mask_sha256','generated_token_ids','phase'},'sparse schema differs')
+        req=c['request'];require(c==envelope(req,c['layer'],c['fresh_positions'],c['pass_id'],c['generated_token_ids']),'sparse context differs')
         require(req['physical_identity']==self.identity and resolve(self.registry,req['user_id'],req['adapter_id'])==self.identity['adapter_id'],'sparse physical/authorization mismatch')
         if self.layer==0:
             require(c['pass_id'] not in self.seen,'duplicate sparse pass');self.seen.add(c['pass_id']);self.current=(c['pass_id'],deepcopy(req))
+            previous=self.parents.get(req['request_id']);history=c['generated_token_ids']
+            if history:require(previous is not None and previous[0]==req and len(history)==len(previous[1])+1 and history[:-1]==previous[1],'decode continuation differs')
+            else:require(previous is None,'duplicate prefill parent')
+            self.parents[req['request_id']]=(deepcopy(req),list(history))
         require(self.current==(c['pass_id'],req) and c['layer']==self.layer,'sparse pass/layer order differs')
         self.layer=(self.layer+1)%self.identity['layers']
         if not self.layer:self.current=None
 
-def serve_sparse(channel,identity,registry,matrices,*,fixture=False,trace=lambda r:None):
+def serve_sparse(channel,identity,registry,matrices,*,fixture=False,trace=lambda r:None,evidence=None):
     """CPU UD endpoint. Matrices must be loaded/verified by existing multi.load.
 
     Production caller must run in a separate configure_cpu()-isolated process.
@@ -65,31 +73,41 @@ def serve_sparse(channel,identity,registry,matrices,*,fixture=False,trace=lambda
     if not fixture:
         import torch,sys
         require(not torch.cuda.is_initialized() and all(t.device.type=='cpu' for t in matrices.values()) and 'transformers' not in sys.modules,'CPU-only UD required')
-    order=SparseOrder(identity,registry)
+    order=SparseOrder(identity,registry);finished=set()
     while True:
         h,b,r=channel.recv()
         if h['kind']=='STOP':
             require(order.layer==0 and not b and h['request_id']=='shutdown' and h['layer_id']==-1 and h['shape']==[],'invalid stop/unfinished sparse pass');channel.send(header('BYE','shutdown',-1));return
+        if h['kind']=='HELLO' and set(h['metadata'])=={'sparse_complete'}:
+            control=h['metadata']['sparse_complete'];req=validate_request(control['request']);history=control['generated_token_ids']
+            from .r4c_workload import termination
+            previous=order.parents.get(req['request_id'])
+            require(not b and order.layer==0 and req['request_id'] not in finished and previous is not None and previous[0]==req and len(history)==len(previous[1])+1 and history[:-1]==previous[1] and termination(req['generation_policy'],history)==control['termination'],'invalid sparse generation completion')
+            finished.add(req['request_id']);channel.send(header('READY',h['request_id'],-1,completion_sha256=digest(control)));trace(dict(kind='COMPLETE_REQUEST',control=control));continue
         require(set(h['metadata'])=={'sparse'} and h['kind'] in ('HIDDEN','HELLO'),'sparse projection frame required')
         c=h['metadata']['sparse'];order.accept(c);n=len(c['fresh_positions']);width=identity['hidden_size']
+        require(c['request']['request_id'] not in finished,'projection after completed request')
         require(h['request_id']==c['pass_id'] and h['layer_id']==(c['layer'] if n else -1),'frame/context differs')
         if not n:
             require(h['kind']=='HELLO' and not b and h['shape']==[],'empty projection must have no tensor')
-            channel.send(header('READY',c['pass_id'],-1,sparse_sha256=digest(c),cpu_projection_rows=0));continue
+            channel.send(header('READY',c['pass_id'],-1,sparse_sha256=digest(c),cpu_projection_rows=0));trace(dict(context=c,cpu_projection_rows=0,sparse_sha256=digest(c)));continue
         require(h['kind']=='HIDDEN' and h['shape']==[1,n,width] and h['dtype']==identity['dtype'],'sparse tensor shape/dtype differs')
         x=unpack(b,h['dtype']) if fixture else tensor_from_bytes(b,h['dtype'],h['shape']);start=time.monotonic_ns()
-        delta=cpu_deltas(x,matrices,c['layer'],width,torch_backend=not fixture)
+        precision={};delta=cpu_deltas(x,matrices,c['layer'],width,torch_backend=not fixture,precision_out=precision)
         data=pack(delta,'float32') if fixture else tensor_bytes(delta)
-        record=dict(sparse_sha256=digest(c),hidden_sha256=digest_bytes(b),cpu_projection_rows=3*n,cpu_lora_ms=(time.monotonic_ns()-start)/1e6,TEST_FIXTURE_ONLY=fixture)
+        record=dict(sparse_sha256=digest(c),hidden_sha256=digest_bytes(b),delta_sha256=digest_bytes(data),actual_precision=precision,cpu_projection_rows=3*n,cpu_lora_ms=(time.monotonic_ns()-start)/1e6,TEST_FIXTURE_ONLY=fixture or c['request']['TEST_FIXTURE_ONLY'])
+        if evidence is not None:
+            record['hidden_file']=evidence.blob(b,c['pass_id']+f'_l{c["layer"]}_hidden.bin')
+            record['delta_file']=evidence.blob(data,c['pass_id']+f'_l{c["layer"]}_delta.bin')
         channel.send(header('DELTAS',c['pass_id'],c['layer'],'float32',[3,1,n,width],**record),data);trace(dict(record,context=c))
 
 class SparseSession:
-    def __init__(self,channel,req,pass_id,*,fixture=False):
-        self.channel=channel;self.req=validate_request(req);self.pass_id=pass_id;self.fixture=fixture;self.layer=0;self.role=0;self.bundle=None;self.receipts=[]
+    def __init__(self,channel,req,pass_id,*,fixture=False,generated=()):
+        self.channel=channel;self.req=validate_request(req);self.pass_id=pass_id;self.fixture=fixture;self.layer=0;self.role=0;self.bundle=None;self.receipts=[];self.generated=list(generated)
     def correction(self,layer,role,x,positions):
         require(layer==self.layer and role=='qkv'[self.role],'sparse role/layer order differs')
-        require(list(x.shape)==[1,len(self.req['token_ids']),self.req['physical_identity']['hidden_size']],'full projection input shape differs')
-        c=envelope(self.req,layer,positions,self.pass_id);n=len(positions);h=x.shape[2]
+        require(list(x.shape)==[1,1 if self.generated else len(self.req['token_ids']),self.req['physical_identity']['hidden_size']],'full projection input shape differs')
+        c=envelope(self.req,layer,positions,self.pass_id,self.generated);n=len(positions);h=x.shape[2]
         if self.role==0:
             self.context=c;self.input_sha=digest_bytes(blob(x));self.bundle=None
             if n:
@@ -101,13 +119,22 @@ class SparseSession:
             else:
                 sent=self.channel.send(header('HELLO',self.pass_id,-1,sparse=c));reply,b,received=self.channel.recv(kind='READY',request_id=self.pass_id,layer_id=-1)
                 require(not b and reply['metadata']==dict(sparse_sha256=digest(c),cpu_projection_rows=0),'empty projection receipt differs')
-            self.receipts.append(dict(context=c,input_sha256=self.input_sha,sent=sent,received=received,hidden_wire_bytes=sent['wire_bytes'],delta_wire_bytes=received['wire_bytes'],fresh_rows_per_role=n,skipped_rows_per_role=len(self.req['token_ids'])-n))
+            self.receipts.append(dict(context=c,input_sha256=self.input_sha,sent=sent,received=received,hidden_wire_bytes=sent['wire_bytes'],delta_wire_bytes=received['wire_bytes'],fresh_rows_per_role=n,skipped_rows_per_role=c['full_length']-n))
         else:require(c==self.context and digest_bytes(blob(x))==self.input_sha,'Q/K/V inputs or positions differ')
         result=None if not n else ArrayTensor(self.bundle[self.role*n*h:(self.role+1)*n*h],[1,n,h]) if self.fixture else self.bundle[self.role]
         self.role+=1
         if self.role==3:self.role=0;self.layer+=1
         return result
     def complete(self):require(self.layer==self.req['physical_identity']['layers'] and self.role==0,'incomplete sparse prefill')
+
+def finish_request(channel,req,generated):
+    from .r4c_workload import termination
+    reason=termination(req['generation_policy'],generated);require(reason is not None,'unfinished generation')
+    control=dict(request=req,generated_token_ids=generated,termination=reason)
+    rid=req['request_id']+'_COMPLETE';channel.send(header('HELLO',rid,-1,sparse_complete=control))
+    h,_,_=channel.recv(kind='READY',request_id=rid,layer_id=-1)
+    require(h['metadata']==dict(completion_sha256=digest(control)),'completion acknowledgement differs')
+    return control
 
 def audit_sparse_receipts(projections,client,ud):
     """Independent count/coordinate/wire replay; NOT a GPU tensor-value audit."""
@@ -122,10 +149,9 @@ def audit_sparse_receipts(projections,client,ud):
             require(row['fresh_positions']==c['fresh_positions'] and len(fresh)==n and not fresh&reused and fresh|reused==set(range(c['full_length'])),'gather/scatter partition differs')
             require(row['native_projection_rows']==row['cpu_lora_rows']==n and row['past_kv_grant'] is False,'false computation/forward-skip claim')
             fresh_rows+=n;reused_rows+=len(reused)
-        if n:
-            matches=[(i,r) for i,r in enumerate(ud) if r['context']==c]
-            require(len(matches)==1 and matches[0][0] not in used,'missing/duplicate UD computation receipt')
-            i,record=matches[0];used.add(i);require(record['cpu_projection_rows']==3*n,'UD row accounting differs')
+        matches=[(i,r) for i,r in enumerate(ud) if r['context']==c]
+        require(len(matches)==1 and matches[0][0] not in used,'missing/duplicate UD computation receipt')
+        i,record=matches[0];used.add(i);require(record['cpu_projection_rows']==3*n,'UD row accounting differs')
         sent=receipt['sent'];received=receipt['received']
         require(sent['complete'] and received['complete'] and sent['operation']=='send' and received['operation']=='recv','incomplete wire evidence')
         require(sent['header']['metadata']['sparse']==c and received['header']['metadata']['sparse_sha256']==digest(c),'wire context differs')

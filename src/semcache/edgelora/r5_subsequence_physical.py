@@ -3,6 +3,7 @@
 Attention/FFN/LM-head always execute full inputs. No arbitrary-span past-KV grants.
 """
 from contextlib import contextmanager
+import time
 from .communication import require,digest,digest_bytes
 from .r5_sparse_qkv import gather,scatter,blob
 from .r5_mstage_bridge import MStageShadow
@@ -20,8 +21,9 @@ def entry_proof(entry):
                        tensors={str(i):[tensor_proof(t) for t in ts] for i,ts in entry.tensors.items()}))
 
 class PhysicalOwner:
-    def __init__(self,identity,registry,*,capacity=512*2**20,trace=lambda r:None):
+    def __init__(self,identity,registry,*,capacity=512*2**20,trace=lambda r:None,evidence=None):
         self.bridge=MStageShadow(identity,registry,capacity=capacity,trace=trace);self.trace=trace;self.active=None;self.proofs={}
+        self.evidence=evidence
     @property
     def cache(self):return self.bridge.cache
     def begin(self,req,assignment,*,mode=EXACT,allow_approximate=False,reuse=True):
@@ -64,24 +66,37 @@ class PhysicalOwner:
         a['captures'].setdefault(layer,{})[role]=out.detach().clone()
         if role=='q':a['inputs'][layer]=x.detach().clone()
         a['records'].append(dict(layer=layer,role=role,fresh_positions=fresh,reused_positions=sorted(used),native_projection_rows=len(fresh),cpu_lora_rows=len(fresh),consumed=[dict(key=hit.entry.key,source_request_id=hit.entry.qkv_metadata['source_request_id'],source_positions=hit.entry.positions,target_positions=[hit.window.start,hit.window.end],tensor=tensor_proof(hit.entry.tensors[layer]['qkv'.index(role)])) for hit in hits],output=tensor_proof(out),mode=a['mode'],numerical_equivalence='NOT_ESTABLISHED',past_kv_grant=False))
+        if self.evidence is not None:
+            tag=a['req']['request_id']+f'_l{layer}_{role}';record=a['records'][-1]
+            if role=='q':a['input_evidence']=self.evidence.save(x,tag+'_input')
+            record['input']=a['input_evidence'];record['output']=self.evidence.save(out,tag+'_output')
+            record['fresh_base']=None if base is None else self.evidence.save(base,tag+'_base')
+            record['fresh_delta']=None if delta is None else self.evidence.save(delta,tag+'_delta')
+            for i,hit in enumerate(hits):record['consumed'][i]['tensor']=self.evidence.save(hit.entry.tensors[layer]['qkv'.index(role)],tag+f'_cached_{i}')
         return out
     def complete(self,*,completed,attentions,valid_attention_mask=None):
+        begin=time.monotonic_ns();materialization_ns=0;integrity_ns=0;insert_ns=0
         a=self.active;require(a is not None and completed is True,'complete real source required')
         layers=self.bridge.identity['layers'];require(len(a['records'])==3*layers and set(a['captures'])==set(range(layers)),'incomplete all-layer projections')
-        require(attentions is not None and len(attentions)==layers,'actual all-layer attention required; no zero-impact fallback')
+        require(attentions is not None,'actual all-layer attention required; no zero-impact fallback')
         metrics=self.bridge.metrics;values={};per_span={}
+        from .r5_subsequence_generation import StreamingImpact
+        if isinstance(attentions,StreamingImpact):streamed=attentions.values_for(a)
+        else:require(len(attentions)==layers,'missing attention layers');streamed=None
         for w in a['windows']:
-            value=actual_attention_impact(attentions,w.start,w.end,valid_attention_mask);key=self.bridge.matcher.key(a['cluster'],w)
+            value=streamed[w.start] if streamed is not None else actual_attention_impact(attentions,w.start,w.end,valid_attention_mask);key=self.bridge.matcher.key(a['cluster'],w)
             values.setdefault(key,[]).append(value);per_span[w.start]=value
         metrics.history.append(a['cluster'],a['req']['request_id'],self.cache.now,{k:sum(v)/len(v) for k,v in values.items()})
         # Physical reuse frequency is committed only after all projections finish.
         for hit in a['selected']:
             if (hit.entry.key,hit.window.start,hit.window.end) in a['consumed']:
+                old_frequency,old_impact=hit.entry.frequency,hit.entry.impact
                 metrics.reused(hit.entry,per_span[hit.window.start])
+                self.trace(dict(kind='CHU',key=hit.entry.key,old_F=old_frequency,F=hit.entry.frequency,old_I=old_impact,I=hit.entry.impact,actual_impact=per_span[hit.window.start]))
         def event(kind,entry,score):
             if kind=='EVICT':self.proofs.pop(entry.key,None)
             self.trace(dict(kind=kind,key=entry.key,score=score,component_scope='physical_total_qkv'))
-        seen=set()
+        policy_updated=time.monotonic_ns();seen=set()
         for w in a['windows']:
             key=self.bridge.matcher.key(a['cluster'],w)
             if key in seen or key in self.cache.entries:continue
@@ -89,15 +104,23 @@ class PhysicalOwner:
             meta=dict(component_scope='total_qkv',completed=True,provenance_mode=a['mode'],physical_identity=self.bridge.identity,source_user=a['req']['user_id'],source_adapter=a['req']['adapter_id'],source_request_id=a['req']['request_id'],source_token_ids=a['req']['token_ids'],input_proofs={str(i):tensor_proof(gather(a['inputs'][i],positions)) for i in range(layers)})
             candidate=CacheEntry(a['cluster'],w.token_ids,(w.start,w.end),size,qkv_metadata=meta,impact=per_span[w.start])
             def materialize():
+                nonlocal materialization_ns
+                start=time.monotonic_ns()
                 tensors={i:tuple(gather(a['captures'][i][r],positions) for r in 'qkv') for i in range(layers)}
                 entry=CacheEntry.from_tensors(a['cluster'],w.token_ids,(w.start,w.end),tensors,storage_device=str(a['inputs'][0].device));entry.qkv_metadata=meta;entry.impact=candidate.impact
+                materialization_ns+=time.monotonic_ns()-start
                 return entry
+            start=time.monotonic_ns()
             self.cache.insert(candidate,metrics.frequencies[key],metrics.frequencies,materialize=materialize,on_event=event)
+            insert_ns+=time.monotonic_ns()-start
             if key in self.cache.entries:
-                e=self.cache.entries[key];self.proofs[key]=entry_proof(e)
-        if self.cache.now%self.bridge.pbr_interval==0:metrics.pbr(a['cluster'])
+                start=time.monotonic_ns();e=self.cache.entries[key];self.proofs[key]=entry_proof(e);integrity_ns+=time.monotonic_ns()-start
+        if self.cache.now%self.bridge.pbr_interval==0:self.trace(dict(kind='PBR',updates=metrics.pbr(a['cluster'])))
         require(self.cache.logical_cache_bytes<=self.cache.capacity_bytes and self.cache.physical_tensor_bytes<=self.cache.capacity_bytes,'physical capacity exceeded')
         result=dict(mode=a['mode'],records=a['records'],physical_projection_rows_reused=sum(len(r['reused_positions']) for r in a['records']),physical_tensor_bytes=self.cache.physical_tensor_bytes,kv_prefix_reuse=False,correctness_qualified_speedup='NOT_ESTABLISHED')
+        result['costs']=dict(owner_completion_ms=(time.monotonic_ns()-begin)/1e6,impact_history_chu_ms=(policy_updated-begin)/1e6,
+                             insert_eviction_inclusive_ms=insert_ns/1e6,materialization_nested_ms=materialization_ns/1e6,tensor_integrity_sealing_ms=integrity_ns/1e6,
+                             timing_scope='instrumented wall; materialization nested in insert; do not sum overlapping scopes')
         self.trace(dict(kind='PHYSICAL_SUBSEQUENCE_COMPLETE',**result));self.active=None;self.bridge.pending=None;return result
     def dispose(self):self.bridge.dispose();self.proofs.clear();self.active=None
 

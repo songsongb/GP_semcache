@@ -68,6 +68,8 @@ class Physical(unittest.TestCase):
             self.assertEqual(sum(r['cpu_projection_rows'] for r in ud),36+12+48+48+18)
             hit_ud=[r for r in ud if r['context']['pass_id']=='TARGET']
             audited=audit_sparse_receipts(hit['records'],hs.receipts,hit_ud);self.assertEqual(audited['reused_projection_rows'],36)
+            all_ud=[r for r in ud if r['context']['pass_id']=='ALLHIT']
+            self.assertEqual(audit_sparse_receipts(entire['records'],zero.receipts,all_ud)['fresh_projection_rows'],0)
             bad=copy.deepcopy(hit['records']);bad[0]['native_projection_rows']+=1
             with self.assertRaises(ValueError):audit_sparse_receipts(bad,hs.receipts,hit_ud)
             key=next(iter(owner.cache.entries));entry=owner.cache.entries[key];entry.tensors[0][0].values[0]+=1
