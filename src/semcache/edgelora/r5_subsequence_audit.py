@@ -77,6 +77,9 @@ def condition(path):
             require(req['request_id'] not in completed and order.layer==0 and previous is not None and previous[0]==req and control['generated_token_ids'][:-1]==previous[1] and termination(req['generation_policy'],control['generated_token_ids'])==control['termination'],'UD completion evidence differs');completed.add(req['request_id'])
     for req,result in zip(reqs,results):
         validate_request(req);require(req['physical_identity']==config['physical'] and req['request_id']==result['request_id'] and req['request_id'] in completed,'request identity/completion differs')
+        if 'diagnostics' in result:
+            from .r5_subsequence_profile import validate_receipt
+            validate_receipt(result['diagnostics'],req['request_id'],result['completion']['physical'])
         step_receipts=[receipt for step in result['steps'] for receipt in step['record']['sparse']]
         require(step_receipts==result['sparse_receipts'],'aggregate sparse receipts differ')
         for receipt in step_receipts:
