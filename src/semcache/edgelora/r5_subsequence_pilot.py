@@ -59,6 +59,11 @@ def load(experiment):
     require(Evidence(p['multi']).verify('r5_output_manifest.json')==p['multi_inventory'] and Evidence(p['dataset']).verify()==p['dataset_inventory'],'prepared input differs')
     require(p['conditions']==list(CONDITIONS) and p['source_tokens']==64 and 64<p['target_tokens']<=256 and p['target_generation_limit']==2,'bounded pilot differs')
     require(p['thresholds']==THRESHOLDS and p['impact_replay_fp64_tolerance']==dict(atol=1e-12,rtol=1e-12) and p['validation_test_sha256']==sha(ROOT/'tests/test_r5_subsequence_generation.py'),'threshold/test source differs')
+    if 'diagnostics' in p:
+        from .r5_subsequence_profile import VERSION as PROFILE_VERSION
+        d=p['diagnostics'];require(d['version']==PROFILE_VERSION and type(d['cuda_events']) is bool and d['classification']=='DIAGNOSTIC_ONLY_UNCHANGED_ARITHMETIC','unknown diagnostic configuration')
+        from .r5_subsequence_diagnostics import diagnostic_source_files
+        require(d['instrumentation_files']==diagnostic_source_files(p['source']['commit']),'diagnostic CLI/job/test source changed')
     require(sha(p['registry_path'])==p['registry_sha256'],'dataset registry changed')
     paths,m,pm,specs,users,tok=assets(p['registry_path'],p['multi']);samples,_=provenance(p['dataset'],'qasper')
     require(m['base_prepared']==p['base_prepared'],'base model preparation differs')
@@ -139,7 +144,9 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
         initialized=time.monotonic_ns();rows=[];reqs=[]
         for task in p['tasks']:
             req=request(task,task['token_ids'],task['policy'],identity);reqs.append(req)
-            result=generate(driver.model,driver.adapter,tokenizer,req,channel,owner,index,condition=condition,mode=p['mode'],allow_approximate=p['allow_approximate'],evidence=writer)
+            from .r5_subsequence_profile import Profiler
+            profiler=None if 'diagnostics' not in p else Profiler(cuda_events=p['diagnostics']['cuda_events'],device=driver.device)
+            result=generate(driver.model,driver.adapter,tokenizer,req,channel,owner,index,condition=condition,mode=p['mode'],allow_approximate=p['allow_approximate'],evidence=writer,profiler=profiler)
             data=result.pop('logits_blob');result['logits']=dict(file=writer.blob(data,req['request_id']+'_logits.bin'),dtype='float32',shape=result['logits_shape'],sha256=__import__('hashlib').sha256(data).hexdigest())
             result.update(sample_id=task['sample_id'],scored=task['scored'],quality=score(task['prepared']['sample'],result['generated_text'],task['prepared']['template_version']) if task['scored'] else None)
             end=time.monotonic_ns();result['post_generation_evidence_quality_ms']=(end-result['completion_ns'])/1e6
@@ -200,6 +207,9 @@ def cpu_validate(experiment,output_dir):
     sys.path.insert(0,str(ROOT/'tests'))
     from test_r5_subsequence_generation import Generation
     suite=unittest.defaultTestLoader.loadTestsFromTestCase(Generation)
+    if 'diagnostics' in p:
+        from test_r5_subsequence_diagnostics import Diagnostics
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(Diagnostics))
     result=unittest.TestResult();suite.run(result)
     failed=len(result.failures)+len(result.errors);skipped=len(result.skipped)
     require(not failed and not skipped,'native CPU generation validation failed/skipped: '+str(result.errors+result.failures+result.skipped))

@@ -7,6 +7,7 @@ from .r3b_fixture import ArrayTensor
 from .r5_i5_contracts import validate_request
 from .r5_multi_artifacts import resolve
 from .user_device import cpu_deltas
+from .r5_subsequence_profile import call
 
 VERSION='R5_SPARSE_TOTAL_QKV_TCP_V2'
 
@@ -109,18 +110,18 @@ class SparseSession:
         require(list(x.shape)==[1,1 if self.generated else len(self.req['token_ids']),self.req['physical_identity']['hidden_size']],'full projection input shape differs')
         c=envelope(self.req,layer,positions,self.pass_id,self.generated);n=len(positions);h=x.shape[2]
         if self.role==0:
-            self.context=c;self.input_sha=digest_bytes(blob(x));self.bundle=None
+            self.context=c;self.input_sha=call('protocol_input_hash',digest_bytes,call('protocol_full_input_serialization',blob,x,byte_count=x.numel()*x.element_size()));self.bundle=None
             if n:
-                data=blob(gather(x,positions));dtype=self.req['physical_identity']['dtype']
-                sent=self.channel.send(header('HIDDEN',self.pass_id,layer,dtype,[1,n,h],sparse=c),data)
-                reply,b,received=self.channel.recv(kind='DELTAS',request_id=self.pass_id,layer_id=layer)
+                data=call('tcp_hidden_gather_serialization',lambda:blob(gather(x,positions)),byte_count=n*h*x.element_size());dtype=self.req['physical_identity']['dtype']
+                sent=call('tcp_send_inclusive',self.channel.send,header('HIDDEN',self.pass_id,layer,dtype,[1,n,h],sparse=c),data)
+                reply,b,received=call('tcp_receive_wait_inclusive',self.channel.recv,kind='DELTAS',request_id=self.pass_id,layer_id=layer)
                 require(reply['metadata']['sparse_sha256']==digest(c) and reply['metadata']['hidden_sha256']==digest_bytes(data) and reply['metadata']['cpu_projection_rows']==3*n and reply['shape']==[3,1,n,h] and reply['dtype']=='float32','sparse correction receipt differs')
-                self.bundle=unpack(b,'float32') if self.fixture else tensor_from_bytes(b,'float32',[3,1,n,h]).to(x.device)
+                self.bundle=unpack(b,'float32') if self.fixture else call('delta_deserialize_device_copy',lambda:tensor_from_bytes(b,'float32',[3,1,n,h]).to(x.device),cuda=True)
             else:
-                sent=self.channel.send(header('HELLO',self.pass_id,-1,sparse=c));reply,b,received=self.channel.recv(kind='READY',request_id=self.pass_id,layer_id=-1)
+                sent=call('tcp_send_inclusive',self.channel.send,header('HELLO',self.pass_id,-1,sparse=c));reply,b,received=call('tcp_receive_wait_inclusive',self.channel.recv,kind='READY',request_id=self.pass_id,layer_id=-1)
                 require(not b and reply['metadata']==dict(sparse_sha256=digest(c),cpu_projection_rows=0),'empty projection receipt differs')
             self.receipts.append(dict(context=c,input_sha256=self.input_sha,sent=sent,received=received,hidden_wire_bytes=sent['wire_bytes'],delta_wire_bytes=received['wire_bytes'],fresh_rows_per_role=n,skipped_rows_per_role=c['full_length']-n))
-        else:require(c==self.context and digest_bytes(blob(x))==self.input_sha,'Q/K/V inputs or positions differ')
+        else:require(c==self.context and call('protocol_input_hash',digest_bytes,call('protocol_full_input_serialization',blob,x,byte_count=x.numel()*x.element_size()))==self.input_sha,'Q/K/V inputs or positions differ')
         result=None if not n else ArrayTensor(self.bundle[self.role*n*h:(self.role+1)*n*h],[1,n,h]) if self.fixture else self.bundle[self.role]
         self.role+=1
         if self.role==3:self.role=0;self.layer+=1

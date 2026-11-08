@@ -11,12 +11,19 @@ from .r3b_fixture import ArrayTensor
 from semcache.cache.cache_entry import CacheEntry
 from semcache.cache.metric_manager import actual_attention_impact
 from semcache.semantic.hit_selection import select_nonoverlapping
+from .r5_subsequence_profile import CURRENT,call,profiled
 
 EXACT='EXACT_CONTEXT_VERIFIED'
 APPROX='APPROXIMATE_SUBSEQUENCE_TOTAL_QKV'
 
-def tensor_proof(t):return dict(shape=list(t.shape),dtype=str(t.dtype),sha256=digest_bytes(blob(t)))
+@profiled('tensor_proof')
+def tensor_proof(t):
+    data=call('tensor_serialization_host_transfer_inclusive',blob,t,byte_count=t.numel()*t.element_size())
+    return dict(shape=list(t.shape),dtype=str(t.dtype),sha256=call('tensor_sha256',digest_bytes,data,byte_count=len(data)))
+@profiled('entry_proof_all_layers')
 def entry_proof(entry):
+    p=CURRENT.get()
+    if p is not None:p.entry(entry.key)
     return digest(dict(metadata=entry.qkv_metadata,positions=entry.positions,tokens=entry.token_ids,size=entry.size_bytes,
                        tensors={str(i):[tensor_proof(t) for t in ts] for i,ts in entry.tensors.items()}))
 
@@ -28,52 +35,80 @@ class PhysicalOwner:
     def cache(self):return self.bridge.cache
     def begin(self,req,assignment,*,mode=EXACT,allow_approximate=False,reuse=True):
         require(mode in (EXACT,APPROX) and (mode!=APPROX or allow_approximate),'approximate mode requires explicit opt-in')
-        report=self.bridge.begin(req,assignment);p=self.bridge.pending
+        report=call('candidate_selection',self.bridge.begin,req,assignment);p=self.bridge.pending
         selected=p['selected'] if reuse else []
         if mode==EXACT:selected=[h for h in selected if h.entry.positions==(h.window.start,h.window.end) and h.entry.qkv_metadata['source_token_ids'][:h.window.end]==req['token_ids'][:h.window.end]]
         self.active=dict(req=p['req'],cluster=p['cluster'],windows=p['windows'],selected=selected,mode=mode,captures={},inputs={},records=[],consumed=set(),seen=set())
+        observer=CURRENT.get()
+        if observer is not None:
+            filtered=[]
+            for h in p['selected']:
+                reasons=[]
+                if not reuse:reasons.append('REUSE_DISABLED_BASELINE')
+                if mode==EXACT and h.entry.positions!=(h.window.start,h.window.end):reasons.append('EXACT_POSITION_MISMATCH')
+                if mode==EXACT and h.entry.qkv_metadata['source_token_ids'][:h.window.end]!=req['token_ids'][:h.window.end]:reasons.append('EXACT_CAUSAL_CONTEXT_MISMATCH')
+                if reasons:filtered.append(dict(target_positions=[h.window.start,h.window.end],reasons=reasons))
+            observer.detail(dict(boundary='selection',semantic_candidate_count=len(report['candidates']),selected_nonoverlap=len(p['selected']),exact_context_selected=len(selected),reuse_enabled=reuse,
+                non_selected_windows=len(report['candidates'])-len(p['selected']),filtered_windows=filtered,policy_rejections='NOT_OBSERVABLE_FOR_ABSENT_ENTRIES',
+                candidates=[{k:c[k] for k in ('source_request_id','source_user','source_adapter','source_positions','target_positions','rejections')} for c in report['candidates']],
+                selection_scope='rejections are metadata checks; unselected overlap and exact-context filters are separate; absent entries have no observed policy rejection count',
+                selected=[dict(source_request_id=h.entry.qkv_metadata['source_request_id'],source_positions=list(h.entry.positions),target_positions=[h.window.start,h.window.end],key=h.entry.key) for h in selected]))
         for candidate in report['candidates']:candidate['physical_rejection']=['PER_LAYER_INPUT_AND_TENSOR_VALIDATION_PENDING']
         return report
+    @profiled('owner_valid')
     def valid(self,entry):
         require(self.cache.entries.get(entry.key) is entry and entry.tensors is not None,'stale/missing tensor grant')
         require(entry.qkv_metadata['physical_identity']==self.bridge.identity and entry.qkv_metadata['completed'] and entry.qkv_metadata['component_scope']=='total_qkv','QKV ownership differs')
         require(self.proofs.get(entry.key)==entry_proof(entry),'cached tensor/metadata integrity failure; no fallback')
     def project(self,layer,role,x,native,session):
+        p=CURRENT.get()
+        if p is None:return self._project(layer,role,x,native,session)
+        with p.location(layer,role),p.scope('projection_path_inclusive'):
+            return self._project(layer,role,x,native,session)
+    def _project(self,layer,role,x,native,session):
         a=self.active;require(a is not None and (layer,role) not in a['seen'],'duplicate/inactive projection');a['seen'].add((layer,role))
         n=len(a['req']['token_ids']);h=self.bridge.identity['hidden_size'];require(list(x.shape)==[1,n,h],'projection full shape differs')
         # Same layer span decisions across Q/K/V; OPT presents identical inputs.
         if role=='q':
             accepted=[]
             for hit in a['selected']:
-                self.valid(hit.entry);require(layer in hit.entry.tensors,'missing layer tensor')
-                if a['mode']==EXACT and hit.entry.qkv_metadata['provenance_mode']!=EXACT:continue
-                target_input=tensor_proof(gather(x,list(range(hit.window.start,hit.window.end))))
-                if a['mode']==EXACT and target_input!=hit.entry.qkv_metadata['input_proofs'][str(layer)]:continue
+                observer=CURRENT.get();reason=None;target_input=None
+                try:self.valid(hit.entry);require(layer in hit.entry.tensors,'missing layer tensor')
+                except ValueError as exc:
+                    if observer is not None:observer.detail(dict(boundary='layer_eligibility',layer=layer,reason='OWNERSHIP_OR_INTEGRITY_FAILURE',error=str(exc)[:256],target_positions=[hit.window.start,hit.window.end]))
+                    raise
+                if a['mode']==EXACT and hit.entry.qkv_metadata['provenance_mode']!=EXACT:reason='SOURCE_PROVENANCE_MODE_MISMATCH'
+                else:
+                    target_input=call('layer_input_proof',tensor_proof,call('layer_input_gather',gather,x,list(range(hit.window.start,hit.window.end))))
+                    if a['mode']==EXACT and target_input!=hit.entry.qkv_metadata['input_proofs'][str(layer)]:reason='PER_LAYER_INPUT_BYTES_MISMATCH'
+                if observer is not None:observer.detail(dict(boundary='layer_eligibility',layer=layer,reason=reason or 'ACCEPTED',source_request_id=hit.entry.qkv_metadata['source_request_id'],source_positions=list(hit.entry.positions),target_positions=[hit.window.start,hit.window.end],ownership_integrity_verified=True,target_input_proof=target_input,source_input_proof=hit.entry.qkv_metadata['input_proofs'][str(layer)]))
+                if reason:continue
                 accepted.append(hit)
             a['layer_hits']=accepted
         hits=a['layer_hits'];used={i for hit in hits for i in range(hit.window.start,hit.window.end)};fresh=[i for i in range(n) if i not in used]
-        delta=session.correction(layer,role,x,fresh)
-        base=native(gather(x,fresh)) if fresh else None
+        delta=call('sparse_tcp_correction_inclusive',session.correction,layer,role,x,fresh)
+        base=call('native_sparse_linear',native,call('fresh_row_gather',gather,x,fresh,cuda=True),cuda=True) if fresh else None
         if isinstance(x,ArrayTensor):
             from .r3a_tiny import f32
             total=None if base is None else ArrayTensor([f32(v+d) for v,d in zip(base.values,delta.values)],base.shape)
-        else:total=None if base is None else (base+delta).to(base.dtype)
+        else:total=None if base is None else call('delta_add_cast',lambda:(base+delta).to(base.dtype),cuda=True)
         reused=[]
         for hit in hits:
             self.valid(hit.entry);t=hit.entry.tensors[layer]['qkv'.index(role)]
             reused.append((hit.window.start,t));a['consumed'].add((hit.entry.key,hit.window.start,hit.window.end))
-        out=scatter(total,fresh,reused,n,h,x)
-        a['captures'].setdefault(layer,{})[role]=out.detach().clone()
-        if role=='q':a['inputs'][layer]=x.detach().clone()
+        out=call('ordered_scatter',scatter,total,fresh,reused,n,h,x,cuda=True)
+        a['captures'].setdefault(layer,{})[role]=call('qkv_capture_clone',lambda:out.detach().clone(),cuda=True)
+        if role=='q':a['inputs'][layer]=call('hidden_capture_clone',lambda:x.detach().clone(),cuda=True)
         a['records'].append(dict(layer=layer,role=role,fresh_positions=fresh,reused_positions=sorted(used),native_projection_rows=len(fresh),cpu_lora_rows=len(fresh),consumed=[dict(key=hit.entry.key,source_request_id=hit.entry.qkv_metadata['source_request_id'],source_positions=hit.entry.positions,target_positions=[hit.window.start,hit.window.end],tensor=tensor_proof(hit.entry.tensors[layer]['qkv'.index(role)])) for hit in hits],output=tensor_proof(out),mode=a['mode'],numerical_equivalence='NOT_ESTABLISHED',past_kv_grant=False))
         if self.evidence is not None:
             tag=a['req']['request_id']+f'_l{layer}_{role}';record=a['records'][-1]
-            if role=='q':a['input_evidence']=self.evidence.save(x,tag+'_input')
-            record['input']=a['input_evidence'];record['output']=self.evidence.save(out,tag+'_output')
-            record['fresh_base']=None if base is None else self.evidence.save(base,tag+'_base')
-            record['fresh_delta']=None if delta is None else self.evidence.save(delta,tag+'_delta')
-            for i,hit in enumerate(hits):record['consumed'][i]['tensor']=self.evidence.save(hit.entry.tensors[layer]['qkv'.index(role)],tag+f'_cached_{i}')
+            if role=='q':a['input_evidence']=call('evidence_save_inclusive',self.evidence.save,x,tag+'_input')
+            record['input']=a['input_evidence'];record['output']=call('evidence_save_inclusive',self.evidence.save,out,tag+'_output')
+            record['fresh_base']=None if base is None else call('evidence_save_inclusive',self.evidence.save,base,tag+'_base')
+            record['fresh_delta']=None if delta is None else call('evidence_save_inclusive',self.evidence.save,delta,tag+'_delta')
+            for i,hit in enumerate(hits):record['consumed'][i]['tensor']=call('evidence_save_inclusive',self.evidence.save,hit.entry.tensors[layer]['qkv'.index(role)],tag+f'_cached_{i}')
         return out
+    @profiled('owner_completion_inclusive')
     def complete(self,*,completed,attentions,valid_attention_mask=None):
         begin=time.monotonic_ns();materialization_ns=0;integrity_ns=0;insert_ns=0
         a=self.active;require(a is not None and completed is True,'complete real source required')
@@ -106,7 +141,7 @@ class PhysicalOwner:
             def materialize():
                 nonlocal materialization_ns
                 start=time.monotonic_ns()
-                tensors={i:tuple(gather(a['captures'][i][r],positions) for r in 'qkv') for i in range(layers)}
+                tensors=call('physical_materialization',lambda:{i:tuple(gather(a['captures'][i][r],positions) for r in 'qkv') for i in range(layers)})
                 entry=CacheEntry.from_tensors(a['cluster'],w.token_ids,(w.start,w.end),tensors,storage_device=str(a['inputs'][0].device));entry.qkv_metadata=meta;entry.impact=candidate.impact
                 materialization_ns+=time.monotonic_ns()-start
                 return entry

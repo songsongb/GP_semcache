@@ -1,5 +1,5 @@
 """Separate sparse R5 autoregressive lifecycle; old Exact Prefix driver untouched."""
-from contextlib import contextmanager
+from contextlib import contextmanager,nullcontext
 import time
 from .communication import require,digest,digest_bytes
 from .r3a_artifacts import pack
@@ -7,6 +7,7 @@ from .r4c_workload import termination
 from .r5_sparse_qkv import SparseSession,finish_request
 from .r5_subsequence_physical import projection_path,EXACT
 from semcache.cache.metric_manager import actual_attention_impact
+from .r5_subsequence_profile import CURRENT,call
 
 class StreamingImpact:
     """Original M reducer per span/layer; no all-layer probability retention.
@@ -24,12 +25,12 @@ class StreamingImpact:
         size=prob.numel()*prob.element_size();require(size<=self.max_layer_bytes,'single-layer attention budget exceeded')
         working_bytes=size+prob.numel()*8+prob.shape[1]*3*n*8
         require(working_bytes<=2**30,'single-layer impact working set exceeds1GiB estimate')
-        start=time.monotonic_ns();double=prob.detach().double()
+        start=time.monotonic_ns();double=call('impact_fp64_conversion',lambda:prob.detach().double(),cuda=True)
         # Same M reducer and exact FP64 inputs; avoid recasting the entire matrix
         # once per window. No live native operand is modified or retained.
-        values={w.start:actual_attention_impact([double],w.start,w.end) for w in self.windows}
+        values=call('actual_attention_impact_reduction',lambda:{w.start:actual_attention_impact([double],w.start,w.end) for w in self.windows},cuda=True)
         for k,v in values.items():self.values[k]+=v
-        item=None if self.evidence is None else self.evidence.save(prob,self.req['request_id']+f'_impact_l{layer}')
+        item=None if self.evidence is None else call('impact_evidence_save_inclusive',self.evidence.save,prob,self.req['request_id']+f'_impact_l{layer}')
         self.elapsed_ms+=(time.monotonic_ns()-start)/1e6;self.peak_bytes=max(self.peak_bytes,size)
         self.peak_working_estimate=max(self.peak_working_estimate,working_bytes)
         self.records.append(dict(layer=layer,probabilities=item,span_values=values));self.observed.append(layer)
@@ -43,7 +44,10 @@ class StreamingImpact:
             for layer,module in enumerate(adapter.layers):
                 def hook(m,args,out,layer=layer):
                     require(isinstance(out,tuple) and len(out)>=2,'unsupported OPTAttention return')
-                    self.observe(layer,out[1]);return (out[0],None,*out[2:])
+                    from contextlib import nullcontext
+                    p=CURRENT.get()
+                    with (p.location(layer,'','PREFILL_IMPACT') if p else nullcontext()):self.observe(layer,out[1])
+                    return (out[0],None,*out[2:])
                 handles.append(module.self_attn.register_forward_hook(hook))
             yield
         finally:
@@ -59,13 +63,16 @@ def fresh_path(adapter,session,records,evidence=None,tag='fresh'):
             for role,module in adapter.projection_modules(layer).items():
                 require(type(module) is torch.nn.Linear and 'forward' not in module.__dict__ and not module._forward_hooks and not module._forward_pre_hooks,'bare untouched Linear required')
                 native=module.forward;originals.append(module)
-                def forward(x,*args,_l=layer,_r=role,_native=native,**kwargs):
+                def compute(x,*args,_l=layer,_r=role,_native=native,**kwargs):
                     require(not args and not kwargs,'unsupported projection call')
-                    delta=session.correction(_l,_r,x,list(range(x.shape[1])));base=_native(x);out=(base+delta).to(base.dtype)
+                    delta=call('sparse_tcp_correction_inclusive',session.correction,_l,_r,x,list(range(x.shape[1])));base=call('native_dense_linear',_native,x,cuda=True);out=call('delta_add_cast',lambda:(base+delta).to(base.dtype),cuda=True)
                     record=dict(layer=_l,role=_r,rows=x.shape[1])
                     if evidence is not None:
-                        record.update(input=evidence.save(x,tag+f'_l{_l}_{_r}_input'),output=evidence.save(out,tag+f'_l{_l}_{_r}_output'),fresh_base=evidence.save(base,tag+f'_l{_l}_{_r}_base'),fresh_delta=evidence.save(delta,tag+f'_l{_l}_{_r}_delta'))
+                        record.update(input=call('evidence_save_inclusive',evidence.save,x,tag+f'_l{_l}_{_r}_input'),output=call('evidence_save_inclusive',evidence.save,out,tag+f'_l{_l}_{_r}_output'),fresh_base=call('evidence_save_inclusive',evidence.save,base,tag+f'_l{_l}_{_r}_base'),fresh_delta=call('evidence_save_inclusive',evidence.save,delta,tag+f'_l{_l}_{_r}_delta'))
                     records.append(record);return out
+                def forward(x,*args,_compute=compute,_l=layer,_r=role,**kwargs):
+                    p=CURRENT.get()
+                    with (p.location(_l,_r,'DECODE' if session.generated else 'PREFILL') if p else nullcontext()):return _compute(x,*args,**kwargs)
                 module.forward=forward
         yield;session.complete()
     finally:
@@ -89,7 +96,26 @@ def generate_loop(req,forward,complete,decode_text,*,synchronize=lambda:None):
                 arrival_ns=begin,completion_ns=end,application_e2e_ms=(end-begin)/1e6,model_execution_e2e_ms=(model_end-begin)/1e6,
                 application_ttft_ms=(steps[0]['available_ns']-begin)/1e6,model_ttft_ms=(steps[0]['available_ns']-begin)/1e6,prefill_ms=(prefill_end-begin)/1e6,decode_ms=sum(s['wall_ms'] for s in steps[1:]),admission_completion_ms=(end-model_end)/1e6)
 
-def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None):
+def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None,profiler=None):
+    if profiler is None:return _generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+    try:
+        with profiler.activate(req['request_id']):
+            result=_generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+    except BaseException as primary:
+        if evidence is not None:
+            try:
+                import json
+                record=dict(status='FAILED',reason=repr(primary),profile=profiler.finish());data=json.dumps(record,sort_keys=True).encode()
+                require(len(data)<=8*2**20,'failed profile metadata exceeds8MiB')
+                evidence.blob(data,req['request_id']+'_FAILED_profile.json')
+            except BaseException as exc:
+                if hasattr(primary,'add_note'):primary.add_note('failed profile export: '+repr(exc))
+        raise
+    result['diagnostics']=profiler.finish()
+    end=time.monotonic_ns();result['completion_ns']=end;result['application_e2e_ms']=(end-result['arrival_ns'])/1e6
+    return result
+
+def _generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None):
     """Native full prefill + native cached autoregressive decode over sparse UD.
 
     Requires caller's existing R5 model/adapter/GPU preflight and fresh sessions.
@@ -100,7 +126,7 @@ def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EX
     require(not torch.is_autocast_enabled(),'undeclared autocast is unsupported')
     require(not model.training and all(type(l.self_attn).__name__=='OPTAttention' for l in adapter.layers),'inspected eager eval OPT required')
     device=next(model.parameters()).device;semantic_start=time.monotonic_ns()
-    assignment=None if condition=='FULL_RECOMPUTE' else index.assign(req['input_text'])
+    assignment=None if condition=='FULL_RECOMPUTE' else call('semantic_assignment_inclusive',index.assign,req['input_text'])
     semantic_ms=(time.monotonic_ns()-semantic_start)/1e6
     match_start=time.monotonic_ns();match_report=None
     if assignment is not None:match_report=owner.begin(req,assignment,mode=mode,allow_approximate=allow_approximate,reuse=condition=='SEMCACHE_SUBSEQUENCE')
@@ -125,14 +151,17 @@ def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EX
         pass_records=prefill_records if not step else []
         path=projection_path(adapter,owner,session) if not step and assignment is not None else fresh_path(adapter,session,pass_records,evidence,req['request_id']+f'_s{step}')
         with torch.inference_mode(),(impact.hooks(adapter) if not step and impact is not None else nullcontext()),path,observe_opt_positions(model.model.decoder.embed_positions,mask,old) as observed:
-            out=model(**kwargs)
+            p=CURRENT.get()
+            with (p.location(-1,'','PREFILL' if not step else 'DECODE') if p else nullcontext()):out=call('native_model_forward_inclusive',model,**kwargs)
         receipts.extend(session.receipts)
         values=out.logits[0,-1].float().cpu().tolist()
         after=past_summary(out.past_key_values,old+len(inputs),len(adapter.layers),model.config.num_attention_heads,req['physical_identity']['hidden_size'],req['physical_identity']['dtype'],str(device))
         return values,out.past_key_values,dict(sparse=session.receipts,fresh_projection_records=pass_records,position_observation=observed[0],input_past=before,past=after)
     def complete(tokens):
-        control=finish_request(channel,req,tokens)
-        physical=None if assignment is None else owner.complete(completed=True,attentions=impact)
+        p=CURRENT.get()
+        with (p.location(-1,'','COMPLETION') if p else nullcontext()):
+            control=call('completion_tcp_acknowledgement',finish_request,channel,req,tokens)
+            physical=None if assignment is None else owner.complete(completed=True,attentions=impact)
         if evidence is not None:evidence.check()
         return dict(control=control,physical=physical,impact=None if impact is None else dict(records=impact.records,elapsed_ms=impact.elapsed_ms,peak_probability_bytes=impact.peak_bytes,peak_working_estimate_bytes=impact.peak_working_estimate))
     result=generate_loop(req,forward,complete,lambda tokens:tokenizer.decode(tokens,skip_special_tokens=True,clean_up_tokenization_spaces=False),synchronize=lambda:torch.cuda.synchronize(device) if device.type=='cuda' else None)
