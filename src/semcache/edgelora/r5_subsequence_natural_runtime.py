@@ -10,13 +10,42 @@ from .r5_subsequence_pilot import wait_worker
 SCRIPT=ROOT/'scripts/153_r5_subsequence_natural.py'
 
 def ledger(root,record,request_ids,*,kind='wire'):
-    if kind=='wire':pid=record['header']['request_id']
+    unbound=False
+    if kind=='wire':
+        h=record.get('header');pid=h.get('request_id') if isinstance(h,dict) else None
+        if not isinstance(pid,str) or not pid or Path(pid).name!=pid or pid in ('.','..'):
+            require(record.get('complete') is False and record.get('error'),'missing/unsafe request ID in successful wire record')
+            # File routing only. Keep the incomplete header and original error
+            # unchanged; this is never a synthesized protocol request/header.
+            pid='FAILED_FRAME';unbound=True
     else:pid=record.get('context',{}).get('pass_id',record.get('control',{}).get('request',{}).get('request_id','CONTROL'))
-    rid=next((r for r in request_ids if pid==r or pid.startswith(r+'_')),None)
+    rid=None if unbound else next((r for r in request_ids if pid==r or pid.startswith(r+'_')),None)
     name='CONTROL' if rid is None else rid
     # One pass/frame group per file; no giant cross-request JSONL.
     d=Path(root)/kind/name;d.mkdir(parents=True,exist_ok=True)
     append(d/(pid+'.jsonl'),record)
+
+
+def stop_adapter(session,control):
+    """Close after this adapter's final validated completion ACK, before admission."""
+    req=control['request']
+    require(not session.get('stop_started') and session['requests'] and req==session['requests'][-1] and
+        [r['request_id'] for r in session['requests']]==session['ids'],'premature/duplicate adapter stop')
+    session['stop_started']=True
+    channel=session['channel'];channel.send(header('STOP','shutdown',-1))
+    h,b,_=channel.recv(kind='BYE',request_id='shutdown',layer_id=-1)
+    require(not b and h['dtype']=='none' and h['shape']==[] and h['metadata']=={},'invalid adapter shutdown acknowledgement')
+    channel.close();session['stopped']=True
+
+
+def join_adapter(session):
+    require(session.get('stopped') is True,'adapter completion/STOP acknowledgement missing')
+    session['process'].wait(timeout=60)
+    require(session['process'].returncode==0,'UD failed after STOP acknowledgement')
+
+
+def adapter_completion_callback(session,req):
+    return (lambda control:stop_adapter(session,control)) if req['request_id']==session['ids'][-1] else None
 
 def ud(config,output_dir,*,_implementation=None):
     from .r5_multi_artifacts import validate,load as load_matrices
@@ -106,7 +135,10 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None,*,_p
         for task in tasks:
             request_arrival=time.monotonic_ns()
             s=sessions[task['adapter_id']];req=request(task,task['token_ids'],task['policy'],s['identity']);s['requests'].append(req);s['writer'].current=req['request_id']
-            result=generate(driver.model,driver.adapter,tokenizer,req,s['channel'],s['owner'],s['index'],condition='FULL_RECOMPUTE' if condition=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE',mode=mode,allow_approximate=allow_approximate,evidence=s['writer'],profiler=NaturalProfiler(cuda_events=False,device=driver.device))
+            # No future sparse use on this connection after its final request
+            # ACK. Do not wait for local admission, evidence I/O or other adapters.
+            on_tcp_complete=adapter_completion_callback(s,req)
+            result=generate(driver.model,driver.adapter,tokenizer,req,s['channel'],s['owner'],s['index'],condition='FULL_RECOMPUTE' if condition=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE',mode=mode,allow_approximate=allow_approximate,evidence=s['writer'],profiler=NaturalProfiler(cuda_events=False,device=driver.device),on_tcp_complete=on_tcp_complete)
             result.update(validation_mode=SCOPED,natural_condition=condition)
             result['diagnostics']['validation_mode']=SCOPED;phys=result['completion']['physical']
             result['diagnostics']['integrity_validation']=None if phys is None else {k:v for k,v in phys['integrity_validation'].items() if k!='authorizations'}
@@ -122,7 +154,7 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None,*,_p
             timing=dict(request_id=req['request_id'],arrival_ns=request_arrival,generation_scope_arrival_ns=result['arrival_ns'],completion_ns=end,application_e2e_ms=(end-request_arrival)/1e6,post_generation_persistence_quality_ms=(end-generated_end)/1e6,application_ttft_ms=(first_available-request_arrival)/1e6)
             put(s['directory']/'es'/req['request_id']/'timing.json',timing);sequence.append(dict(adapter_id=task['adapter_id'],**timing))
         for s in sessions.values():
-            s['channel'].send(header('STOP','shutdown',-1));s['channel'].recv(kind='BYE');s['process'].wait(timeout=60);require(s['process'].returncode==0,'UD failed')
+            join_adapter(s)
             put(s['directory']/'requests.json',s['requests']);s['writer'].check()
         require(torch.cuda.max_memory_allocated(0)<22*2**30,'actual22GiB allocation bound exceeded')
         require(backend()==effective_backend,'backend changed during condition')

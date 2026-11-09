@@ -96,15 +96,23 @@ def generate_loop(req,forward,complete,decode_text,*,synchronize=lambda:None):
                 arrival_ns=begin,completion_ns=end,application_e2e_ms=(end-begin)/1e6,model_execution_e2e_ms=(model_end-begin)/1e6,
                 application_ttft_ms=(steps[0]['available_ns']-begin)/1e6,model_ttft_ms=(steps[0]['available_ns']-begin)/1e6,prefill_ms=(prefill_end-begin)/1e6,decode_ms=sum(s['wall_ms'] for s in steps[1:]),admission_completion_ms=(end-model_end)/1e6)
 
-def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None,profiler=None):
+def complete_request(channel,req,tokens,*,owner=None,attentions=None,on_tcp_complete=None):
+    """ACK authorizes completion; an optional final-use shutdown precedes local work."""
+    control=call('completion_tcp_acknowledgement',finish_request,channel,req,tokens)
+    if on_tcp_complete is not None:call('adapter_shutdown_after_completion',on_tcp_complete,control)
+    physical=None if owner is None else owner.complete(completed=True,attentions=attentions)
+    return control,physical
+
+
+def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None,profiler=None,on_tcp_complete=None):
     if profiler is None:
-        try:return _generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+        try:return _generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence,on_tcp_complete=on_tcp_complete)
         except BaseException:
             if owner is not None:owner.abort()
             raise
     try:
         with profiler.activate(req['request_id']):
-            result=_generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence)
+            result=_generate(model,adapter,tokenizer,req,channel,owner,index,condition=condition,mode=mode,allow_approximate=allow_approximate,evidence=evidence,on_tcp_complete=on_tcp_complete)
     except BaseException as primary:
         if owner is not None:owner.abort()
         if evidence is not None:
@@ -120,7 +128,7 @@ def generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EX
     end=time.monotonic_ns();result['completion_ns']=end;result['application_e2e_ms']=(end-result['arrival_ns'])/1e6
     return result
 
-def _generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None):
+def _generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=EXACT,allow_approximate=False,evidence=None,on_tcp_complete=None):
     """Native full prefill + native cached autoregressive decode over sparse UD.
 
     Requires caller's existing R5 model/adapter/GPU preflight and fresh sessions.
@@ -165,8 +173,8 @@ def _generate(model,adapter,tokenizer,req,channel,owner,index,*,condition,mode=E
     def complete(tokens):
         p=CURRENT.get()
         with (p.location(-1,'','COMPLETION') if p else nullcontext()):
-            control=call('completion_tcp_acknowledgement',finish_request,channel,req,tokens)
-            physical=None if assignment is None else owner.complete(completed=True,attentions=impact)
+            control,physical=complete_request(channel,req,tokens,owner=None if assignment is None else owner,
+                attentions=impact,on_tcp_complete=on_tcp_complete)
         if evidence is not None:evidence.check()
         return dict(control=control,physical=physical,impact=None if impact is None else dict(records=impact.records,elapsed_ms=impact.elapsed_ms,peak_probability_bytes=impact.peak_bytes,peak_working_estimate_bytes=impact.peak_working_estimate))
     result=generate_loop(req,forward,complete,lambda tokens:tokenizer.decode(tokens,skip_special_tokens=True,clean_up_tokenization_spaces=False),synchronize=lambda:torch.cuda.synchronize(device) if device.type=='cuda' else None)
