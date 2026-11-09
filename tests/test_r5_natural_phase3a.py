@@ -1,6 +1,7 @@
 """TEST_FIXTURE_ONLY: no fixture establishes dataset availability or GPU behavior."""
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import importlib.util,json,os,tempfile,unittest
 from unittest.mock import patch
 from semcache.edgelora.communication import digest
@@ -14,7 +15,7 @@ from semcache.edgelora import r5_natural_phase3a as api
 from test_r5_i5 import samples,dataset
 
 
-def fixture(name):
+def fixture(name,budget=None):
     """Original-schema test fixtures, explicitly isolated from real preparation."""
     tok=FixtureTokenizer()
     if name=='coqa':
@@ -27,12 +28,12 @@ def fixture(name):
                 frames=[dict(service='hotel',state=dict(slot_values={'hotel-pricerange':['cheap']}))]) for i in range(5)])],
             fixture=True,ontology=['hotel-pricerange'])
     else:rows=samples(name,5)
-    prompts=[prepare_prompt(s,tok,2048,BUDGETS[name],allow_truncation=True,input_limit=512) for s in rows]
+    prompts=[prepare_prompt(s,tok,2048,BUDGETS[name] if budget is None else budget,allow_truncation=True,input_limit=512) for s in rows]
     for p in prompts:p['strict']=True
     tasks=requests(prompts,track='NATURAL',prefix=None,special=dict(bos_token_id=2,eos_token_id=2,pad_token_id=1))
     b=dict(dataset=name,track='NATURAL',repetition=0,priming_requests=0,routing_seed=42,continuity_breaks=[],tasks=tasks)
     b['block_id']=digest(b)
-    return dict(blocks=[b],template_version=TEMPLATE,seed=42),rows
+    return dict(blocks=[b],template_version=TEMPLATE,seed=42,special_tokens=dict(bos_token_id=2,eos_token_id=2,pad_token_id=1)),rows
 
 
 def reseal(w):
@@ -78,9 +79,53 @@ class Phase3A(unittest.TestCase):
         w,rows=fixture('coqa');w['blocks'][0]['continuity_breaks']=[dict(group_id=rows[0]['group_id'])];reseal(w)
         with self.assertRaisesRegex(ValueError,'GROUP_SPLIT'):api.select_block(w,'coqa',0,rows)
         w,rows=fixture('multi_news');w['blocks'][0]['tasks'][0]['policy']['max_new_tokens']=32;reseal(w)
-        with self.assertRaisesRegex(ValueError,'budget required'):api.select_block(w,'multi_news',0,rows)
+        with self.assertRaisesRegex(ValueError,'generation budget differs'):api.select_block(w,'multi_news',0,rows)
 
-    def test_multinews_five_by_original96_file_guard_fails_without_lowering(self):
+    def test_longbench_smoke_recorded_budgets_preserved_in_selection_and_material(self):
+        # Config supplies fixture budgets only. Production uses the sealed tasks.
+        smoke=json.loads((api.ROOT/'configs/r5_i5_smoke_budgets.json').read_text())
+        self.assertEqual((smoke['2wikimqa'],smoke['multi_news']),(8,32))
+        for name in ('2wikimqa','multi_news'):
+            with self.subTest(dataset=name),tempfile.TemporaryDirectory() as tmp:
+                w,rows=fixture(name,smoke[name]);before=deepcopy(w)
+                self.assertEqual(api.select_block(w,name,0,rows),w['blocks'][0])
+                tok=FixtureTokenizer()
+                for k,v in w['special_tokens'].items():setattr(tok,k,v)
+                multi=Path(tmp)/'multi';multi.mkdir()
+                from semcache.edgelora.r5_evidence import seal as multi_seal
+                multi_seal(multi)
+                args=(w,{name:{'prepared_path':'TEST_FIXTURE_ONLY'}},{},{},dict(stage='expanded',base_prepared='TEST_FIXTURE_ONLY'),
+                    {},{},{},SimpleNamespace(tokenizer=tok,identity={'TEST_FIXTURE_ONLY':True}))
+                network=dict(rows=[dict(request_id=t['request_id'],maximum_header_bytes=12000) for t in w['blocks'][0]['tasks']])
+                with patch.object(api,'inputs',return_value=args),patch.object(api,'provenance',return_value=(rows,{})), \
+                     patch.object(api,'validate_scorers'),patch.object(api,'transport',return_value=network):
+                    fields,rest=api.material('TEST_FIXTURE_ONLY',multi,name,0)
+                self.assertEqual(fields['tasks'],before['blocks'][0]['tasks']);self.assertEqual(w,before)
+                self.assertEqual(rest[0]['block_id'],before['blocks'][0]['block_id'])
+                self.assertLess(fields['resources']['estimated_run_file_count'],500000)
+                self.assertEqual(fields['resources']['max_forwards'],5*smoke[name])
+
+    def test_smoke_policy_mismatch_tampering_and_resource_bounds_rejected(self):
+        for name,budget in (('2wikimqa',8),('multi_news',32)):
+            for mutation in ('policy_budget','prepared_budget','do_sample','mode','special_token','extra_field','zero','over_limit','bool','float','token_tamper'):
+                with self.subTest(dataset=name,mutation=mutation):
+                    w,rows=fixture(name,budget);t=w['blocks'][0]['tasks'][0]
+                    if mutation=='policy_budget':t['policy']['max_new_tokens']+=1
+                    elif mutation=='prepared_budget':t['prepared']['max_new_tokens']+=1
+                    elif mutation=='do_sample':t['policy']['do_sample']=True
+                    elif mutation=='mode':t['policy']['mode']='fixed'
+                    elif mutation=='special_token':t['policy']['eos_token_id']+=1
+                    elif mutation=='extra_field':t['policy']['temperature']=1
+                    elif mutation=='token_tamper':t['token_ids'][0]+=1
+                    else:
+                        value={'zero':0,'over_limit':97,'bool':True,'float':float(budget)}[mutation]
+                        t['prepared']['max_new_tokens']=t['policy']['max_new_tokens']=value
+                    # Resealing a fixture isolates consistency checks. A token
+                    # mutation without resealing must fail the original hash.
+                    if mutation!='token_tamper':reseal(w)
+                    with self.assertRaises(ValueError):api.select_block(w,name,0,rows)
+
+    def test_multinews_default96_fixture_file_guard_remains_unchanged(self):
         w,_=fixture('multi_news');before=deepcopy(w)
         with self.assertRaisesRegex(ValueError,'file guard'):api.base.preflight(w['blocks'][0]['tasks'])
         self.assertEqual(w,before)
@@ -117,9 +162,17 @@ class Phase3A(unittest.TestCase):
             with patch.object(api,'implementation',return_value=impl),patch.object(api,'material',return_value=(fields,[])):
                 api.prepare(root/'original',root/'multi','TEST_FIXTURE_ONLY','snips',0,root/'plan',True)
                 p,_,_=api.load(root/'plan');self.assertEqual(p['dataset'],'snips');self.assertEqual(p['conditions'],list(api.base.CONDITIONS))
-                bad=deepcopy(p);bad['tasks'][0]['input_text']='TEST_FIXTURE_ONLY_MUTATION';bad.pop('plan_id');bad['plan_id']=digest(bad)
-                d=output(root/'bad');put(d/'approx_plan.json',bad);seal(d)
-                with self.assertRaisesRegex(ValueError,'original selected'):api.load(d)
+                for mutation in ('payload','policy'):
+                    bad=deepcopy(p)
+                    if mutation=='payload':bad['tasks'][0]['input_text']='TEST_FIXTURE_ONLY_MUTATION'
+                    else:
+                        # Internally consistent policy editing still violates
+                        # the binding to the original sealed request.
+                        bad['tasks'][0]['policy']['max_new_tokens']+=1
+                        bad['tasks'][0]['prepared']['max_new_tokens']+=1
+                    bad.pop('plan_id');bad['plan_id']=digest(bad)
+                    d=output(root/('bad_'+mutation));put(d/'approx_plan.json',bad);seal(d)
+                    with self.assertRaisesRegex(ValueError,'original selected'):api.load(d)
 
     def test_zero_skip_cpu_approval_and_gpu_optin_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
