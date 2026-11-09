@@ -24,10 +24,10 @@ def ledger(ev,endpoint,kind,rid):
     return records
 
 
-def child(path,p,pr,block,tok):
+def child(path,p,pr,block,tok,*,_conditions=None,_context_mode=None,_allow_approximate=False):
     root=Path(path);config=json.loads((root/'identity.json').read_bytes());status=json.loads((root/'status.json').read_bytes())
     require(status['status']=='COMPLETE' and config['source']==p['implementation']['source'] and config['plan_inventory']==pr,'failed/source/plan child differs')
-    c=config['condition'];require(c in CONDITIONS,'condition differs');sequence=json.loads((root/'sequence.json').read_bytes())
+    c=config['condition'];require(c in (CONDITIONS if _conditions is None else _conditions),'condition differs');sequence=json.loads((root/'sequence.json').read_bytes())
     require([r['request_id'] for r in sequence]==[t['request_id'] for t in block['tasks']],'original global order differs')
     require(all(a['completion_ns']<=b['arrival_ns'] for a,b in zip(sequence,sequence[1:])),'overlapping/noncompleted NATURAL requests')
     summaries={};identities={};costs=[];all_policy=[]
@@ -43,8 +43,12 @@ def child(path,p,pr,block,tok):
         for req,task in zip(reqs,tasks):
             require(all(req[k]==task[k] for k in ('request_id','sample_id','adapter_id','user_id','token_ids','input_text','request_sequence_number')) and req['generation_policy']==task['policy'],'original dataset request/routing changed')
             rid=req['request_id'];r=load_result(ev.root/'es',rid)
-            require(r['natural_condition']==c and r['condition']==('FULL_RECOMPUTE' if c=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE') and r['context_mode']==p['context_mode'] and r['validation_mode']==p['validation_mode'],'execution mode differs')
+            require(r['natural_condition']==c and r['condition']==('FULL_RECOMPUTE' if c=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE') and r['context_mode']==(p['context_mode'] if _context_mode is None else _context_mode) and r['validation_mode']==p['validation_mode'],'execution mode differs')
             require((r['completion']['physical'] is None)==(c=='FULL_RECOMPUTE') and (r['completion']['impact'] is None)==(c=='FULL_RECOMPUTE') and (r['assignment'] is None)==(c=='FULL_RECOMPUTE'),'A performed cache work or C omitted impact/policy')
+            if _context_mode is not None and r['completion']['physical'] is not None:
+                phys=r['completion']['physical']
+                require(phys['mode']==_context_mode and phys['integrity_validation']['validation_mode']==p['validation_mode'] and
+                    all(x['mode']==_context_mode for x in phys['records']),'explicit pilot projection/integrity mode differs')
             ud=ledger(ev,'ud','layers',rid);wire=ledger(ev,'es','wire',rid);network=replay_wire(wire,ledger(ev,'ud','wire',rid))
             for row in ud:
                 if 'context' in row:
@@ -54,8 +58,8 @@ def child(path,p,pr,block,tok):
                     require(rid not in completed and order.layer==0 and previous is not None and previous[0]==req and control['request']==req and control['generated_token_ids'][:-1]==previous[1] and termination(req['generation_policy'],control['generated_token_ids'])==control['termination'],'UD completion differs');completed.add(rid)
             frames={(x['operation'],x['header']['sequence']):x for x in wire}
             require(len(frames)==len(wire),'duplicate wire sequence')
-            reused=audit_request(ev,cfg,req,r,ud,frames,sources,completed)
-            require(r['generated_text']==tok.tokenizer.decode(r['generated_token_ids'],skip_special_tokens=True,clean_up_tokenization_spaces=False) and r['quality']==score(task['prepared']['sample'],r['generated_text'],task['prepared']['template_version']) and r['sample_id']==task['sample_id'] and r['scored'] is True,'text/quality/sample differs')
+            reused=audit_request(ev,cfg,req,r,ud,frames,sources,completed,allow_approximate=_allow_approximate)
+            require(r['generated_text']==tok.tokenizer.decode(r['generated_token_ids'],skip_special_tokens=True,clean_up_tokenization_spaces=False) and r['quality']==(score(task['prepared']['sample'],r['generated_text'],task['prepared']['template_version']) if task['scored'] else None) and r['sample_id']==task['sample_id'] and r['scored']==task['scored'],'text/quality/sample differs')
             timing=ev.json('es/'+rid+'/timing.json');recorded=next(x for x in sequence if x['request_id']==rid)
             require(recorded==dict(adapter_id=aid,**timing) and timing['generation_scope_arrival_ns']==r['arrival_ns'] and timing['arrival_ns']<=r['arrival_ns'] and timing['completion_ns']>=r['completion_ns'] and timing['application_e2e_ms']==(timing['completion_ns']-timing['arrival_ns'])/1e6 and timing['application_ttft_ms']==(r['steps'][0]['available_ns']-timing['arrival_ns'])/1e6,'primary evidence-inclusive timing differs')
             cost=request_costs(r);costs.append(cost)
