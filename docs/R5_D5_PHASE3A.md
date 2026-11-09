@@ -20,6 +20,10 @@ dataset, with five scored requests and no sources or repeated evaluation added.
 Original block ID, request IDs, prepared prompts/tokens, sample provenance,
 generation policy, seed and routing remain intact. An explicitly selected later
 block, slicing/combining blocks, changed budgets, or Qasper selection is rejected.
+The budget authority is each sealed request's `prepared.max_new_tokens` and
+matching canonical quality policy, not `BUDGETS[dataset]`. Both recorded budgets
+must be integers within the existing 1..96 D5 bound. The original block seal,
+payload binding, token/context limits and all resource guards remain required.
 CoQA/MultiWOZ require complete, contiguous original conversations in numeric turn
 order; partial conversations, even historical block splits, fail explicitly.
 There is no search for a more cache-friendly or resource-friendly block.
@@ -44,7 +48,7 @@ SSH endpoint or mounted filesystem is available. The following are documented
 | SNIPS | `results/r5/i5/data/snips_test`; same registry/plan candidates | Remote UNVERIFIED |
 | MultiWOZ 2.2 | `results/r5/i5/data/multiwoz22_test`; same registry/plan candidates | Remote UNVERIFIED; version/ontology and complete dialogue boundary required |
 | 2WikiMQA | `plan_longbench3_smoke_v1`, first dataset block (historically index 4) | User-verified source plan; fresh local revalidation unavailable |
-| MultiNews | same LongBench plan, first dataset block (historically index 8) | User-verified source plan; five-request resource preflight BLOCKED |
+| MultiNews | same LongBench plan, first dataset block (historically index 8) | User-verified source plan; actual resource revalidation pending SERAPH |
 
 Prepared paths for LongBench are read from the sealed plan's dataset manifest,
 never guessed. The discovery report records actual found paths, revisions,
@@ -53,13 +57,25 @@ grouping/resource failures, scorer availability and native dependencies. It
 does not load a model, execute GPU work, prepare or modify any artifact.
 Transport/tokenizer/native approval is a subsequent preparation/CPU gate.
 
-**A definite resource blocker remains:** five MultiNews requests at the original
-96-token budget forecast **716,352 files**, exceeding the unchanged 500,000-file
-limit. This failure is independent of prompt lengths. No MultiNews approval or
-GPU-ready claim is made. An explicit later decision about evidence layout or
-the requested experimental bound is required; this task changes neither.
+**Budget-validation correction:** the earlier MultiNews blocker incorrectly
+treated the default 96-token budget as the sealed Smoke budget. That conclusion
+is withdrawn. The repository's `configs/r5_i5_smoke_budgets.json` records 8 for
+2WikiMQA and 32 for MultiNews; production validation reads the sealed requests,
+never this configuration or dataset defaults. No workload was regenerated or
+budget lowered. Earlier sealed local receipts remain unchanged and describe
+the earlier implementation's default-budget assumptions.
 
-Analytical bounds for five 512-token targets, using original generation limits:
+For five 512-token targets with a recorded 32-token budget, the unchanged
+preflight forecasts **282,432 files**, **11.10 GiB GPU memory**, **12.58 GiB
+evidence/condition**, and **37.74 GiB total A/B/C evidence**. UD tensor payload
+alone is 2.90 GiB if all requests share one adapter; actual header/ledger and
+routing checks remain required. Required free disk is still 96 GiB. This is a
+configuration-based upper envelope, **not actual sealed-data validation**:
+the original SERAPH plan is absent locally. The exact actual forecast remains
+BLOCKED locally until the read-only command below runs against that plan.
+
+For reference, these older analytical examples use I5 **default** budgets,
+not necessarily the budgets in the original sealed Smoke plan:
 
 | Dataset | Generation/request | A/B/C file forecast | A/B/C evidence GiB | Status before actual transport |
 |---|---:|---:|---:|---|
@@ -67,7 +83,7 @@ Analytical bounds for five 512-token targets, using original generation limits:
 | SNIPS | 16 | 173,952 | 35.96 | Envelope only |
 | MultiWOZ | 64 | 499,392 | 41.32 | Only 608 forecast files below limit; runtime can still reject |
 | 2WikiMQA | 32 | 282,432 | 37.74 | Envelope only |
-| MultiNews | 96 | 716,352 | Not approved | BLOCKED |
+| MultiNews | 96 | 716,352 | Not approved | This 96-token example exceeds the file guard |
 
 These are explicitly labeled fixtures for resource arithmetic, not real requests
 or measured memory/latency. Forecast GPU allocation is about 11.10–11.12 GiB
@@ -199,8 +215,9 @@ prepare_cpu_one 2wikimqa "$LONGBENCH_ORIGINAL_PLAN"
 prepare_cpu_one multi_news "$LONGBENCH_ORIGINAL_PLAN"
 ```
 
-MultiNews's last command stops at the current file guard. No CPU approval or
-job submission follows. Dialogue dataset commands may similarly stop with the
+Every command evaluates the budget actually sealed in its original block.
+Any file/memory/disk guard failure stops preparation without a CPU approval or
+job submission. Dialogue dataset commands may similarly stop with the
 exact original conversation/block failure. Native approval requires zero skips;
 it includes existing native tiny-OPT/TCP and D5 regression tests plus new tests.
 
@@ -209,8 +226,8 @@ it includes existing native tiny-OPT/TCP and D5 regression tests plus new tests.
 These commands are instructions only and were not executed. Run only after that
 dataset independently passes source/data/scorer/transport/resource checks and
 zero-skip CPU approval. `D5P3A_DATASET` is set to exactly one of `coqa`, `snips`,
-`multiwoz`, `2wikimqa`, `multi_news`; do not submit a loop or array. MultiNews
-is currently blocked. Each dataset needs its own reviewed allocation.
+`multiwoz`, `2wikimqa`, `multi_news`; do not submit a loop or array.
+Each dataset needs its own reviewed allocation and actual resource approval.
 
 ```bash
 export D5P3A_DATASET=coqa
@@ -268,7 +285,45 @@ measurement scope. The final lightweight six-dataset runner is not implemented.
 
 ## Local validation and conclusion
 
-See the sealed `results/r5/i5r/d5_natural/phase3a/cpu_local_20261109_02/`
+Budget fix: `CUDA_VISIBLE_DEVICES='' PYTHONPATH=src:tests python3 -m unittest
+test_r5_natural_phase3a test_r5_i5 -v` ran 45 tests: **44 passed, one skipped**
+(the installed rouge==1.0.1 check), zero failures. Phase3A's 16 tests all passed.
+The fresh sealed receipt and resource envelope are in
+`results/r5/i5r/d5_natural/phase3a/budget_fix_cpu_20261109_01/budget_fix_validation.json`.
+New regression fixtures cover both Smoke budgets through selection and
+preparation, unchanged request payloads/routing/order, mismatched budgets,
+altered policy fields/special tokens, malformed budget types, out-of-bound
+budgets and unsealed token tampering. They do not establish real-data approval.
+
+To recalculate actual MultiNews file, memory, disk and transport forecasts on
+SERAPH, with `D5N_MULTI` pointing at the existing verified preparation, run this
+read-only CPU command after updating the reviewed source:
+
+```bash
+cd /data/khuss/repos/GP_semcache
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src python - <<'PY'
+import json, os
+from semcache.edgelora.r5_natural_phase3a import original_plan, material
+original='results/r5/i5/plan_longbench3_smoke_v1'
+w, _, _=original_plan(original)
+i=next(i for i,b in enumerate(w['blocks']) if b['dataset']=='multi_news'
+       and b['track']=='NATURAL' and b['repetition']==0)
+fields, _=material(original, os.environ['D5N_MULTI'], 'multi_news', i)
+print(json.dumps(dict(block_id=fields['block_id'],
+    original_inventory=fields['original_inventory'],
+    request_ids=[t['request_id'] for t in fields['tasks']],
+    input_tokens=[len(t['token_ids']) for t in fields['tasks']],
+    recorded_budgets=[t['policy']['max_new_tokens'] for t in fields['tasks']],
+    resources=fields['resources'], transport=fields['transport']), indent=2))
+PY
+```
+
+This does not prepare, reseal, submit or run an experiment. Missing assets or
+scorers and existing forecast guards still fail closed. Use a fresh Phase3A
+plan and zero-skip CPU approval afterward; old source-pinned approvals do not
+authorize execution of changed code.
+
+Before the budget fix, the sealed `results/r5/i5r/d5_natural/phase3a/cpu_local_20261109_02/`
 receipt, test logs, local discovery and analytical resource envelopes. New
 Phase3A tests: 14 passed. Existing D5/I5 tests: 100 passed, 9 dependency-related
 skips. Phase 1/2 continuity tests: 34 passed. Total: 148 passed, 9 skipped,
@@ -279,6 +334,6 @@ behavior only. Native tests skipped for missing dependencies do not approve GPU
 execution. Historical physical/Phase 2.5A code hashes are checked against HEAD.
 
 **Implementation CPU fixtures PASS; remote availability UNVERIFIED; real-data
-native approval BLOCKED locally; MultiNews five-request resource preflight
-BLOCKED; GPU_NOT_RUN.** No GPU/Slurm execution, download, historical resealing,
+native approval and actual MultiNews forecast BLOCKED locally by missing assets;
+GPU_NOT_RUN.** No GPU/Slurm execution, download, historical resealing,
 Qasper rerun, final benchmark implementation or git push occurred.

@@ -6,7 +6,8 @@ import importlib.util,json,os,subprocess
 from .communication import require,digest
 from .r3a_artifacts import ROOT,THRESHOLDS
 from .r5_i5_data import DATASETS as I5_DATASETS
-from .r5_i5_workload import BUDGETS,TEMPLATE,turn_order
+from .r5_i5_workload import TEMPLATE,turn_order
+from .r4c_workload import policy
 from .r5_i5_quality import validate_scorers
 from .r5_i5r3a import provenance
 from .r5_i5r2_tensors import Evidence,file_sha
@@ -41,8 +42,10 @@ def select_block(w,dataset,block_index,samples):
     require(not b.get('continuity_breaks'),'DIALOGUE_GROUP_SPLIT_AT_BLOCK_BOUNDARY')
     require(w['template_version']==TEMPLATE and b['routing_seed']==w['seed'],'original template/seed differs')
     for t in tasks:
-        require(t['policy']['max_new_tokens']==BUDGETS[dataset] and t['prepared']['max_new_tokens']==BUDGETS[dataset],
-            'original I5 generation budget required; no lowering for resource acceptance')
+        budget=t['prepared']['max_new_tokens']
+        require(type(budget) is int and 1<=budget<=96 and type(t['policy']['max_new_tokens']) is int and
+            t['policy']['max_new_tokens']==budget,'sealed request/prepared generation budget differs or exceeds I5 bounds')
+        require(t['policy']==policy(w['special_tokens'],'quality',budget),'sealed generation policy differs')
     if dataset in ('coqa','multiwoz'):
         all_groups=defaultdict(list);chosen=defaultdict(list)
         for s in samples:all_groups[s['group_id']].append(s)
@@ -149,11 +152,10 @@ def material(original_experiment,multi,dataset,block_index):
     samples,_=provenance(d[dataset]['prepared_path'],dataset)
     b=select_block(w,dataset,block_index,samples)
     validate_scorers({dataset})
-    from .r4c_workload import policy
     special={k:getattr(tok.tokenizer,k) for k in ('bos_token_id','eos_token_id','pad_token_id')}
     require(w['special_tokens']==special,'original special token policy differs')
     for t in b['tasks']:
-        require(t['policy']==policy(special,'quality',BUDGETS[dataset]) and t['prepared']['template_version']==TEMPLATE,'original generation/template differs')
+        require(t['prepared']['template_version']==TEMPLATE,'original template differs')
     network=transport(b['tasks'],pm,specs,tok.identity,users)
     fields=dict(original_experiment=str(Path(original_experiment).resolve()),multi=str(Path(multi).resolve()),
         original_inventory=receipt,dataset_inventories=inv,multi_inventory=Evidence(multi).verify('r5_output_manifest.json'),
