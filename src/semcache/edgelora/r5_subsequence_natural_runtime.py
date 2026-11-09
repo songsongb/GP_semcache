@@ -18,7 +18,7 @@ def ledger(root,record,request_ids,*,kind='wire'):
     d=Path(root)/kind/name;d.mkdir(parents=True,exist_ok=True)
     append(d/(pid+'.jsonl'),record)
 
-def ud(config,output_dir):
+def ud(config,output_dir,*,_implementation=None):
     from .r5_multi_artifacts import validate,load as load_matrices
     from .user_device import configure_cpu
     from .communication import listener
@@ -28,7 +28,7 @@ def ud(config,output_dir):
     primary=None;connection=None
     try:
         m,pm,specs,registry=validate(c['multi']);cpu=configure_cpu(True);spec=specs[c['identity']['adapter_id']]
-        require(c['implementation']==implementation(),'UD source differs')
+        require(c['implementation']==(implementation() if _implementation is None else _implementation()),'UD source differs')
         require(spec['matrix_sha256']==c['identity']['adapter_matrix_fingerprint'] and c['identity']['base_fingerprint']==pm['identity']['base_weight_sha256'] and c['identity']['tokenizer']==m['tokenizer'] and c['identity']['model_revision']==pm['identity']['base_revision'],'UD model/adapter differs')
         matrices=load_matrices(c['multi'],spec,torch_backend=True)
         import torch
@@ -50,14 +50,16 @@ def ud(config,output_dir):
             if primary is None:raise
             if hasattr(primary,'add_note'):primary.add_note('UD finalization: '+repr(exc))
 
-def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
-    p,pr,rest,ar=approval(experiment,cpu_audit);block,m,pm,specs,registry,tok=rest
-    require(condition in CONDITIONS,'unknown NATURAL condition')
+def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None,*,_profile=None):
+    p,pr,rest,ar=(approval(experiment,cpu_audit) if _profile is None else _profile.approval(experiment,cpu_audit));block,m,pm,specs,registry,tok=rest
+    require(condition in (CONDITIONS if _profile is None else _profile.conditions),'unknown NATURAL condition')
+    mode,allow_approximate=('EXACT_CONTEXT_VERIFIED',False) if _profile is None else _profile.execution(condition)
     require(os.environ.get('SLURM_JOB_ID') and not os.environ.get('SLURM_ARRAY_TASK_ID') and os.environ.get('R5_ENABLE_GPU')==os.environ.get('R5_I5_ENABLE_GPU')=='1','manual opted-in allocation required')
     require(int(os.environ.get('SLURM_CPUS_PER_TASK','0'))>=4 and int(os.environ.get('SLURM_MEM_PER_NODE','0'))>=65536 and len(os.sched_getaffinity(0))>=4,'4CPU/64GiB required')
     require(os.environ.get('D5N_NODE') in ('moana-y3','moana-y4') and os.environ.get('SLURMD_NODENAME',os.environ.get('SLURM_JOB_NODELIST'))==os.environ['D5N_NODE'],'node differs')
     require(os.environ.get('HF_HUB_OFFLINE')==os.environ.get('TRANSFORMERS_OFFLINE')=='1' and os.environ.get('CUBLAS_WORKSPACE_CONFIG')==':4096:8','offline/backend differs')
-    out=output(output_dir,(experiment,cpu_audit,p['multi'],p['original_experiment']));status=dict(status='FAILED',condition=condition);primary=None;sessions={};begin=time.monotonic_ns()
+    protected=(experiment,cpu_audit,p['multi'],p['original_experiment'],*([] if _profile is None else p['dataset_paths'].values()))
+    out=output(output_dir,protected);status=dict(status='FAILED',condition=condition);primary=None;sessions={};begin=time.monotonic_ns()
     try:
         from .r4a_runtime import setup
         from .r4b2_kv import installed_contract
@@ -90,7 +92,7 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
             d=out/aid;d.mkdir();(d/'es').mkdir();ids=[t['request_id'] for t in tasks if t['adapter_id']==aid]
             config=dict(multi=p['multi'],identity=identity,implementation=p['implementation'],session=uuid.uuid4().hex,budget=p['resources']['per_adapter_ud_budget_bytes'],request_ids=ids)
             put(d/'ud_config.json',config);log=(d/'ud.log').open('w')
-            proc=subprocess.Popen([sys.executable,str(SCRIPT),'_ud','--config',str(d/'ud_config.json'),'--output-dir',str(d/'ud')],cwd=ROOT,env=dict(os.environ,CUDA_VISIBLE_DEVICES=''),stdout=log,stderr=subprocess.STDOUT)
+            proc=subprocess.Popen([sys.executable,str(SCRIPT if _profile is None else _profile.script),'_ud','--config',str(d/'ud_config.json'),'--output-dir',str(d/'ud')],cwd=ROOT,env=dict(os.environ,CUDA_VISIBLE_DEVICES=''),stdout=log,stderr=subprocess.STDOUT)
             s=dict(process=proc,log=log,channel=None,owner=None,identity=identity,directory=d,ids=ids,requests=[]);sessions[aid]=s
             deadline=time.monotonic()+120
             while not (d/'ud/ready.json').exists():require(proc.poll() is None and time.monotonic()<deadline,'UD startup failed: '+str(d/'ud.log'));time.sleep(.05)
@@ -104,17 +106,18 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
         for task in tasks:
             request_arrival=time.monotonic_ns()
             s=sessions[task['adapter_id']];req=request(task,task['token_ids'],task['policy'],s['identity']);s['requests'].append(req);s['writer'].current=req['request_id']
-            result=generate(driver.model,driver.adapter,tokenizer,req,s['channel'],s['owner'],s['index'],condition='FULL_RECOMPUTE' if condition=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE',mode=EXACT,allow_approximate=False,evidence=s['writer'],profiler=NaturalProfiler(cuda_events=False,device=driver.device))
+            result=generate(driver.model,driver.adapter,tokenizer,req,s['channel'],s['owner'],s['index'],condition='FULL_RECOMPUTE' if condition=='FULL_RECOMPUTE' else 'SEMCACHE_SUBSEQUENCE',mode=mode,allow_approximate=allow_approximate,evidence=s['writer'],profiler=NaturalProfiler(cuda_events=False,device=driver.device))
             result.update(validation_mode=SCOPED,natural_condition=condition)
             result['diagnostics']['validation_mode']=SCOPED;phys=result['completion']['physical']
             result['diagnostics']['integrity_validation']=None if phys is None else {k:v for k,v in phys['integrity_validation'].items() if k!='authorizations'}
             data=result.pop('logits_blob');result['logits']=dict(file=s['writer'].blob(data,req['request_id']+'_logits.bin'),dtype='float32',shape=result['logits_shape'],sha256=__import__('hashlib').sha256(data).hexdigest())
-            result.update(sample_id=task['sample_id'],scored=True,quality=score(task['prepared']['sample'],result['generated_text'],task['prepared']['template_version']))
+            result.update(sample_id=task['sample_id'],scored=task['scored'],quality=score(task['prepared']['sample'],result['generated_text'],task['prepared']['template_version']) if task['scored'] else None)
             # Persistence is inside the primary wall scope. The small timing sidecar
             # and final inventory sealing are outside and separately stated.
             generated_end=result['completion_ns'];first_available=result['steps'][0]['available_ns']
             save_result(s['directory']/'es',result);s['writer'].check()
             require(sum(x.stat().st_size for x in out.rglob('*') if x.is_file())<p['resources']['condition_limit_bytes'],'condition disk budget exceeded')
+            if _profile is not None:_profile.check_run_budget(out.parent,p['resources'])
             end=time.monotonic_ns()
             timing=dict(request_id=req['request_id'],arrival_ns=request_arrival,generation_scope_arrival_ns=result['arrival_ns'],completion_ns=end,application_e2e_ms=(end-request_arrival)/1e6,post_generation_persistence_quality_ms=(end-generated_end)/1e6,application_ttft_ms=(first_available-request_arrival)/1e6)
             put(s['directory']/'es'/req['request_id']/'timing.json',timing);sequence.append(dict(adapter_id=task['adapter_id'],**timing))
@@ -123,7 +126,7 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
             put(s['directory']/'requests.json',s['requests']);s['writer'].check()
         require(torch.cuda.max_memory_allocated(0)<22*2**30,'actual22GiB allocation bound exceeded')
         require(backend()==effective_backend,'backend changed during condition')
-        put(out/'identity.json',dict(backend=effective_backend,gpu=gpu,gpu_identity_receipt=gpu_receipt,source=p['implementation']['source'],plan_inventory=pr,condition=condition,initialization_ms=(initialized-begin)/1e6,warmup_requests=0,gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(0),gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(0),ordering='original I5 tasks; no priming; one model and per-adapter CPU UD/cache/index',measurement='strict observer overhead included; model init, final inventory sealing and small timing sidecars separate'))
+        put(out/'identity.json',dict(backend=effective_backend,gpu=gpu,gpu_identity_receipt=gpu_receipt,source=p['implementation']['source'],plan_inventory=pr,condition=condition,initialization_ms=(initialized-begin)/1e6,warmup_requests=0,gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(0),gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(0),ordering=p.get('ordering','original I5 tasks; no priming; one model and per-adapter CPU UD/cache/index'),measurement='strict observer overhead included; model init, final inventory sealing and small timing sidecars separate'))
         put(out/'sequence.json',sequence);status['status']='COMPLETE'
     except BaseException as exc:primary=exc;status['reason']=repr(exc);raise
     finally:

@@ -60,12 +60,15 @@ def replay_projection(ev,record,ud,req,sources):
     require(used==set(range(n)),'incomplete physical output coverage')
     return sum(c['target_positions'][1]-c['target_positions'][0] for c in record.get('consumed',[]))
 
-def replay_validation(ev,req,result,sources):
+def replay_validation(ev,req,result,sources,*,allow_approximate=False):
     """D5 verify admission fingerprints from completed source bytes, not counters."""
     from .r5_subsequence_integrity import SCHEMA,EAGER,SCOPED,THREAT_MODEL
     physical=result['completion']['physical']
     if physical is None:return
+    approximate=allow_approximate and physical['mode']=='APPROXIMATE_SUBSEQUENCE_TOTAL_QKV'
+    if allow_approximate:require(approximate and result['context_mode']==physical['mode'],'explicit approximate audit mode differs')
     report=physical.get('integrity_validation')
+    if allow_approximate:require(report is not None,'new approximate evidence requires integrity validation')
     if report is None:return  # Original sealed evidence predates D5.
     require(report['schema']==SCHEMA and report['validation_mode'] in (EAGER,SCOPED) and report['request_sha256']==req['request_sha256'] and report['request_id']==req['request_id'],'validation receipt/request differs')
     require(report['records_expired'] and report['integrity_check_failures']==0 and report['threat_model']==THREAT_MODEL,'failed/live/unknown validation scope')
@@ -77,7 +80,7 @@ def replay_validation(ev,req,result,sources):
             if (start,end) not in selected:continue
             require(sid in sources,'selected validation source incomplete')
             source=sources[sid][0]
-            if list(candidate['source_positions'])==[start,end] and source['token_ids'][:end]==req['token_ids'][:end] and sharing(ev.registry,source['user_id'],req['user_id'],source['adapter_id'],req['adapter_id']) is None:
+            if (approximate or list(candidate['source_positions'])==[start,end] and source['token_ids'][:end]==req['token_ids'][:end]) and sharing(ev.registry,source['user_id'],req['user_id'],source['adapter_id'],req['adapter_id']) is None:
                 exact_windows+=1;expected_keys.add(digest([result['assignment']['cluster_id'],req['token_ids'][start:end]]))
     for key,value in report.items():
         if key.endswith(('_count','_entries','_bytes','_ms')):
@@ -124,7 +127,7 @@ def replay_validation(ev,req,result,sources):
         size=3*3*req['physical_identity']['layers']*req['physical_identity']['hidden_size']*DTYPES[req['physical_identity']['dtype']][1]
         require(report['full_entry_proof_count']==expected_full and report['full_entry_serialized_bytes']==expected_full*size,'eager original full-proof accounting differs')
 
-def audit_request(ev,config,req,result,ud,wire_frames,sources,completed):
+def audit_request(ev,config,req,result,ud,wire_frames,sources,completed,*,allow_approximate=False):
     reused=0
     validate_request(req);require(req['physical_identity']==config['physical'] and req['request_id']==result['request_id'] and req['request_id'] in completed,'request identity/completion differs')
     if 'diagnostics' in result:
@@ -176,7 +179,7 @@ def audit_request(ev,config,req,result,ud,wire_frames,sources,completed):
             prob=prob.double()  # One bounded conversion per layer, same as capture.
             require(set(map(int,record['span_values']))==set(range(n-2)),'missing impact windows')
             for start,value in record['span_values'].items():require(math.isclose(actual_attention_impact([prob],int(start),int(start)+3),value,rel_tol=1e-12,abs_tol=1e-12),'attention impact replay differs')
-    replay_validation(ev,req,result,sources)
+    replay_validation(ev,req,result,sources,allow_approximate=allow_approximate)
     sources[req['request_id']]=(req,prefill_records)
     return reused
 
