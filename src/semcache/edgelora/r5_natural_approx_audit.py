@@ -46,13 +46,13 @@ def numerical(reference,actual,arow,crow,width):
         note='after generated-history divergence, cross-output logit differences are diagnostic, not matched-input equivalence')
 
 
-def analyze(experiment,run,cpu_audit,output_dir):
-    p,pr,rest,ar=approval(experiment,cpu_audit);block,m,pm,specs,users,tok=rest
+def analyze(experiment,run,cpu_audit,output_dir,*,_approval=None,_request_policy=False):
+    p,pr,rest,ar=(approval if _approval is None else _approval)(experiment,cpu_audit);block,m,pm,specs,users,tok=rest
     run=Path(run).resolve();inventory=tree_verify(run);status=json.loads((run/'status.json').read_bytes())
     require(status['status']=='COMPLETE' and status['source']==p['implementation']['source'] and status['plan_inventory']==pr and
         status['cpu_audit_inventory']==ar and status['cpu_audit_path']==str(Path(cpu_audit).resolve()) and
         [c['condition'] for c in status['children']]==list(CONDITIONS) and all(c['returncode']==0 for c in status['children']),'failed/unapproved run')
-    reports={c:child(run/c,p,pr,block,tok,_conditions=CONDITIONS,_context_mode=execution(c)[0],_allow_approximate=execution(c)[1]) for c in CONDITIONS}
+    reports={c:child(run/c,p,pr,block,tok,_conditions=CONDITIONS,_context_mode=execution(c)[0],_allow_approximate=execution(c)[1],_request_policy=_request_policy) for c in CONDITIONS}
     require(all(reports[c]['config']['condition']==c for c in CONDITIONS),'condition directory/identity differs')
     reference=reports[CONDITIONS[0]]
     from .r5_i5_gpu import verify_receipt
@@ -119,11 +119,11 @@ def analyze(experiment,run,cpu_audit,output_dir):
     seal(out);return {k:v for k,v in result.items() if k not in ('comparisons','conditions')}
 
 
-def verify(experiment,run,cpu_audit,audit,output_dir):
-    p,_,_,_=approval(experiment,cpu_audit)
+def verify(experiment,run,cpu_audit,audit,output_dir,*,_approval=None,_request_policy=False):
+    p,_,_,_=(approval if _approval is None else _approval)(experiment,cpu_audit)
     expected=tree_verify(Path(audit).resolve())
     with tempfile.TemporaryDirectory() as tmp:
-        fresh=Path(tmp)/'audit';analyze(experiment,run,cpu_audit,fresh)
+        fresh=Path(tmp)/'audit';analyze(experiment,run,cpu_audit,fresh,_approval=_approval,_request_policy=_request_policy)
         require(tree_verify(fresh)==expected,'independent approximate audit replay differs')
     out=output(output_dir,(experiment,run,cpu_audit,audit,p['multi'],p['original_experiment'],*p['dataset_paths'].values()));put(out/'approx_verification.json',dict(status='PASS',audit_inventory=expected));seal(out)
     return dict(status='PASS')
