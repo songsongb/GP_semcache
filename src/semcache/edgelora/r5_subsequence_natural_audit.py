@@ -24,7 +24,23 @@ def ledger(ev,endpoint,kind,rid):
     return records
 
 
-def child(path,p,pr,block,tok,*,_conditions=None,_context_mode=None,_allow_approximate=False):
+def policy_counts_by_request(events,request_ids):
+    """Attribute already replayed policy events to their existing request boundaries."""
+    counts={};active=None;names=('INSERT','EVICT','CHU','PBR')
+    for event in events:
+        kind=event['kind']
+        if kind=='MSTAGE_MATCH':
+            rid=event['request_id'];require(active is None and rid in request_ids and rid not in counts,'policy request boundary differs')
+            active=rid;counts[rid]={k:0 for k in names}
+        elif kind in names:
+            require(active is not None,'policy update outside request');counts[active][kind]+=1
+        elif kind=='PHYSICAL_SUBSEQUENCE_COMPLETE':
+            require(active is not None,'policy completion outside request');active=None
+    require(active is None and list(counts)==request_ids,'incomplete/reordered request policy boundaries')
+    return counts
+
+
+def child(path,p,pr,block,tok,*,_conditions=None,_context_mode=None,_allow_approximate=False,_request_policy=False):
     root=Path(path);config=json.loads((root/'identity.json').read_bytes());status=json.loads((root/'status.json').read_bytes())
     require(status['status']=='COMPLETE' and config['source']==p['implementation']['source'] and config['plan_inventory']==pr,'failed/source/plan child differs')
     c=config['condition'];require(c in (CONDITIONS if _conditions is None else _conditions),'condition differs');sequence=json.loads((root/'sequence.json').read_bytes())
@@ -71,6 +87,11 @@ def child(path,p,pr,block,tok,*,_conditions=None,_context_mode=None,_allow_appro
         # Reuse unchanged M score/CHU replay, streaming one request at a time.
         policy_replay=replay_policy(ev,reqs,(load_result(ev.root/'es',req['request_id']) for req in reqs))
         policy=ev.jsonl('es/policy.jsonl',optional=True)
+        if _request_policy:
+            request_ids=[t['request_id'] for t in tasks]
+            per_request=({rid:{k:0 for k in ('INSERT','EVICT','CHU','PBR')} for rid in request_ids}
+                if c=='FULL_RECOMPUTE' else policy_counts_by_request(policy,request_ids))
+            for rid in request_ids:summaries[rid]['cache_policy_counts']=per_request[rid]
         counts={k:sum(r.get('kind')==k for r in policy) for k in ('INSERT','EVICT','CHU','PBR')}
         require(counts['PBR']==0,'PBR cannot trigger within <=20 original adapter requests at interval100')
         all_policy.append(dict(adapter_id=aid,counts=counts,occupancy=policy_replay['occupancy']))

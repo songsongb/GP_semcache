@@ -117,7 +117,7 @@ def transport(tasks,pm,specs,tok,registry):
         rows.append(dict(request_id=t['request_id'],maximum_header_bytes=maximum,headroom_bytes=MAX_HEADER-maximum))
     return dict(rows=rows,header_limit=MAX_HEADER,required_headroom_bytes=8192,scope='CPU predicted; cold/all-fresh, all-reused controls, decode and completion; no fake grants')
 
-def inputs(original_experiment,multi):
+def inputs(original_experiment,multi,*,_datasets=None):
     ev=Evidence(original_experiment);receipt=ev.verify();w=ev.json('i5_workload_manifest.json');d=ev.json('i5_dataset_manifest.json')
     c=dict(w);eid=c.pop('experiment_id');require(digest(c)==eid and not w['TEST_FIXTURE_ONLY'] and w['clusters']==1,'original real I5 plan differs')
     m,pm,specs,users=validate(multi);require(not m['TEST_FIXTURE_ONLY'] and len(users['users'])==30 and set(specs)=={'Adapter_A','Adapter_B','Adapter_C'},'real30-user/3-adapter assets required')
@@ -127,7 +127,7 @@ def inputs(original_experiment,multi):
     tok=opt_tokenizer(pm);require(tok.identity==w['tokenizer_identity']==m['tokenizer'] and tok.supported_context_length==2048 and w['template_version']==TEMPLATE,'original model/tokenizer/template differs')
     inventories={};samples={}
     for name,record in d.items():
-        require(name in ('qasper','2wikimqa','multi_news'),'original dataset unsupported')
+        require(name in (('qasper','2wikimqa','multi_news') if _datasets is None else _datasets),'original dataset unsupported')
         rows,manifest=provenance(record['prepared_path'],name);de=Evidence(record['prepared_path']);inventories[name]=de.verify()
         require(sha(Path(record['prepared_path'])/'i5_output_manifest.json')==record['prepared_manifest_sha256'] and all(manifest[k]==record[k] for k in manifest),'original dataset manifest differs')
         samples[name]={s['id']:s for s in rows}

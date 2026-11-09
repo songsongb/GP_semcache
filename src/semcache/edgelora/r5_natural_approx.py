@@ -134,14 +134,15 @@ def load(experiment):
     return p,receipt,[block,m,pm,specs,users,tok]
 
 
-def cpu_validate(experiment,output_dir):
+def cpu_validate(experiment,output_dir,*,_profile=None):
     require(os.environ.get('CUDA_VISIBLE_DEVICES')=='','hide CUDA for CPU validation')
-    p,receipt,_=load(experiment)
+    p,receipt,_=(load(experiment) if _profile is None else _profile.load(experiment))
     import torch,transformers,numpy
     require(not torch.cuda.is_initialized(),'CPU validation initialized CUDA')
     sys.path.insert(0,str(ROOT/'tests'))
-    suite=unittest.defaultTestLoader.loadTestsFromNames(['test_r5_natural_approx','test_r5_subsequence_generation',
-        'test_r5_subsequence_validation','test_r5_subsequence_audit','test_r5_sparse_physical'])
+    names=['test_r5_natural_approx','test_r5_subsequence_generation',
+        'test_r5_subsequence_validation','test_r5_subsequence_audit','test_r5_sparse_physical']
+    suite=unittest.defaultTestLoader.loadTestsFromNames(names+([] if _profile is None else _profile.tests))
     result=unittest.TestResult();suite.run(result)
     require(not result.errors and not result.failures and not result.skipped and not torch.cuda.is_initialized(),
         'native CPU approval failed/skipped: '+str(result.errors+result.failures+result.skipped))
@@ -158,8 +159,8 @@ def approval(experiment,cpu_audit):
     return p,receipt,rest,ar
 
 
-def inspect(experiment,cpu_audit):
-    p,_,_,_=approval(experiment,cpu_audit)
+def inspect(experiment,cpu_audit,*,_profile=None):
+    p,_,_,_=(approval(experiment,cpu_audit) if _profile is None else _profile.approval(experiment,cpu_audit))
     return dict(status='READY_FOR_MANUAL_BOUNDED_GPU_PILOT_NOT_RUN',track=p['track'],plan_id=p['plan_id'],resources=p['resources'])
 
 
@@ -182,11 +183,12 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None):
     return native_worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid,_profile=Profile())
 
 
-def run(experiment,output_dir,source_commit,cpu_audit,enable_gpu_experiment=False,enable_approximate_experiment=False):
+def run(experiment,output_dir,source_commit,cpu_audit,enable_gpu_experiment=False,enable_approximate_experiment=False,*,_profile=None):
     require(enable_gpu_experiment and enable_approximate_experiment,'explicit GPU and APPROX opt-ins required')
     require(os.environ.get('SLURM_JOB_ID') and not os.environ.get('SLURM_ARRAY_TASK_ID') and
         os.environ.get('R5_ENABLE_GPU')==os.environ.get('R5_I5_ENABLE_GPU')=='1','manual non-array opted-in allocation required')
-    p,receipt,_,ar=approval(experiment,cpu_audit);require(source_commit==p['implementation']['source']['commit'],'reviewed commit differs')
+    profile=Profile() if _profile is None else _profile
+    p,receipt,_,ar=(approval(experiment,cpu_audit) if _profile is None else profile.approval(experiment,cpu_audit));require(source_commit==p['implementation']['source']['commit'],'reviewed commit differs')
     require(shutil.disk_usage(Path(output_dir).resolve().parent).free>=p['resources']['required_free_disk_bytes'],'unchanged96GiB free disk required')
     from .r5_subsequence_pilot import wait_worker
     out=output(output_dir,(experiment,cpu_audit,*protected(p)));begin=time.monotonic();gpu=None
@@ -196,12 +198,12 @@ def run(experiment,output_dir,source_commit,cpu_audit,enable_gpu_experiment=Fals
         for c in CONDITIONS:
             remaining=p['resources']['total_run_timeout_seconds']-(time.monotonic()-begin)
             require(remaining>0,'shared run deadline exhausted; no limit extension')
-            argv=[sys.executable,str(SCRIPT),'_worker','--experiment',str(Path(experiment).resolve()),'--cpu-audit',str(Path(cpu_audit).resolve()),
+            argv=[sys.executable,str(profile.script),'_worker','--experiment',str(Path(experiment).resolve()),'--cpu-audit',str(Path(cpu_audit).resolve()),
                 '--condition',c,'--output-dir',str(out/c)]
             if gpu:argv+=['--expected-gpu-uuid',gpu]
             start=time.monotonic_ns();rc=wait_worker(argv,timeout=min(remaining,p['resources']['worker_timeout_seconds']))
             status['children'].append(dict(condition=c,returncode=rc,process_lifecycle_ms=(time.monotonic_ns()-start)/1e6))
-            require(rc==0,'condition failed; no retry/fallback');verify(out/c);Profile.check_run_budget(out,p['resources'])
+            require(rc==0,'condition failed; no retry/fallback');verify(out/c);profile.check_run_budget(out,p['resources'])
             gpu=json.loads((out/c/'identity.json').read_bytes())['gpu']['uuid']
         status['status']='COMPLETE'
     except BaseException as exc:status['reason']=repr(exc);raise
