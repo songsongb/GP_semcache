@@ -124,6 +124,62 @@ def replay_validation(ev,req,result,sources):
         size=3*3*req['physical_identity']['layers']*req['physical_identity']['hidden_size']*DTYPES[req['physical_identity']['dtype']][1]
         require(report['full_entry_proof_count']==expected_full and report['full_entry_serialized_bytes']==expected_full*size,'eager original full-proof accounting differs')
 
+def audit_request(ev,config,req,result,ud,wire_frames,sources,completed):
+    reused=0
+    validate_request(req);require(req['physical_identity']==config['physical'] and req['request_id']==result['request_id'] and req['request_id'] in completed,'request identity/completion differs')
+    if 'diagnostics' in result:
+        from .r5_subsequence_profile import validate_receipt
+        validate_receipt(result['diagnostics'],req['request_id'],result['completion']['physical'])
+        if 'integrity_validation' in result['diagnostics']:
+            physical=result['completion']['physical'];expected=None if physical is None else {k:v for k,v in physical['integrity_validation'].items() if k!='authorizations'}
+            require(result['diagnostics']['integrity_validation']==expected and result['diagnostics']['validation_mode']==result['validation_mode'],'profile/physical validation summary differs')
+    step_receipts=[receipt for step in result['steps'] for receipt in step['record']['sparse']]
+    require(step_receipts==result['sparse_receipts'],'aggregate sparse receipts differ')
+    for receipt in step_receipts:
+        for name in ('sent','received'):
+            frame=receipt[name]
+            require(wire_frames.get((frame['operation'],frame['header']['sequence']))==frame,'claimed projection receipt differs from actual wire evidence')
+    values=unpack(ev.tensor('es',result['logits']),'float32');width=result['logits_shape'][-1]
+    if not req['TEST_FIXTURE_ONLY']:require(width==50272,'missing full OPT vocabulary')
+    require(len(values)==len(result['steps'])*width and len(result['steps'])==len(result['generated_token_ids']),'full-vocabulary logits incomplete')
+    for i,step in enumerate(result['steps']):
+        logits=values[i*width:(i+1)*width];require(step['selected_token_id']==max(range(width),key=logits.__getitem__)==result['generated_token_ids'][i] and digest_bytes(pack(logits,'float32'))==step['logits_sha256'],'generation/logit selection differs')
+        obs=step['record']['position_observation'];past_length=len(req['token_ids'])+i-1 if i else 0;input_length=1 if i else len(req['token_ids'])
+        require(obs['lookup_output_equal'] and obs['positions']==list(range(past_length,past_length+input_length)) and obs['past_length']==past_length,'actual native positional lookup differs')
+        require(step['record']['input_past']==(None if not i else result['steps'][i-1]['record']['past']) and step['record']['past']['sequence_length']==past_length+input_length,'native target KV continuation differs')
+        if i==0:
+            phys=result['completion']['physical'];records=result['prefill_records'] if phys is None else phys['records']
+            if phys is not None:
+                pass_ud=[r for r in ud if r.get('context',{}).get('pass_id')==req['request_id']+'_s000']
+                replayed=audit_sparse_receipts(records,step['record']['sparse'],pass_ud)
+                require(phys['physical_projection_rows_reused']==replayed['reused_projection_rows'] and phys['kv_prefix_reuse'] is False,'false physical reuse/forward-skip count')
+        else:records=step['record']['fresh_projection_records']
+        require(len(records)==3*req['physical_identity']['layers'] and len({(r['layer'],r['role']) for r in records})==len(records),'incomplete projection evidence')
+        for record in records:
+            matches=[r for r in ud if r.get('context',{}).get('pass_id')==req['request_id']+f'_s{i:03d}' and r['context']['layer']==record['layer']]
+            require(len(matches)==1,'UD projection count differs');frame=matches[0]
+            require(frame['context']==envelope(req,record['layer'],frame['context']['fresh_positions'],frame['context']['pass_id'],result['generated_token_ids'][:i]),'decode position/history differs')
+            reused+=replay_projection(ev,record,frame,req,sources)
+        if i==0:prefill_records={(r['layer'],r['role']):r for r in records}
+    require(result['completion']['control']['generated_token_ids']==result['generated_token_ids'] and result['completion']['control']['request']==req and result['termination']==result['completion']['control']['termination'],'completed generation differs')
+    impact=result['completion']['impact']
+    if impact is not None:
+        require(len(impact['records'])==req['physical_identity']['layers'],'missing actual impact layers')
+        require([r['layer'] for r in impact['records']]==list(range(req['physical_identity']['layers'])),'impact layer order differs')
+        # Strict independent use of original reducer over saved real matrices.
+        from .r3a_artifacts import tensor_from_bytes
+        from semcache.cache.metric_manager import actual_attention_impact
+        for record in impact['records']:
+            spec=record['probabilities'];prob=tensor_from_bytes(ev.tensor('es',spec),spec['dtype'],spec['shape'])
+            import torch
+            n=len(req['token_ids']);require(tuple(prob.shape[2:])==(n,n) and bool(((prob>=0)&(prob<=1)).all()) and bool((prob.triu(1)==0).all()),'invalid causal probabilities')
+            prob=prob.double()  # One bounded conversion per layer, same as capture.
+            require(set(map(int,record['span_values']))==set(range(n-2)),'missing impact windows')
+            for start,value in record['span_values'].items():require(math.isclose(actual_attention_impact([prob],int(start),int(start)+3),value,rel_tol=1e-12,abs_tol=1e-12),'attention impact replay differs')
+    replay_validation(ev,req,result,sources)
+    sources[req['request_id']]=(req,prefill_records)
+    return reused
+
 def condition(path):
     ev=Evidence(path,max_input_bytes=128*2**30,max_tensor_bytes=128*2**20);inventory=ev.verify()
     require(ev.json('status.json')['status']=='COMPLETE','failed condition')
@@ -140,58 +196,7 @@ def condition(path):
             control=r['control'];req=control['request'];previous=order.parents.get(req['request_id'])
             require(req['request_id'] not in completed and order.layer==0 and previous is not None and previous[0]==req and control['generated_token_ids'][:-1]==previous[1] and termination(req['generation_policy'],control['generated_token_ids'])==control['termination'],'UD completion evidence differs');completed.add(req['request_id'])
     for req,result in zip(reqs,results):
-        validate_request(req);require(req['physical_identity']==config['physical'] and req['request_id']==result['request_id'] and req['request_id'] in completed,'request identity/completion differs')
-        if 'diagnostics' in result:
-            from .r5_subsequence_profile import validate_receipt
-            validate_receipt(result['diagnostics'],req['request_id'],result['completion']['physical'])
-            if 'integrity_validation' in result['diagnostics']:
-                physical=result['completion']['physical'];expected=None if physical is None else {k:v for k,v in physical['integrity_validation'].items() if k!='authorizations'}
-                require(result['diagnostics']['integrity_validation']==expected and result['diagnostics']['validation_mode']==result['validation_mode'],'profile/physical validation summary differs')
-        step_receipts=[receipt for step in result['steps'] for receipt in step['record']['sparse']]
-        require(step_receipts==result['sparse_receipts'],'aggregate sparse receipts differ')
-        for receipt in step_receipts:
-            for name in ('sent','received'):
-                frame=receipt[name]
-                require(wire_frames.get((frame['operation'],frame['header']['sequence']))==frame,'claimed projection receipt differs from actual wire evidence')
-        values=unpack(ev.tensor('es',result['logits']),'float32');width=result['logits_shape'][-1]
-        if not req['TEST_FIXTURE_ONLY']:require(width==50272,'missing full OPT vocabulary')
-        require(len(values)==len(result['steps'])*width and len(result['steps'])==len(result['generated_token_ids']),'full-vocabulary logits incomplete')
-        for i,step in enumerate(result['steps']):
-            logits=values[i*width:(i+1)*width];require(step['selected_token_id']==max(range(width),key=logits.__getitem__)==result['generated_token_ids'][i] and digest_bytes(pack(logits,'float32'))==step['logits_sha256'],'generation/logit selection differs')
-            obs=step['record']['position_observation'];past_length=len(req['token_ids'])+i-1 if i else 0;input_length=1 if i else len(req['token_ids'])
-            require(obs['lookup_output_equal'] and obs['positions']==list(range(past_length,past_length+input_length)) and obs['past_length']==past_length,'actual native positional lookup differs')
-            require(step['record']['input_past']==(None if not i else result['steps'][i-1]['record']['past']) and step['record']['past']['sequence_length']==past_length+input_length,'native target KV continuation differs')
-            if i==0:
-                phys=result['completion']['physical'];records=result['prefill_records'] if phys is None else phys['records']
-                if phys is not None:
-                    pass_ud=[r for r in ud if r.get('context',{}).get('pass_id')==req['request_id']+'_s000']
-                    replayed=audit_sparse_receipts(records,step['record']['sparse'],pass_ud)
-                    require(phys['physical_projection_rows_reused']==replayed['reused_projection_rows'] and phys['kv_prefix_reuse'] is False,'false physical reuse/forward-skip count')
-            else:records=step['record']['fresh_projection_records']
-            require(len(records)==3*req['physical_identity']['layers'] and len({(r['layer'],r['role']) for r in records})==len(records),'incomplete projection evidence')
-            for record in records:
-                matches=[r for r in ud if r.get('context',{}).get('pass_id')==req['request_id']+f'_s{i:03d}' and r['context']['layer']==record['layer']]
-                require(len(matches)==1,'UD projection count differs');frame=matches[0]
-                require(frame['context']==envelope(req,record['layer'],frame['context']['fresh_positions'],frame['context']['pass_id'],result['generated_token_ids'][:i]),'decode position/history differs')
-                reused+=replay_projection(ev,record,frame,req,sources)
-            if i==0:prefill_records={(r['layer'],r['role']):r for r in records}
-        require(result['completion']['control']['generated_token_ids']==result['generated_token_ids'] and result['completion']['control']['request']==req and result['termination']==result['completion']['control']['termination'],'completed generation differs')
-        impact=result['completion']['impact']
-        if impact is not None:
-            require(len(impact['records'])==req['physical_identity']['layers'],'missing actual impact layers')
-            require([r['layer'] for r in impact['records']]==list(range(req['physical_identity']['layers'])),'impact layer order differs')
-            # Strict independent use of original reducer over saved real matrices.
-            from .r3a_artifacts import tensor_from_bytes
-            from semcache.cache.metric_manager import actual_attention_impact
-            for record in impact['records']:
-                spec=record['probabilities'];prob=tensor_from_bytes(ev.tensor('es',spec),spec['dtype'],spec['shape'])
-                import torch
-                n=len(req['token_ids']);require(tuple(prob.shape[2:])==(n,n) and bool(((prob>=0)&(prob<=1)).all()) and bool((prob.triu(1)==0).all()),'invalid causal probabilities')
-                prob=prob.double()  # One bounded conversion per layer, same as capture.
-                require(set(map(int,record['span_values']))==set(range(n-2)),'missing impact windows')
-                for start,value in record['span_values'].items():require(math.isclose(actual_attention_impact([prob],int(start),int(start)+3),value,rel_tol=1e-12,abs_tol=1e-12),'attention impact replay differs')
-        replay_validation(ev,req,result,sources)
-        sources[req['request_id']]=(req,prefill_records)
+        reused+=audit_request(ev,config,req,result,ud,wire_frames,sources,completed)
     require(results[0]['completion_ns']<=results[1]['arrival_ns'],'requests overlap or source not completed first')
     replay_policy(ev,reqs,results)
     return dict(inventory=inventory,config=config,results=results,reused_projection_rows=reused,requests=reqs,network=network)
@@ -201,7 +206,7 @@ def replay_policy(ev,reqs,results):
     from semcache.cache.cache_entry import CacheEntry
     from semcache.cache.metric_manager import CacheMetricManager
     from semcache.semantic.subsequence import SubsequenceExtractor
-    cache=BoundedCache(512*2**20);metrics=CacheMetricManager(cache);expected=[]
+    cache=BoundedCache(512*2**20);metrics=CacheMetricManager(cache);expected=[];occupancy=[]
     for req,result in zip(reqs,results):
         impact=result['completion']['impact']
         if impact is None:continue
@@ -225,8 +230,11 @@ def replay_policy(ev,reqs,results):
             entry=CacheEntry(0,w.token_ids,(w.start,w.end),size,impact=values[w.start])
             cache.insert(entry,metrics.frequencies[key],metrics.frequencies,on_event=lambda kind,e,score:expected.append(dict(kind=kind,key=e.key,score=score,component_scope='physical_total_qkv')))
         require(cache.logical_cache_bytes<=512*2**20 and len(cache.entries)<=64,'policy capacity differs')
+        require(result['completion']['physical'].get('physical_tensor_bytes',cache.logical_cache_bytes)==cache.logical_cache_bytes,'physical/policy occupancy differs')
+        occupancy.append(dict(request_id=req['request_id'],entries=len(cache.entries),bytes=cache.logical_cache_bytes))
     actual=[r for r in ev.jsonl('es/policy.jsonl',optional=True) if r.get('kind') in ('CHU','INSERT','EVICT','PBR')]
     require(digest(expected)==digest(actual),'independent F/A/I/S/CHU replay differs')
+    return dict(occupancy=occupancy,events=actual)
 
 def analyze(experiment,run,output_dir):
     from .r5_subsequence_pilot import load,CONDITIONS
