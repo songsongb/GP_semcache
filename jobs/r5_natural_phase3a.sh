@@ -13,8 +13,8 @@
 set -Eeuo pipefail
 : "${SLURM_JOB_ID:?manual allocation required}" "${D5NP_EXPERIMENT:?sealed one-dataset Phase3A plan required}"
 : "${D5NP_CPU_AUDIT:?native zero-skip CPU approval required}" "${D5NP_SOURCE_COMMIT:?reviewed commit required}"
-: "${D5NP_RUN_ROOT:?fresh attempts parent required}" "${D5N_NODE:?select moana-y3 or moana-y4}" "${I5_CONDA_ROOT:?existing Conda root required}"
-[[ "$D5N_NODE" == moana-y3 || "$D5N_NODE" == moana-y4 ]] || exit 2
+: "${D5NP_RUN_ROOT:?fresh attempts parent required}" "${D5N_NODE:?select moana-y1/y2/y3/y4/y5/y7}" "${I5_CONDA_ROOT:?existing Conda root required}"
+case "$D5N_NODE" in moana-y1|moana-y2|moana-y3|moana-y4|moana-y5|moana-y7) ;; *) exit 2 ;; esac
 [[ "${SLURMD_NODENAME:-${SLURM_JOB_NODELIST:-}}" == "$D5N_NODE" && -z "${SLURM_ARRAY_TASK_ID:-}" ]] || exit 2
 [[ "${R5_ENABLE_GPU:-0}" == 1 && "${R5_I5_ENABLE_GPU:-0}" == 1 ]] || exit 2
 [[ "$(git branch --show-current)" == exp/raw-semcache-r5-integration && "$(git rev-parse HEAD)" == "$D5NP_SOURCE_COMMIT" && -z "$(git status --porcelain --untracked-files=no)" ]] || exit 2

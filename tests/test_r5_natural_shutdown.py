@@ -4,7 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import json,os,socket,subprocess,tempfile,threading,unittest
 from unittest.mock import Mock,patch
-from semcache.edgelora.communication import Channel,ProtocolError,PREFIX,MAGIC,canonical,encode,header,digest,connect,listener
+from semcache.edgelora.communication import ProtocolError,PREFIX,MAGIC,canonical,encode,header,digest,connect,listener
+from semcache.edgelora.r5_d5_channel import Channel
 from semcache.edgelora.r5_subsequence_natural_runtime import ledger,stop_adapter,join_adapter,adapter_completion_callback
 from semcache.edgelora.r5_subsequence_generation import complete_request,generate
 from semcache.edgelora.r5_sparse_qkv import SparseSession,serve_sparse

@@ -165,18 +165,6 @@ class Channel:
         if self.trace is not None: self.trace(record)
         return record
 
-    def _fail(self, operation, h, start, wire, primary):
-        """Diagnostics and close errors must never replace the original failure."""
-        self.failed = True
-        try:
-            self._record(operation, h, start, wire, error=f'{type(primary).__name__}: {primary}')
-        except BaseException as exc:
-            if hasattr(primary, 'add_note'): primary.add_note('failure trace export: '+repr(exc))
-        finally:
-            try: self.sock.close()
-            except BaseException as exc:
-                if hasattr(primary, 'add_note'): primary.add_note('failed channel close: '+repr(exc))
-
     def send(self, h, payload=b''):
         require(not self.failed, 'channel already failed closed')
         start, sent = time.monotonic_ns(), 0
@@ -196,7 +184,8 @@ class Channel:
             return self._record('send', h, start, sent, frame_sha256=digest_bytes(packet),
                 framing_serialization_ms=(encoded-start)/1e6, socket_call_wall_ms=(io_end-io_start)/1e6)
         except BaseException as exc:
-            self._fail('send', h, start, sent, exc)
+            self._record('send', h, start, sent, error=f'{type(exc).__name__}: {exc}')
+            self.failed = True; self.sock.close()
             raise
 
     def recv(self, **expected):
@@ -237,7 +226,8 @@ class Channel:
                 framing_deserialization_ms=decode_ns/1e6, socket_call_wall_ms=io_ns/1e6)
             return h, payload, record
         except BaseException as exc:
-            self._fail('recv', h, start, received, exc)
+            self._record('recv', h, start, received, error=f'{type(exc).__name__}: {exc}')
+            self.failed = True; self.sock.close()
             raise
 
     def close(self):
