@@ -110,9 +110,53 @@ APPROX remains separate and crossings require measured sign changes.
 
 ## Current approval boundary
 
-This host has no torch, transformers, numpy, real prepared dataset/model/adapter
-manifests or frozen GPU receipts. Pure stdlib fixtures can test contracts and
-protocol behavior, but cannot approve native OPT fidelity, scorer availability,
-physical GPU resources, actual sample lists or 50-request feasibility. The CLI
-run gate remains fail-closed until a native Light worker is implemented and
-validated. See the runbook and CPU report for exact implemented/blocked scope.
+Follow-up engine: `D5_LIGHT_NATIVE_V2`, based on committed Light HEAD
+`6708d369f42577a3fbe8b46411aa98cdbac4b776`. `r5_d5_lightperf_runtime` now implements
+an independent coordinator/ES worker and per-adapter CPU UD processes. It calls
+the existing bare OPT setup and mathematical primitives; it never delegates
+to the Strict worker or substitutes a scalar fixture for production generation.
+
+Call graph: `run` → guarded coordinator → `_worker`/`es_worker` → real prepared
+OPT/tokenizer/multi registry validation → one `_ud`/`ud_worker` per adapter →
+`serve_ud_session`/`serve_light_sparse` and `execute_stream`/`generate_native` →
+original projection/validation/impact/completion primitives. Final adapter ACK
+triggers STOP/BYE before local admission, retaining the Strict shutdown fix.
+Every task uses its original sealed request fields; session ordinals are separate.
+Cache/index and UD process live for the whole condition and never restart per task.
+
+`r5_d5_lightperf_receipts` keeps compact per-request summaries, not raw values.
+The ES writes primary request bodies then captures their I/O-inclusive application
+completion timestamps in `run.json`. That final small summary and sealing are
+excluded from request latency. Model prefill/decode wall wrappers, semantic
+encoding/cluster timings, inclusive/exclusive components, safety hashes,
+policy/occupancy, generated output hashes and quality remain identifiable.
+No per-component GPU synchronization was added. GPU kernel durations, total
+observer cost, driver version and final seal duration are NOT_MEASURED.
+
+UD artifacts are fresh sibling directories `RUN__ud_Adapter_A` etc, each with
+an independent Light seal; `run.json` binds their absolute paths and inventories.
+The verifier checks these bindings, ordered completion/STOP/BYE, CPU isolation,
+primary/final request equality, ES↔UD directional byte counts and frame-hash
+chains, UD projection rows/service summaries and output/resource metadata.
+Any `failure.json` makes the endpoint/run ineligible even if run.json exists.
+
+The coordinator creates an owned process group and enforces the unchanged
+7200s maximum worker deadline. Timeout kills only that group, with bounded
+TERM/KILL cleanup. Allocation validation is environment-only; no Slurm query is
+performed. User must provide remaining allocation seconds and expected physical
+GPU UUID. The same node/backend/context/12GiB reserve and 22GiB ceiling remain.
+Source and CPU-approval fingerprints are rechecked in each child and after run.
+
+Approval now requires engine V2, a clean reviewed source, exact plan/input
+reconstruction, native dependency versions, all listed regression modules and
+required Tiny OPT Strict/Light CPU tests with zero failures/errors/skips. A CPU-
+only in-memory logit observer (no CLI option) permits direct full-vocabulary parity
+tests for synthetic Tiny OPT; production Light still does not save raw logits.
+Old/development/scalar-only receipts cannot authorize GPU execution. Extended
+counts or L3/L4 knobs require a separate explicit run opt-in; the template is
+limited to baseline five-request jobs.
+
+This host still lacks torch/transformers/numpy/rouge and real prepared assets.
+The five mandatory native tests fail the dependency gate, without SKIP. Thus
+the worker is implemented but NOT_NATIVE_RUNTIME_VERIFIED and no CPU approval
+is issued locally. Actual five-request GPU readiness remains PARTIAL_BLOCKED.

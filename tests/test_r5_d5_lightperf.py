@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from semcache.edgelora.communication import digest, header, listener, connect, encode
 from semcache.edgelora.r5_d5_lightperf_io import (SummaryWriter, fresh, verify, source_identity,
-                                               SCHEMA, MODE, BASE, BRANCH)
+                                               SCHEMA, MODE, ENGINE, BASE, BRANCH)
 from semcache.edgelora.r5_d5_lightperf_workload import stream, preflight, knobs, matrix, CONDITIONS
 from semcache.edgelora.r5_d5_lightperf_emulation import (BytePacer, PacedSocket, LightChannel,
                                                       UDServiceEmulator, serve_light_sparse)
@@ -503,7 +503,7 @@ class AnalysisTests(unittest.TestCase):
         _, tasks = workload(n=5)
         src = dict(branch=BRANCH, strict_baseline=BASE, files={}, content_fingerprint=digest({}),
                    commit='TEST_FIXTURE_ONLY', approval_scope='CLEAN_REVIEWED_SOURCE')
-        p = dict(schema=SCHEMA, mode=MODE, source=src, dataset='qasper', count=5,
+        p = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, source=src, dataset='qasper', count=5,
                  conditions=list(CONDITIONS), performance_knobs=knobs(),
                  stream=dict(tasks=tasks, tasks_sha256=digest(tasks)))
         p['plan_id'] = digest(p)
@@ -513,7 +513,10 @@ class AnalysisTests(unittest.TestCase):
         writer = SummaryWriter(plan_root)
         writer.write('plan.json', p)
         pi = writer.seal()
-        a = dict(status='PASS', failed=0, skipped=0, scope='CLEAN_NATIVE_CPU_APPROVAL', source=src, plan_inventory=pi)
+        from semcache.edgelora.r5_d5_lightperf import TEST_MODULES
+        a = dict(status='PASS', failed=0, errors=0, skipped=0, engine=ENGINE,
+                 modules=list(TEST_MODULES), versions={}, native_parity='TINY_OPT_STRICT_LIGHT_CPU_PASS',
+                 scope='CLEAN_NATIVE_CPU_APPROVAL', source=src, plan_inventory=pi)
         if mutate_audit:
             mutate_audit(a)
         writer = SummaryWriter(cpu_root)
@@ -530,7 +533,10 @@ class AnalysisTests(unittest.TestCase):
                              first_available_ns=first, completion_ns=end, application_e2e_ms=10., application_ttft_ms=1.,
                              skipped_qkv_rows=0, fresh_qkv_rows=384, physical_hit=False, categories=dict.fromkeys('ABCD', 0),
                              cache_occupancy_bytes=0, scorer_version='TEST_FIXTURE_ONLY', quality=dict(metric='fixture', score=1.)))
-        r = dict(schema=SCHEMA, mode=MODE, source=src, plan_id=p['plan_id'], plan_inventory=pi,
+        from semcache.edgelora.r5_d5_lightperf_receipts import WireSummary
+        for row in rows:
+            row.update(wire=WireSummary.empty(), ud_compute=dict(TEST_FIXTURE_ONLY=True))
+        r = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, versions={}, source=src, plan_id=p['plan_id'], plan_inventory=pi,
                  cpu_inventory=ai, status='COMPLETE', condition=CONDITIONS[0], performance_knobs=knobs(),
                  dataset='qasper', scale=5, tasks_sha256=digest(tasks), measurement_scope='NATIVE_LIGHT',
                  gpu=dict(uuid='GPU_TEST_FIXTURE_ONLY'), backend=dict(version='TEST_FIXTURE_ONLY'),
@@ -540,7 +546,25 @@ class AnalysisTests(unittest.TestCase):
                                 host_available_bytes=32 * 2**30, cpu_count=4), errors=[], requests=rows, sequence_span_ms=90.)
         if mutate_run:
             mutate_run(r)
+        r['ud'] = {}
+        for aid in {t['adapter_id'] for t in tasks}:
+            members = [x for x in rows if x['adapter_id'] == aid]
+            ud_root = Path(str(run_root) + '__ud_' + aid)
+            ud_root.mkdir()
+            uw = SummaryWriter(ud_root)
+            for index, row in enumerate(members):
+                uw.write(f'request_{index:03d}.json', dict(request_id=row['request_id'],
+                         cpu_projection_rows=row['fresh_qkv_rows'], compute=row['ud_compute']))
+            uw.write('ud.json', dict(status='COMPLETE', source=src, plan_inventory=pi, cpu_inventory=ai,
+                     completed_request_ids=[x['request_id'] for x in members], final_bye_sent=True,
+                     user_device_cuda_used=False, full_model_loaded=False,
+                     wire={x['request_id']: x['wire'] for x in members}))
+            r['ud'][aid] = dict(path=str(ud_root), inventory=uw.seal())
         writer = SummaryWriter(run_root)
+        for index, row in enumerate(rows):
+            name = f'request_{index:03d}.json'
+            writer.write(name, dict(row, receipt_scope='PRIMARY_BODY_FINAL_TIMING_IN_RUN_JSON'))
+            row.update(primary_receipt=name, primary_receipt_sha256=writer.hashes[name])
         writer.write('run.json', r)
         writer.seal()
         return run_root, plan_root, cpu_root
@@ -581,7 +605,7 @@ class AnalysisTests(unittest.TestCase):
         from semcache.edgelora.r3a_artifacts import THRESHOLDS
         with tempfile.TemporaryDirectory() as tmp:
             src = dict(approval_scope='DEVELOPMENT_NOT_GPU_APPROVED', commit='fixture', content_fingerprint='fixture')
-            p = dict(schema=SCHEMA, mode=MODE, source=src, conditions=list(CONDITIONS),
+            p = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, source=src, conditions=list(CONDITIONS),
                      validation_mode='REQUEST_SCOPED_VERIFIED', thresholds=THRESHOLDS, warmup_requests=0,
                      approx_requires_explicit_run_opt_in=True, correctness_qualified_speedup='NOT_ESTABLISHED',
                      original_experiment='fixture', multi='fixture', dataset='qasper', count=5,
@@ -636,8 +660,9 @@ class AnalysisTests(unittest.TestCase):
 
     def test_gpu_run_is_hard_blocked_even_with_opt_in(self):
         from semcache.edgelora.r5_d5_lightperf import run
-        with self.assertRaisesRegex(ValueError, 'BLOCKED_NATIVE_WORKER'):
-            run(enable_gpu_experiment=True, enable_approximate_experiment=True)
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, 'manual non-array'):
+            run(experiment='missing', cpu_audit='missing', condition=CONDITIONS[0], output_dir='missing',
+                source_commit='missing', expected_gpu_uuid='GPU-TEST', enable_gpu_experiment=True)
 
 
 if __name__ == '__main__':

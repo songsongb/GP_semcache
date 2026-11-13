@@ -1,130 +1,91 @@
-# D5 Light: CPU review and future manual GPU gates
+# Native D5 Light: CPU approval and later manual GPU pilot
 
-**Current status: PARTIAL_BLOCKED. Do not submit this job template.**
+Current local status: **PARTIAL_BLOCKED**. Native ES/UD orchestration and mandatory
+Tiny OPT CPU tests are implemented, but torch/transformers/numpy/rouge and real
+prepared assets are absent here. No native parity PASS or GPU approval has been
+issued. The commands below are for the user after source review/commit/push and
+transfer to the actual SERAPH Light worktree. No GPU/Slurm action is part of this task.
 
-The native Light ES/UD orchestration worker, actual resource/device guards and
-native Light parity approval are not implemented. `run` and the shell template
-exit with an explicit BLOCKED error, even with an APPROX opt-in. `inspect` cannot
-report GPU-ready. Existing Strict workers are never used as a Light fallback.
-This runbook supplies preparation commands and the future bounded invocation
-shape; it is not authorization to execute GPU work.
+## Source and offline assets
 
-## Files, options and defaults
+Use `exp/d5-l1-l5-lightperf` in a dedicated worktree. This follow-up started at
+`6708d369f42577a3fbe8b46411aa98cdbac4b776`, containing Strict baseline
+`4916836ce328e119f3a8d85c6c1afc7cf8d363e5`. Follow-up edits are uncommitted until
+the user reviews/authorizes a commit. Do not modify the original Strict worktree.
+Every source/root/commit/input change needs new PLAN and CPU audit; old approvals
+are not reusable. Production rejects development source and TEST_FIXTURE_ONLY assets.
 
-`scripts/159_r5_d5_lightperf.py` exposes `environment`, `fingerprint`, `matrix`,
-`prepare`, `cpu-validate`, `inspect`, `run`, `analyze`, `verify`, `aggregate`.
-Every command requires `CUDA_VISIBLE_DEVICES=''` in this CPU-only revision.
-`prepare` additionally requires offline HF/Transformers settings. It consumes
-existing authenticated real I5/model/multi-adapter preparations; it never acquires
-data, rebuilds prompts, downloads models or changes original routing.
+Use an existing offline environment matching prepared versions; install nothing
+as part of this task. Required assets:
 
-* Dataset: exactly `qasper`, `2wikimqa`, `multi_news`; count: 5, 20 or 50.
-* `--bandwidth-mbps`: omitted = unlimited; choices 200/100/50. Per sending
-  channel, per direction; aggregate adapter traffic is not a single shared link.
-* `--ud-throughput-factor`: default 1; choices 1/.5/.25. Explicit
-  `EMULATED_UD_SERVICE_TIME`, same arithmetic measured on every operation.
-* `--ud-operation-seconds`: positive **planning assumption**, not authenticated
-  hardware calibration. Unknown slowed-UD budget blocks preflight.
-* `--strict-pilot`: optional existing frozen NATURAL `approx_plan.json` directory.
-  Exact first-five payload equality gives MATCHED_SELECTION_ONLY. Without it,
-  NOT_MATCHED. This does not prove native parity.
-* `--continuous-contract`: explicit JSON contract for original blocks merged into
-  a new cache lifetime; it binds dataset/count/block IDs/task hash/ordinals/reset
-  semantics and `acknowledgement=REVIEWED_NEW_CONTINUOUS_IDENTITY`. It cannot
-  authorize duplicate tasks, partial groups, reordered requests or mutated routing.
-* `--development`: permits local uncommitted source CPU plans only. Production
-  prepare instead requires `--reviewed-commit` and `--reviewed-fingerprint` matching
-  this worktree's clean committed HEAD, branch and source content exactly.
-* `run --condition` is one condition only. APPROX has a separate explicit
-  `--enable-approximate-experiment` option. Execution is currently hard blocked.
-  RTT, shared-link scheduling and automatic campaigns are NOT_IMPLEMENTED.
+* Original sealed I5 workload/dataset manifests and real Qasper/2WikiMQA/MultiNews
+  prepared records, preserving exact prompts, routing, seed, IDs and generation.
+* Existing OPT-2.7B FP16 base/tokenizer snapshots at immutable revisions, expanded
+  30-user/three-adapter registry and distinct rank8 FP32 A/B matrices.
+* Pinned local TinyBERT checkpoint/tokenizer; CPU prepare loads and fingerprints
+  it. MultiNews requires the existing `rouge==1.0.1` scorer.
+* Each dataset's frozen NATURAL five-request Strict plan for matched selection.
+  Without complete first-five task equality, selection is NOT_MATCHED. Selection
+  equality alone is not native parity or GPU fidelity evidence.
 
-Format/mode: `D5_LIGHTPERF_V1` / `LIGHTWEIGHT_TIMING`. Flat write-once bounded
-JSON/CSV/Markdown summaries have a separate `light_inventory.json` with SHA256
-hashes. These authenticate local byte consistency and receipt bindings, not an
-external signed claim that an experiment happened. No raw tensor/logit files are
-accepted. ≤8 MiB per file, ≤2048 files and ≤64 MiB total are hard limits.
-`verify` is a Light verifier, not the Strict independent numerical auditor.
+Actual SERAPH paths must be supplied by the user; they are not inferred from
+this Ubuntu host. Do not rebuild data, shrink generation or raise budgets to pass.
 
-## Remaining implementation before any manual GPU command
+## CPU stage after user push
 
-1. Implement and review native Light ES/isolated UD processes using the audited
-   kernel/service. Check source/input fingerprints in each child, matrices and
-   model/tokenizer identities, actual resource reserves and original node/backend
-   policy, frame/worker/shared allocation deadlines, exception cleanup and seals.
-2. Persist the complete compact per-request/run schema, bind request summaries
-   to UD compute and ES wire totals, final ACK/STOP/BYE, occupancy and policy
-   counts. Measure quality/persistence separately and initialization/sealing outside
-   request scope. Compact proof metadata after all original live checks; never
-   persist dense tensors. Add measured concurrency, GPU UUID/driver, peak memory,
-   errors, deadlines, file/byte usage and contention limitations.
-3. Run native tiny OPT Strict-vs-Light CPU parity for FULL/EXACT/APPROX, including
-   multi-token decode, ownership/tensor corruption, policy and session continuity.
-   Existing Strict native tests alone do not approve the new Light kernel.
-4. Complete end-to-end artifact/worker failure tests and receipt reconstruction;
-   connect authenticated measured single-axis series to break-even tables/plots.
-   Only then implement issuance of CLEAN_NATIVE_CPU_APPROVAL and remove run gates
-   in a separately reviewed source change. Current cpu-validate never issues that
-   approval, even on a host with native packages installed.
-
-## CPU review on the actual execution host
-
-No installation is part of this task. The current host has no torch,
-transformers, numpy, rouge scorer or real prepared manifests. First provision the
-already prepared offline assets/environment through the user's normal process.
-Do not infer their SERAPH paths from this host or silently substitute remote code.
-Read and review the completed worker and commit it manually after authorization.
-No commit or push was performed by Codex.
-
-```bash
-export CUDA_VISIBLE_DEVICES=''
-export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-python3 scripts/159_r5_d5_lightperf.py environment
-python3 scripts/159_r5_d5_lightperf.py fingerprint
-python3 scripts/159_r5_d5_lightperf.py matrix
-CUDA_VISIBLE_DEVICES='' PYTHONPATH=src:tests python3 -m unittest test_r5_d5_lightperf -v
-```
-
-The fingerprint includes source/scripts/jobs/tests/configs/docs and root dependency
-metadata. After any source change, repeat fingerprint, review, new PLAN and new
-CPU audit. Development receipts and old Strict CPU approvals cannot be reused.
-An external wrapper must also verify the manual allocation time/node/resource
-policy; do not raise budgets to fit a requested count.
-
-## Manual L2 five-request preparation commands for all three datasets
-
-The following are **future manual commands, not executed here**. They remain
-blocked by the items above. Assign these variables to verified existing paths on
-the actual host, using a fresh unique tag. Qasper and the other pilots may use
-different original I5 plans; never guess or rebuild their first-five lists.
+Activate the already provisioned native environment in the reviewed Light worktree.
+These commands do not query or submit Slurm jobs.
 
 ```bash
 set -euo pipefail
-: "${D5_REVIEWED_COMMIT:?reviewed clean Light commit}"
-: "${D5_REVIEWED_FINGERPRINT:?fresh reviewed content fingerprint}"
+export CUDA_VISIBLE_DEVICES=''
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+export CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONHASHSEED=42
+export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
+pwd
+git branch --show-current
+git rev-parse HEAD
+git status --short
+python3 scripts/159_r5_d5_lightperf.py environment
+python3 scripts/159_r5_d5_lightperf.py fingerprint
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src:tests python3 -m unittest \
+  test_r5_d5_lightperf test_r5_d5_lightperf_worker -v
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src:tests python3 -m unittest test_r5_d5_lightperf_native -v
+```
+
+Native tests create Tiny OPT from config, real CPU tensor LoRA and spawned UDs;
+they download nothing. They compare full-vocabulary logits in memory against the
+unchanged Strict generator, plus tokens, real impact, owner integrity, row skips,
+policy/eviction, routing, decode/EOS and final ACK/STOP/BYE. Rate/factor variants
+exercise the same arithmetic. These are synthetic native correctness tests, not
+real dataset quality/GPU proof. Missing packages FAIL instead of silently skipping.
+
+Assign the **new clean reviewed** commit/fingerprint and verified local paths.
+Different datasets may use different original I5 plans. D5_TAG must be new.
+
+```bash
+: "${D5_REVIEWED_COMMIT:?reviewed clean new Light commit}"
+: "${D5_REVIEWED_FINGERPRINT:?fresh content fingerprint}"
 : "${D5_QASPER_I5:?existing original Qasper I5 plan}"
 : "${D5_2WIKI_I5:?existing original 2WikiMQA I5 plan}"
 : "${D5_MULTINEWS_I5:?existing original MultiNews I5 plan}"
 : "${D5_QASPER_STRICT_PLAN:?frozen Qasper five-request plan}"
 : "${D5_2WIKI_STRICT_PLAN:?frozen 2WikiMQA five-request plan}"
 : "${D5_MULTINEWS_STRICT_PLAN:?frozen MultiNews five-request plan}"
-: "${D5_MULTI:?existing expanded multi-adapter preparation}"
-: "${D5_TAG:?unique fresh run tag}"
+: "${D5_MULTI:?expanded multi-adapter preparation}"
+: "${D5_TAG:?new unique tag}"
 D5_OUTPUT_ROOT="$PWD/results/r5/d5_lightperf"
 
 python3 scripts/159_r5_d5_lightperf.py prepare --dataset qasper --count 5 \
-  --original-experiment "$D5_QASPER_I5" --multi "$D5_MULTI" \
-  --strict-pilot "$D5_QASPER_STRICT_PLAN" \
+  --original-experiment "$D5_QASPER_I5" --multi "$D5_MULTI" --strict-pilot "$D5_QASPER_STRICT_PLAN" \
   --reviewed-commit "$D5_REVIEWED_COMMIT" --reviewed-fingerprint "$D5_REVIEWED_FINGERPRINT" \
   --output-dir "$D5_OUTPUT_ROOT/qasper_5_plan_$D5_TAG"
 python3 scripts/159_r5_d5_lightperf.py prepare --dataset 2wikimqa --count 5 \
-  --original-experiment "$D5_2WIKI_I5" --multi "$D5_MULTI" \
-  --strict-pilot "$D5_2WIKI_STRICT_PLAN" \
+  --original-experiment "$D5_2WIKI_I5" --multi "$D5_MULTI" --strict-pilot "$D5_2WIKI_STRICT_PLAN" \
   --reviewed-commit "$D5_REVIEWED_COMMIT" --reviewed-fingerprint "$D5_REVIEWED_FINGERPRINT" \
   --output-dir "$D5_OUTPUT_ROOT/2wikimqa_5_plan_$D5_TAG"
 python3 scripts/159_r5_d5_lightperf.py prepare --dataset multi_news --count 5 \
-  --original-experiment "$D5_MULTINEWS_I5" --multi "$D5_MULTI" \
-  --strict-pilot "$D5_MULTINEWS_STRICT_PLAN" \
+  --original-experiment "$D5_MULTINEWS_I5" --multi "$D5_MULTI" --strict-pilot "$D5_MULTINEWS_STRICT_PLAN" \
   --reviewed-commit "$D5_REVIEWED_COMMIT" --reviewed-fingerprint "$D5_REVIEWED_FINGERPRINT" \
   --output-dir "$D5_OUTPUT_ROOT/multi_news_5_plan_$D5_TAG"
 
@@ -138,54 +99,91 @@ for D5_DATASET in qasper 2wikimqa multi_news; do
 done
 ```
 
-Stop at every failed command; do not use this illustrative loop as permission to
-ignore failure or submit a sweep. Current CPU audits are intentionally unapproved.
+CPU approval requires clean reviewed source, real input reconstruction before and
+after tests, engine D5_LIGHT_NATIVE_V2, installed versions and all required native
+Light/existing regressions with zero failures/errors/skips and no CUDA context.
+Only then is CLEAN_NATIVE_CPU_APPROVAL issued. Development source may receive
+DEVELOPMENT_TESTS_PASS, never GPU permission. Old engine/Strict/scalar-only audits
+are rejected. `inspect` can report CPU_APPROVED_MANUAL_GPU_NOT_RUN only with a
+fresh valid audit and feasible resources. Source changes invalidate the fingerprint.
 
-After all worker/approval blockers are resolved, the user may separately authorize
-one manual L2 five-request condition at a time in a suitable existing allocation.
-Preserve the same model/GPU UUID/backend/precision/concurrency and exact task list
-across FULL/EXACT/APPROX. Cache/model/UD are fresh at condition boundary and persist
-for all requests of that condition. One condition cannot be split across jobs.
-There is no runnable sbatch command in this revision.
+## Later user-approved five-request GPU command
 
-Future invocation shape, currently guaranteed to fail closed:
+**Do not execute this stage in the present CPU-only task.** After all CPU gates
+and separate user GPU approval, select one condition in a manual non-array
+allocation. Keep actual GPU UUID/model/backend/precision/CPU policy identical.
+
+Required: one compatible original 24GiB-class GPU, <22GiB actual peak and ≥12GiB
+free after loading; ≥4 CPUs; 64GiB allocation and ≥32GiB available host/cgroup RAM;
+≥1GiB free disk. Template is 04:30:00, worker deadline remains ≤7200s, and parent
+watchdog includes startup. User provides remaining allocation seconds without an
+automatic Slurm query. At 512 input/original caps and **unmeasured** 5s/forward,
+five-request forecasts are ~1400s/condition for Qasper/2Wiki and ~3000s for MultiNews.
+These estimates do not justify extending limits.
+
+Within the authorized allocation, preserve its real CUDA visibility: the CPU stage
+above hid it. Select the actual GPU UUID and allocated allowed node; do not invent
+values. No srun/sbatch command has been executed in this task.
 
 ```bash
+: "${D5L_GPU_UUID:?actual physical GPU UUID}"
+: "${D5N_NODE:?moana-y1/y2/y3/y4/y5/y7 matching allocated node}"
+: "${D5L_ALLOCATION_REMAINING_SECONDS:?actual remaining seconds <=16200}"
+export D5L_ENABLE_GPU=1 R5_ENABLE_GPU=1 R5_I5_ENABLE_GPU=1
 python3 scripts/159_r5_d5_lightperf.py run \
   --experiment "$D5_OUTPUT_ROOT/qasper_5_plan_$D5_TAG" \
   --cpu-audit "$D5_OUTPUT_ROOT/qasper_5_cpu_$D5_TAG" \
-  --condition FULL_RECOMPUTE --output-dir "$D5_OUTPUT_ROOT/qasper_5_full_$D5_TAG"
-# EXACT uses SEMCACHE_D5_EXACT, separate fresh output.
-# APPROX uses SEMCACHE_D5_APPROX and --enable-approximate-experiment.
+  --source-commit "$D5_REVIEWED_COMMIT" --expected-gpu-uuid "$D5L_GPU_UUID" \
+  --condition FULL_RECOMPUTE --enable-gpu-experiment \
+  --output-dir "$D5_OUTPUT_ROOT/qasper_5_full_$D5_TAG"
 ```
 
-`verify --run RUN --experiment PLAN --cpu-audit CPU` checks receipt hashes,
-source/plan/audit/knob bindings, request order, token/text hashes, row accounting,
-latency definitions and actual resource metadata. Registry JSON for `analyze` or
-`aggregate` is an explicit bounded list of `{run, plan, cpu_audit}` triples.
-Exports: `analysis.json`, `tables.csv`, `tables.md` and Light inventory in a fresh
-output. Current production analysis is unreachable without the missing native
-approval; synthetic receipt tests are not experiment results. Plot export and
-automatic grouping of L5 measured crossings remain NOT_IMPLEMENTED.
+EXACT uses `--condition SEMCACHE_D5_EXACT` and a fresh exact output. APPROX uses
+`--condition SEMCACHE_D5_APPROX --enable-approximate-experiment` and a fresh approx
+output. Use analogous dataset-specific plans for 2WikiMQA/MultiNews; each is a
+separate manual decision. The job template `jobs/r5_d5_lightperf.sh` is an optional
+future user-configured wrapper: it first runs CPU inspect and rejects missing
+source/approval/assets/allocation/opt-ins before GPU setup. It submits nothing.
 
-## Later gates and interpretation
+Keep RUN and fresh `RUN__ud_Adapter_A/B/C` sibling directories immutable together.
+Their seals and ordered wire/service summaries are bound to run.json. Any
+failure.json invalidates success. There is no retry/fallback or Strict-as-Light path.
 
-Keep L2 20/50 and all L3–L5 jobs on hold. Review actual five-request outputs,
-identity matches, native memory, timing overhead, token agreement and task quality
-first. A future 20/50 plan needs valid original prefixes, explicit continuous
-identity if crossing blocks, and budgets that fit unchanged deadlines. Each
-dataset/count/condition/knob tuple is a separate manual decision. Matrix has 12
-knob pairs, 324 hypothetical conditions across 3 datasets × 3 scales × 3 modes;
-selected/submitted jobs = 0. L5 uses a separately approved targeted subset after
-L3/L4 observations. No sign crossing means NO_OBSERVED_BREAK_EVEN; interpolation
-is only an estimate within a measured bracket. Unlimited bandwidth is not numeric
-zero. APPROX is a separate fidelity-constrained curve; task quality is not pooled
-across datasets. N=5 P95 is exploratory and one trial supports no statistical claim.
+```bash
+CUDA_VISIBLE_DEVICES='' python3 scripts/159_r5_d5_lightperf.py verify \
+  --experiment "$D5_OUTPUT_ROOT/qasper_5_plan_$D5_TAG" \
+  --cpu-audit "$D5_OUTPUT_ROOT/qasper_5_cpu_$D5_TAG" \
+  --run "$D5_OUTPUT_ROOT/qasper_5_full_$D5_TAG"
+# Registry: explicit JSON list of {run, plan, cpu_audit} triples, no duplicates.
+CUDA_VISIBLE_DEVICES='' python3 scripts/159_r5_d5_lightperf.py analyze \
+  --registry "$D5_RESULT_REGISTRY" --output-dir "$D5_OUTPUT_ROOT/analysis_$D5_TAG"
+```
 
-User-provided historical Strict reference: 221601 files / 34.866 GB; MultiNews
-EXACT HIT 2/5, 2880 reused QKV rows, fidelity 5/5; APPROX HIT 2/5, 10944 rows,
-fidelity 3/5. These artifacts were not locally available for numerical re-audit.
-They remain independent Strict observation data. Do not compare Strict and Light
-as one observer-equivalent speed result or claim bitwise cross-mode parity before
-matched five-request GPU evidence. Light full-vocabulary independent audit is
-NOT_EVALUATED; correctness_qualified_speedup remains NOT_ESTABLISHED.
+Exports: analysis.json, tables.csv, tables.md and Light seal. Model/QKV components
+are wall-only; GPU kernel, driver, queue, total observer and final seal durations
+are NOT_MEASURED. Inclusive scopes overlap and cannot reconstruct E2E by summing.
+Quality and primary persistence are separately measured inside application latency;
+final summary/sealing are excluded. Link achieved Mbps include inter-frame gaps;
+this is not a genuine remote link. UD ratios are measured per-operation service
+emulation, never hardware-equivalent CPU speed.
+
+## 20/50 and L3/L4/L5 remain separate gates
+
+Original prefix/routing/group checks remain for 5/20/50. Cross-block streams need
+an explicit new continuous identity contract, with cache retained for the whole
+condition. Static infeasibility remains blocked. Conservative Qasper/2Wiki50 and
+MultiNews20/50 exceed the existing 7200s bound; do not shrink generation or raise
+limits. Each condition is one continuous session, never split across jobs.
+
+Bandwidth choices: omitted/unlimited, 200/100/50 Mbps, both directions per channel.
+UD factors: 1/.5/.25, EMULATED_UD_SERVICE_TIME. Knobs are fixed in PLAN and apply
+to every condition. Non-baseline knobs/counts require a separate explicit
+`--enable-extended-experiment` after evidence and user approval; the baseline job
+template does not supply it. RTT/shared-link scheduling are unsupported. Matrix
+still submits zero jobs; targeted L5 subsets only after separate L3/L4 evidence.
+Plot export and automatic measured-crossing series grouping remain outside this revision.
+
+Keep correctness_qualified_speedup=NOT_ESTABLISHED and persisted independent
+full-vocabulary audit NOT_EVALUATED. Historical Strict MultiNews 221601 files /
+34.866GB, EXACT 2/5 HIT/2880 rows/fidelity5/5, APPROX 2/5 HIT/10944 rows/fidelity3/5
+are references, not PASS results for the new native Light implementation.

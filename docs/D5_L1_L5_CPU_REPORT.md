@@ -1,5 +1,10 @@
 # CPU completion report — PARTIAL_BLOCKED
 
+Historical first implementation report. The follow-up started from committed
+HEAD `6708d369f42577a3fbe8b46411aa98cdbac4b776`; see
+`D5_L1_NATIVE_CPU_REPORT.md` for the new native worker and current validation.
+The measurements below remain the original development record, not new evidence.
+
 Date: 2026-11-13. No GPU inference, Slurm submission/cancellation/query, external
 network/API, package installation, model download, Git commit or push occurred.
 Only local TCP loopback tests used execution outside the socket-restricted sandbox.

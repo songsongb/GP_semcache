@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 
 from .communication import canonical, digest, require, json_loads
 from .r3a_artifacts import ROOT
 
 SCHEMA = 'D5_LIGHTPERF_V1'
 MODE = 'LIGHTWEIGHT_TIMING'
+ENGINE = 'D5_LIGHT_NATIVE_V2'
 BASE = '4916836ce328e119f3a8d85c6c1afc7cf8d363e5'
 BRANCH = 'exp/d5-l1-l5-lightperf'
 NAMESPACE = ROOT / 'results/r5/d5_lightperf'
@@ -62,9 +64,13 @@ class SummaryWriter:
                 type(max_files) is int and 0 < max_files <= MAX_FILES, 'invalid light output bounds')
         self.max_bytes, self.max_files = max_bytes, max_files
         self.bytes, self.files, self.hashes, self.sealed = 0, 0, {}, False
+        self.timings = dict(serialization_ms=0., file_write_ms=0., hash_ms=0.)
 
     def write(self, name, value):
-        self._write(name, canonical(value), {'.json'})
+        start = time.monotonic_ns()
+        data = canonical(value)
+        self.timings['serialization_ms'] += (time.monotonic_ns() - start) / 1e6
+        self._write(name, data, {'.json'})
 
     def write_text(self, name, value):
         require(isinstance(value, str), 'text export required')
@@ -77,9 +83,13 @@ class SummaryWriter:
         require(len(data) <= MAX_JSON and self.bytes + len(data) <= self.max_bytes and
                 self.files + 1 < self.max_files, 'light summary budget exceeded')
         path = no_symlinks(self.root / name)
+        start = time.monotonic_ns()
         with path.open('xb') as f:
             require(f.write(data) == len(data), 'short light write')
+        self.timings['file_write_ms'] += (time.monotonic_ns() - start) / 1e6
+        start = time.monotonic_ns()
         self.hashes[name] = hashlib.sha256(data).hexdigest()
+        self.timings['hash_ms'] += (time.monotonic_ns() - start) / 1e6
         self.bytes += len(data)
         self.files += 1
 

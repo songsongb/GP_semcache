@@ -31,7 +31,8 @@ class LightProfiler(Profiler):
         return result
 
 
-def generate_loop(req, forward, complete, decode_text, *, clock_ns=time.monotonic_ns):
+def generate_loop(req, forward, complete, decode_text, *, clock_ns=time.monotonic_ns,
+                  on_logits=None):
     """Same greedy/finite/termination policy; bounded token summaries, no logits.
 
     forward returns host-visible logits. There is no extra unconditional CUDA
@@ -44,6 +45,8 @@ def generate_loop(req, forward, complete, decode_text, *, clock_ns=time.monotoni
         tick = clock_ns()
         values, past = forward(step, list(tokens), past)
         require(values and all(math.isfinite(x) for x in values), 'empty/nonfinite full-vocabulary logits')
+        if on_logits is not None:
+            on_logits(step, tuple(tokens), tuple(values))
         tokens.append(max(range(len(values)), key=values.__getitem__))
         now = clock_ns()
         if step == 0:
@@ -71,7 +74,8 @@ def generate_loop(req, forward, complete, decode_text, *, clock_ns=time.monotoni
 
 
 def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
-                    condition, mode, allow_approximate=False, on_tcp_complete=None):
+                    condition, mode, allow_approximate=False, on_tcp_complete=None,
+                    cpu_logit_observer=None, deadline=None):
     """Opt-in kernel, caller must enforce real model/device/source/session guards.
 
     This function is not a GPU launcher. The CLI deliberately blocks native run
@@ -90,17 +94,31 @@ def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
     require(not torch.is_autocast_enabled() and not model.training and
             all(type(l.self_attn).__name__ == 'OPTAttention' for l in adapter.layers), 'eager eval OPT required')
     require(owner is None or owner.evidence is None, 'Light must not use Strict evidence sink')
+    device = next(model.parameters()).device
+    if cpu_logit_observer is not None:
+        import os
+        require(device.type == 'cpu' and req['TEST_FIXTURE_ONLY'] is True and
+                os.environ.get('CUDA_VISIBLE_DEVICES') == '', 'memory logit observer is CPU test-only')
+        require(model.config.vocab_size <= 256 and len(adapter.layers) <= 4 and
+                len(req['token_ids']) <= 64 and req['generation_policy']['max_new_tokens'] <= 8,
+                'memory logit observer requires bounded Tiny OPT inputs')
+    require((condition == 'FULL_RECOMPUTE') == (owner is None and index is None),
+            'condition requires isolated owner/index configuration')
     profiler = LightProfiler()
     arrival = time.monotonic_ns()
     row_summary = dict(fresh_qkv_rows=0, skipped_qkv_rows=0)
     try:
         with profiler.activate(req['request_id']):
             assignment = None if condition == 'FULL_RECOMPUTE' else call('semantic_assignment_inclusive', index.assign, req['input_text'])
-            matching = None if assignment is None else owner.begin(req, assignment, mode=mode, allow_approximate=allow_approximate)
+            matching = None
+            if assignment is not None:
+                with profiler.scope('matching_setup_inclusive'):
+                    matching = owner.begin(req, assignment, mode=mode, allow_approximate=allow_approximate)
             impact = None if assignment is None else StreamingImpact(req, len(adapter.layers), owner.active['windows'], evidence=None)
-            device = next(model.parameters()).device
 
             def forward(step, generated, past):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('Light request condition deadline exceeded')
                 session = SparseSession(channel, req, req['request_id'] + f'_s{step:03d}', generated=generated)
                 inputs = req['token_ids'] if not step else generated[-1:]
                 mask = [1] * (len(req['token_ids']) + step)
@@ -131,12 +149,17 @@ def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
             def complete(tokens):
                 control, physical = complete_request(channel, req, tokens, owner=None if assignment is None else owner,
                                                        attentions=impact, on_tcp_complete=on_tcp_complete)
-                return dict(control=control, physical=physical)
+                return dict(control=control, physical=physical,
+                            impact=None if impact is None else dict(records=impact.records,
+                                elapsed_ms=impact.elapsed_ms, peak_probability_bytes=impact.peak_bytes))
 
             result = generate_loop(req, forward, complete,
-                                   lambda ids: tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False))
+                                   lambda ids: tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False),
+                                   on_logits=cpu_logit_observer)
         result.update(condition=condition, context_mode=mode, row_summary=row_summary,
                       matching_candidate_count=None if matching is None else len(matching['candidates']),
+                      semantic_encoding_ms='NOT_APPLICABLE' if assignment is None else assignment['semantic_encoding_ms'],
+                      cluster_assignment_ms='NOT_APPLICABLE' if assignment is None else assignment['cluster_assignment_ms'],
                       components=profiler.finish())
         result['arrival_ns'] = arrival
         result['completion_ns'] = time.monotonic_ns()

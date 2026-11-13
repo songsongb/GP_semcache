@@ -54,8 +54,10 @@ class BytePacer:
     def report(self):
         span = None if self.first is None else self.last - self.first
         return dict(actual_wire_bytes=self.bytes, added_pacing_ms=self.pacing_seconds * 1000,
+                    requested_bandwidth_mbps=None if self.rate is None else self.rate * 8 / 1e6,
                     active_span_ms=None if span is None else span * 1000,
                     achieved_mbps=None if not span or not self.bytes else self.bytes * 8 / span / 1e6,
+                    achieved_scope='first send start to last send end, including inter-frame compute/wait gaps',
                     scope='PER_SENDING_CHANNEL; serialized frame bytes; not TCP/IP packet overhead')
 
 
@@ -101,6 +103,8 @@ class LightChannel(StrictChannel):
 
     def _record(self, operation, h, start, wire, error=None, **kwargs):
         try:
+            if operation == 'send':
+                kwargs['added_pacing_ms'] = (self.pacer.pacing_seconds - self._send_pacing_before) * 1000
             record = super()._record(operation, h, start, wire, error=error, **kwargs)
             if record is not None and error is None:
                 s = self.summary[operation]
@@ -114,6 +118,30 @@ class LightChannel(StrictChannel):
             # SparseSession retains returned records for its current pass only.
             # Channel must not retain the entire session's verbose ledger.
             self.records.clear()
+
+    def send(self, h, payload=b''):
+        if hasattr(self, 'condition_deadline'):
+            self.remaining_timeout(self.condition_deadline)
+        self._send_pacing_before = self.pacer.pacing_seconds
+        return super().send(h, payload)
+
+    def remaining_timeout(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self.failed = True
+            primary = TimeoutError('condition deadline exceeded before wire operation')
+            try:
+                self.sock.close()
+            except BaseException as exc:
+                if hasattr(primary, 'add_note'):
+                    primary.add_note('deadline socket close: ' + repr(exc))
+            raise primary
+        self.timeout = min(self.timeout, remaining)
+
+    def recv(self, **expected):
+        if hasattr(self, 'condition_deadline'):
+            self.remaining_timeout(self.condition_deadline)
+        return super().recv(**expected)
 
 
 class UDServiceEmulator:
@@ -162,7 +190,7 @@ class UDServiceEmulator:
 
 
 def serve_light_sparse(channel, identity, registry, matrices, *, service, deadline,
-                       fixture=False, trace=lambda record: None):
+                       fixture=False, trace=lambda record: None, expected_requests=None):
     """Separate UD service, same SparseOrder, arithmetic and protocol checks.
 
     Derived from the frozen serve_sparse loop. Only LoRA computation receives
@@ -181,6 +209,10 @@ def serve_light_sparse(channel, identity, registry, matrices, *, service, deadli
         require(not torch.cuda.is_initialized() and all(t.device.type == 'cpu' for t in matrices.values()) and
                 'transformers' not in sys.modules, 'CPU-only isolated UD required')
     order, finished = SparseOrder(identity, registry), set()
+    expected = None if expected_requests is None else list(expected_requests)
+    if expected is not None:
+        require(expected and len(expected) <= 50 and
+                len({r['request_id'] for r in expected}) == len(expected), 'invalid expected UD requests')
     while True:
         if time.monotonic() >= deadline:
             raise TimeoutError('UD condition deadline exceeded')
@@ -188,6 +220,8 @@ def serve_light_sparse(channel, identity, registry, matrices, *, service, deadli
         if h['kind'] == 'STOP':
             require(order.layer == 0 and not b and h['request_id'] == 'shutdown' and h['layer_id'] == -1 and h['shape'] == [],
                     'invalid stop/unfinished sparse pass')
+            require(set(order.parents) == finished and (expected is None or len(finished) == len(expected)),
+                    'STOP before final request ACK')
             channel.send(header('BYE', 'shutdown', -1))
             return
         if h['kind'] == 'HELLO' and set(h['metadata']) == {'sparse_complete'}:
@@ -203,6 +237,9 @@ def serve_light_sparse(channel, identity, registry, matrices, *, service, deadli
             continue
         require(set(h['metadata']) == {'sparse'} and h['kind'] in ('HIDDEN', 'HELLO'), 'sparse projection frame required')
         c = h['metadata']['sparse']
+        if expected is not None:
+            require(len(finished) < len(expected) and c['request'] == expected[len(finished)],
+                    'UD original request/order/routing differs')
         order.accept(c)
         n, width = len(c['fresh_positions']), identity['hidden_size']
         require(c['request']['request_id'] not in finished, 'projection after completed request')
@@ -213,18 +250,26 @@ def serve_light_sparse(channel, identity, registry, matrices, *, service, deadli
             trace(dict(request_id=c['request']['request_id'], cpu_projection_rows=0))
             continue
         require(h['kind'] == 'HIDDEN' and h['shape'] == [1, n, width] and h['dtype'] == identity['dtype'], 'sparse tensor shape/dtype differs')
+        decoded_start = time.monotonic_ns()
         x = unpack(b, h['dtype']) if fixture else tensor_from_bytes(b, h['dtype'], h['shape'])
         precision = {}
         started = time.monotonic_ns()
+        before = service.report()
         delta = service.run_lora(cpu_deltas, x, matrices, c['layer'], width,
                                  torch_backend=not fixture, precision_out=precision, deadline=deadline)
         computed = time.monotonic_ns()
         data = pack(delta, 'float32') if fixture else tensor_bytes(delta)
         encoded = time.monotonic_ns()
+        hashed_start = time.monotonic_ns()
         record = dict(sparse_sha256=digest(c), hidden_sha256=digest_bytes(b), delta_sha256=digest_bytes(data),
                       actual_precision=precision, cpu_projection_rows=3 * n,
                       cpu_lora_ms=(computed - started) / 1e6, TEST_FIXTURE_ONLY=fixture or c['request']['TEST_FIXTURE_ONLY'])
+        hashed_end = time.monotonic_ns()
         channel.send(header('DELTAS', c['pass_id'], c['layer'], 'float32', [3, 1, n, width], **record), data)
         trace(dict(request_id=c['request']['request_id'], cpu_projection_rows=3 * n,
                    serialization_ms=(encoded - computed) / 1e6,
+                   deserialization_ms=(started - decoded_start) / 1e6,
+                   hash_ms=(hashed_end - hashed_start) / 1e6,
+                   service_delta={k: service.report()[k] - before[k] for k in
+                                  ('measured_compute_ms', 'measured_service_ms', 'pacing_ms', 'operations')},
                    service=service.report()))

@@ -3,7 +3,7 @@ import math
 import statistics
 
 from .communication import digest, require
-from .r5_d5_lightperf_io import MODE, SCHEMA, BASE, BRANCH, read_json, verify
+from .r5_d5_lightperf_io import MODE, SCHEMA, ENGINE, BASE, BRANCH, read_json, verify, file_hash
 from .r5_d5_lightperf_workload import CONDITIONS
 
 
@@ -48,10 +48,15 @@ def verify_run(root, plan_root, cpu_root):
     p = read_json(Path(plan_root) / 'plan.json')
     a = read_json(Path(cpu_root) / 'cpu_validation.json')
     r = read_json(Path(root) / 'run.json')
+    require(not (Path(root) / 'failure.json').exists(), 'failed finalization is not a successful run')
     body = dict(p)
     pid = body.pop('plan_id')
     require(p['schema'] == r['schema'] == SCHEMA and p['mode'] == r['mode'] == MODE and digest(body) == pid,
             'unknown/changed LIGHT plan/schema')
+    require(p['engine'] == r['engine'] == a['engine'] == ENGINE, 'obsolete Light receipt engine')
+    from .r5_d5_lightperf import TEST_MODULES
+    require(a['modules'] == list(TEST_MODULES) and a['native_parity'] == 'TINY_OPT_STRICT_LIGHT_CPU_PASS' and
+            a['errors'] == 0 and a['versions'] == r['versions'], 'native approval coverage/versions differ')
     require(p['source']['branch'] == BRANCH and p['source']['strict_baseline'] == BASE and
             p['source']['content_fingerprint'] == digest(p['source']['files']), 'source fingerprint contract differs')
     require(a['status'] == 'PASS' and a['failed'] == a['skipped'] == 0 and a['scope'] == 'CLEAN_NATIVE_CPU_APPROVAL' and
@@ -98,6 +103,31 @@ def verify_run(root, plan_root, cpu_root):
                 'cache/quality metadata missing/invalid')
         if r['condition'] == CONDITIONS[0]:
             require(row['skipped_qkv_rows'] == 0, 'FULL cannot skip QKV rows')
+        core_path = Path(root) / row['primary_receipt']
+        require(row['primary_receipt'] == f'request_{index:03d}.json' and
+                file_hash(core_path) == row['primary_receipt_sha256'], 'request primary receipt differs')
+        core = read_json(core_path)
+        require(core.pop('receipt_scope') == 'PRIMARY_BODY_FINAL_TIMING_IN_RUN_JSON' and
+                all(row[k] == v for k, v in core.items()), 'primary/final request fields differ')
+    from .r5_d5_lightperf_receipts import wire_equal
+    by_adapter = {}
+    for row in requests:
+        by_adapter.setdefault(row['adapter_id'], []).append(row)
+    require(set(r['ud']) == set(by_adapter), 'UD adapter coverage differs')
+    for aid, rows in by_adapter.items():
+        item = r['ud'][aid]
+        require(Path(item['path']).absolute() == Path(str(Path(root).resolve()) + '__ud_' + aid), 'unexpected UD receipt path')
+        require(verify(item['path']) == item['inventory'] and not (Path(item['path']) / 'failure.json').exists(), 'UD receipt changed/failed')
+        u = read_json(Path(item['path']) / 'ud.json')
+        require(u['status'] == 'COMPLETE' and u['source'] == p['source'] and u['plan_inventory'] == plan_inventory and
+                u['cpu_inventory'] == cpu_inventory and u['completed_request_ids'] == [x['request_id'] for x in rows] and
+                u['final_bye_sent'] is True and u['user_device_cuda_used'] is False and u['full_model_loaded'] is False,
+                'UD final approval/lifecycle/isolation differs')
+        for index, row in enumerate(rows):
+            wire_equal(row['wire'], u['wire'][row['request_id']])
+            ur = read_json(Path(item['path']) / f'request_{index:03d}.json')
+            require(ur['request_id'] == row['request_id'] and ur['cpu_projection_rows'] == row['fresh_qkv_rows'] and
+                    ur['compute'] == row['ud_compute'], 'UD compute/request summary differs')
     require(r['sequence_span_ms'] >= (requests[-1]['completion_ns'] - requests[0]['arrival_ns']) / 1e6 and
             r['sequence_span_ms'] > 0, 'invalid measured sequence span')
     return r, dict(run=run_inventory, plan=plan_inventory, cpu=cpu_inventory)
@@ -124,9 +154,11 @@ def summarize(r):
 
 def compare(full, other):
     require(full['condition'] == CONDITIONS[0] and other['condition'] in CONDITIONS[1:], 'invalid comparison conditions')
-    keys = ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs', 'gpu', 'backend',
+    keys = ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs', 'backend',
             'precision_policy', 'cpu_concurrency', 'warmup_requests', 'measurement_scope')
     mismatches = [key for key in keys if full[key] != other[key]]
+    mismatches.extend('gpu.' + k for k in ('uuid', 'name', 'device', 'total_bytes')
+                      if full['gpu'].get(k) != other['gpu'].get(k))
     if mismatches:
         return dict(status='NOT_COMPARABLE', mismatches=mismatches, delta_e2e_ms=None, speedup=None)
     require([x['request_id'] for x in full['requests']] == [x['request_id'] for x in other['requests']], 'request list differs')

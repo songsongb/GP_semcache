@@ -117,7 +117,9 @@ def preflight(tasks, performance_knobs, *, slurm_seconds=16200, seconds_per_forw
     if worker_deadline <= 0 or forecast is not None and forecast > worker_deadline:
         reasons.append('DEADLINE_OR_SLURM_BOUND')
     summary_bytes = len(tasks) * 512 * 1024 + 4 * 2**20
-    file_count = len(tasks) + len(per_adapter) + 8
+    # Primary request bodies + final summary/config, isolated UD request bodies,
+    # readiness/final inventory and bounded failure receipts, across all endpoints.
+    file_count = 2 * len(tasks) + 5 * len(per_adapter) + 4
     if summary_bytes > 64 * 2**20 or file_count > 2048:
         reasons.append('LIGHT_DISK_FILE_BOUND')
     requirements = dict(host_available_bytes=32 * 2**30, cpus=4, disk_free_bytes=2**30,
