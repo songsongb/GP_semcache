@@ -1,13 +1,21 @@
 """One original NATURAL block. Original D5 arithmetic and protocol are reused."""
 from pathlib import Path
 import os,sys,time,subprocess,uuid,json,shutil
-from .communication import require,Channel,connect,header
+from .communication import require,connect,header
+from .r5_d5_channel import Channel
 from .r3a_artifacts import ROOT,read,append
 from .r5_subsequence_natural_io import output,put,seal,verify,RequestWriter,save_result
 from .r5_subsequence_natural import approval,CONDITIONS
 from .r5_subsequence_pilot import wait_worker
 
 SCRIPT=ROOT/'scripts/153_r5_subsequence_natural.py'
+D5_NODES=('moana-y1','moana-y2','moana-y3','moana-y4','moana-y5','moana-y7')
+
+
+def validate_node(environ=None):
+    env=os.environ if environ is None else environ
+    require(env.get('D5N_NODE') in D5_NODES and
+        env.get('SLURMD_NODENAME',env.get('SLURM_JOB_NODELIST'))==env['D5N_NODE'],'node differs')
 
 def ledger(root,record,request_ids,*,kind='wire'):
     unbound=False
@@ -85,7 +93,7 @@ def worker(experiment,output_dir,condition,cpu_audit,expected_gpu_uuid=None,*,_p
     mode,allow_approximate=('EXACT_CONTEXT_VERIFIED',False) if _profile is None else _profile.execution(condition)
     require(os.environ.get('SLURM_JOB_ID') and not os.environ.get('SLURM_ARRAY_TASK_ID') and os.environ.get('R5_ENABLE_GPU')==os.environ.get('R5_I5_ENABLE_GPU')=='1','manual opted-in allocation required')
     require(int(os.environ.get('SLURM_CPUS_PER_TASK','0'))>=4 and int(os.environ.get('SLURM_MEM_PER_NODE','0'))>=65536 and len(os.sched_getaffinity(0))>=4,'4CPU/64GiB required')
-    require(os.environ.get('D5N_NODE') in ('moana-y3','moana-y4') and os.environ.get('SLURMD_NODENAME',os.environ.get('SLURM_JOB_NODELIST'))==os.environ['D5N_NODE'],'node differs')
+    validate_node()
     require(os.environ.get('HF_HUB_OFFLINE')==os.environ.get('TRANSFORMERS_OFFLINE')=='1' and os.environ.get('CUBLAS_WORKSPACE_CONFIG')==':4096:8','offline/backend differs')
     protected=(experiment,cpu_audit,p['multi'],p['original_experiment'],*([] if _profile is None else p['dataset_paths'].values()))
     out=output(output_dir,protected);status=dict(status='FAILED',condition=condition);primary=None;sessions={};begin=time.monotonic_ns()
