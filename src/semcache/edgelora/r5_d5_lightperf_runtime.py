@@ -3,6 +3,7 @@ from collections import Counter
 from pathlib import Path
 import importlib.metadata
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -20,6 +21,22 @@ from .r5_d5_lightperf_receipts import WireSummary, PolicyCounter, compact_reques
 from .r5_d5_lightperf_timing import generate_native, SessionLifecycle
 
 SCRIPT = ROOT / 'scripts/159_r5_d5_lightperf.py'
+
+
+def gpu_uuid_matches(actual, expected):
+    """Compare canonical GPU UUIDs without rewriting identity receipts."""
+    def parse(value):
+        # UUID() also accepts URNs, braces and unhyphenated strings; reject those.
+        require(isinstance(value, str) and re.fullmatch(
+            r'(?:GPU-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+            value) is not None, 'invalid execution/expected GPU UUID format')
+        return uuid.UUID(value.removeprefix('GPU-'))
+    return parse(actual) == parse(expected)
+
+
+def validate_execution_gpu(gpu, expected_gpu_uuid, *, device_count, free, max_position_embeddings):
+    require(device_count == 1 and gpu_uuid_matches(gpu['uuid'], expected_gpu_uuid) and free >= 12 * 2**30 and
+            max_position_embeddings == 2048, 'GPU UUID/device/context/12GiB reserve differs')
 
 
 def native_versions():
@@ -313,8 +330,8 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
                 device='cuda:0', i5_gpu_policy_scope='R5_I5'), native=False, gpu_identity_policy='SAME_COMPATIBLE_GPU_CLASS')
         import torch
         free = torch.cuda.mem_get_info(0)[0]
-        require(torch.cuda.device_count() == 1 and gpu['uuid'] == expected_gpu_uuid and free >= 12 * 2**30 and
-                driver.model.config.max_position_embeddings == 2048, 'GPU UUID/device/context/12GiB reserve differs')
+        validate_execution_gpu(gpu, expected_gpu_uuid, device_count=torch.cuda.device_count(), free=free,
+                               max_position_embeddings=driver.model.config.max_position_embeddings)
         require(tokenizer_identity(pm, tokenizer) == p['tokenizer_identity'], 'loaded tokenizer differs')
         torch.cuda.reset_peak_memory_stats(0)
         contract = installed_contract(driver)

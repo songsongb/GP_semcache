@@ -19,6 +19,64 @@ from semcache.edgelora import r5_d5_lightperf_runtime as runtime
 import test_r5_sparse_physical as physical_fixture
 
 
+class GPUUUIDValidation(unittest.TestCase):
+    UUID = '880f065c-37fc-f142-05e1-f043a8fb49ff'
+    OTHER = '880f065c-37fc-f142-05e1-f043a8fb49fe'
+
+    def test_same_uuid_with_and_without_prefix(self):
+        for actual, expected in ((self.UUID, 'GPU-' + self.UUID), ('GPU-' + self.UUID, self.UUID),
+                                 (self.UUID, self.UUID), ('GPU-' + self.UUID, 'GPU-' + self.UUID),
+                                 (self.UUID.upper(), 'GPU-' + self.UUID)):
+            with self.subTest(actual=actual, expected=expected):
+                self.assertTrue(runtime.gpu_uuid_matches(actual, expected))
+
+    def test_different_uuid_rejected(self):
+        self.assertFalse(runtime.gpu_uuid_matches(self.UUID, 'GPU-' + self.OTHER))
+        with self.assertRaisesRegex(ValueError, 'GPU UUID/device/context/12GiB'):
+            runtime.validate_execution_gpu(dict(uuid=self.UUID), 'GPU-' + self.OTHER,
+                device_count=1, free=18 * 2**30, max_position_embeddings=2048)
+
+    def test_invalid_and_unavailable_values_rejected_on_either_side(self):
+        for value in (None, '', 'UNAVAILABLE', 'UNKNOWN', 'None', 'not-a-uuid', 123, b'GPU-' + self.UUID.encode(),
+                      'GPU-' + self.UUID[:-1] + 'z'):
+            for actual, expected in ((value, self.UUID), (self.UUID, value)):
+                with self.subTest(actual=actual, expected=expected), self.assertRaises(ValueError):
+                    runtime.gpu_uuid_matches(actual, expected)
+
+    def test_parseable_but_disallowed_uuid_representations_rejected(self):
+        for value in (self.UUID.replace('-', ''), '{' + self.UUID + '}', 'urn:uuid:' + self.UUID,
+                      runtime.uuid.UUID(self.UUID)):
+            runtime.uuid.UUID(str(value))  # Valid for Python's permissive parser.
+            for actual, expected in ((value, self.UUID), (self.UUID, value)):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    runtime.gpu_uuid_matches(actual, expected)
+        for value in (' ' + self.UUID, self.UUID + '\n', 'gpu-' + self.UUID, 'GPU-GPU-' + self.UUID):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                runtime.gpu_uuid_matches(value, self.UUID)
+
+    def test_matching_uuid_does_not_bypass_resource_guards(self):
+        valid = dict(device_count=1, free=12 * 2**30, max_position_embeddings=2048)
+        runtime.validate_execution_gpu(dict(uuid=self.UUID), 'GPU-' + self.UUID, **valid)
+        for key, bad_values in (('device_count', (0, 2)), ('free', (0, 12 * 2**30 - 1)),
+                                ('max_position_embeddings', (1024, 4096))):
+            for value in bad_values:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    runtime.validate_execution_gpu(dict(uuid=self.UUID), 'GPU-' + self.UUID,
+                                                   **dict(valid, **{key: value}))
+
+    def test_execution_identity_and_receipt_stay_unmodified(self):
+        from semcache.edgelora.gpu_identity import validate_gpu, SAME_COMPATIBLE_GPU_CLASS
+        prepared = dict(uuid='GPU-' + self.OTHER, name='NVIDIA GeForce RTX 3090')
+        gpu = dict(uuid=self.UUID, name='NVIDIA GeForce RTX 3090', device='cuda:0')
+        before = deepcopy(gpu)
+        receipt = validate_gpu(prepared, gpu, 'cuda:0', SAME_COMPATIBLE_GPU_CLASS)
+        runtime.validate_execution_gpu(gpu, 'GPU-' + self.UUID, device_count=1,
+                                       free=18 * 2**30, max_position_embeddings=2048)
+        self.assertEqual(gpu, before)
+        self.assertEqual(validate_gpu(prepared, gpu, 'cuda:0', SAME_COMPATIBLE_GPU_CLASS), receipt)
+        self.assertEqual(receipt['execution_gpu_uuid'], self.UUID)
+
+
 class WorkerContracts(unittest.TestCase):
     def allocation(self):
         return dict(SLURM_JOB_ID='TEST_ONLY', R5_ENABLE_GPU='1', R5_I5_ENABLE_GPU='1', D5L_ENABLE_GPU='1',
