@@ -161,7 +161,7 @@ class WorkerContracts(unittest.TestCase):
                 output = Path(tmp) / 'new_audit'
                 p = dict(source=dict(approval_scope='CLEAN_REVIEWED_SOURCE' if clean else 'DEVELOPMENT_NOT_GPU_APPROVED'),
                          resources=dict(status='STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING'),
-                         original_experiment='original', multi='multi', dataset_paths={})
+                         original_experiment='original', multi='multi', base_prepared='base', dataset_paths={})
                 def test_body():
                     if skip:
                         raise unittest.SkipTest('injected missing coverage')
