@@ -117,3 +117,10 @@ class PolicyCounter:
     def __call__(self, event):
         if event.get('kind') in self.counts:
             self.counts[event['kind']] += 1
+
+
+def bind_replay_provenance(row, occurrence):
+    require(all(row[k] == occurrence[k] for k in ('request_id', 'sample_id', 'user_id', 'adapter_id', 'session_ordinal')),
+            'replay occurrence does not match executed request')
+    row['replay_provenance'] = deepcopy(occurrence)
+    require(len(canonical(row)) <= 96 * 1024, 'replay request receipt exceeds96KiB')

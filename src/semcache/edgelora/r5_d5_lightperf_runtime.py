@@ -16,6 +16,7 @@ from .r3a_artifacts import ROOT
 from .r5_d5_lightperf_io import (ENGINE, MODE, SCHEMA, SummaryWriter, fresh, read_json,
                                source_identity, verify, hidden_cuda)
 from .r5_d5_lightperf_workload import CONDITIONS, knobs
+from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, validate_replay_stream
 from .r5_d5_lightperf_emulation import LightChannel, UDServiceEmulator, serve_light_sparse
 from .r5_d5_lightperf_receipts import WireSummary, PolicyCounter, compact_request, wire_equal
 from .r5_d5_lightperf_timing import generate_native, SessionLifecycle
@@ -55,10 +56,10 @@ def bound_receipts(experiment, cpu_audit):
     s = p['source']
     require(s['approval_scope'] == 'CLEAN_REVIEWED_SOURCE' and s == source_identity(
         reviewed_commit=s['commit'], reviewed_fingerprint=s['content_fingerprint']), 'clean source approval differs')
-    from .r5_d5_lightperf import TEST_MODULES
+    from .r5_d5_lightperf import approval_modules
     require(a['engine'] == ENGINE and a['status'] == 'PASS' and a['scope'] == 'CLEAN_NATIVE_CPU_APPROVAL' and
             a['failed'] == a['errors'] == a['skipped'] == 0 and a['tests'] > 0 and
-            a['source'] == s and a['plan_inventory'] == pi and a['modules'] == list(TEST_MODULES) and
+            a['source'] == s and a['plan_inventory'] == pi and a['modules'] == approval_modules(p) and
             a['native_parity'] == 'TINY_OPT_STRICT_LIGHT_CPU_PASS' and a['versions'] == native_versions(),
             'missing/stale/non-native CPU approval')
     require(p['resources']['status'] == 'STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING', 'BLOCKED_INFEASIBLE')
@@ -253,7 +254,7 @@ def stop_after_ack(session, req, control, lifecycle):
 
 
 def execute_stream(tasks, sessions, model, adapter, tokenizer, condition, writer, deadline, *,
-                   score_fn, request_fn=None, generate_fn=generate_native):
+                   score_fn, request_fn=None, generate_fn=generate_native, replay_occurrences=None):
     """Shared serial engine, used by the real ES worker and native CPU tests.
 
     Injection is only for CPU unit tests; production worker supplies real inputs
@@ -263,6 +264,7 @@ def execute_stream(tasks, sessions, model, adapter, tokenizer, condition, writer
     from .r5_subsequence_physical import EXACT, APPROX
     request_fn = request if request_fn is None else request_fn
     lifecycle, rows = SessionLifecycle(tasks), []
+    require(replay_occurrences is None or len(replay_occurrences) == len(tasks), 'incomplete replay provenance')
     for ordinal, task in enumerate(tasks):
         arrival = time.monotonic_ns()
         if time.monotonic() >= deadline:
@@ -281,6 +283,9 @@ def execute_stream(tasks, sessions, model, adapter, tokenizer, condition, writer
         row = compact_request(task, ordinal, result, owner,
                               {k: s['policy'].counts[k] - before[k] for k in before}, tasks,
                               s['wire'].request(req['request_id']), ud)
+        if replay_occurrences is not None:
+            from .r5_d5_lightperf_receipts import bind_replay_provenance
+            bind_replay_provenance(row, replay_occurrences[ordinal])
         qstart = time.monotonic_ns()
         quality, scorer_version = score_fn(task, result['generated_text'])
         row.update(quality=quality, scorer_version=scorer_version, quality_ms=(time.monotonic_ns() - qstart) / 1e6)
@@ -299,11 +304,12 @@ def execute_stream(tasks, sessions, model, adapter, tokenizer, condition, writer
 
 
 def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expected_gpu_uuid,
-              enable_approximate_experiment=False, enable_extended_experiment=False):
+              enable_approximate_experiment=False, enable_extended_experiment=False, enable_continuous_replay=False):
     remaining = allocation_guard()
     from .r5_d5_lightperf import approval
     p, pi, ai = approval(experiment, cpu_audit, cpu_only=False)
-    launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment)
+    launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment,
+                 enable_continuous_replay)
     require(remaining >= p['resources']['worker_deadline_seconds'] + 120, 'remaining Slurm time insufficient')
     require(host_available() >= 32 * 2**30 and shutil.disk_usage(Path(output_dir).resolve().parent).free >= 2**30,
             'host RAM/disk reserve insufficient')
@@ -372,7 +378,8 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
         require(host >= 32 * 2**30 and torch.cuda.mem_get_info(0)[0] >= 12 * 2**30, 'post-load reserves insufficient')
         initialized = time.monotonic_ns()
         rows = execute_stream(tasks, sessions, driver.model, driver.adapter, tokenizer, condition, writer, deadline,
-                              score_fn=lambda t, text: (score(t['prepared']['sample'], text, t['prepared']['template_version']), SCORING_VERSION))
+                              score_fn=lambda t, text: (score(t['prepared']['sample'], text, t['prepared']['template_version']), SCORING_VERSION),
+                              replay_occurrences=p['stream'].get('occurrences') if replay_enabled(p) else None)
         sequence_end = time.monotonic_ns()
         uds = {}
         for aid, s in sessions.items():
@@ -406,6 +413,9 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
                                 primary_bytes_before_final=writer.bytes, deadline_seconds=p['resources']['worker_deadline_seconds']),
                  requests=rows, ud=uds, persistence_before_final=writer.timings, errors=[],
                  independent_full_vocabulary_audit='NOT_EVALUATED', correctness_qualified_speedup='NOT_ESTABLISHED')
+        if replay_enabled(p):
+            r.update(workload_mode=REPLAY, replay_stream_sha256=digest(p['stream']),
+                     replay_statistics=p['stream']['statistics'])
         writer.write('run.json', r)
     except BaseException as exc:
         primary = exc
@@ -426,23 +436,32 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
 
 
 def protected(p, experiment, cpu_audit):
-    return [experiment, cpu_audit, p['original_experiment'], p['multi'], p['base_prepared'], *p['dataset_paths'].values()]
+    return [experiment, cpu_audit, p['original_experiment'], p['multi'], p['base_prepared'],
+            *p['dataset_paths'].values(), *[p[k] for k in ('baseline_plan', 'strict_pilot') if p.get(k)]]
 
 
-def launch_scope(p, condition, source_commit, expected_gpu_uuid, approximate, extended):
+def launch_scope(p, condition, source_commit, expected_gpu_uuid, approximate, extended, continuous_replay=False):
     require(condition in CONDITIONS and source_commit == p['source']['commit'] and
             isinstance(expected_gpu_uuid, str) and expected_gpu_uuid.startswith('GPU-'), 'condition/reviewed source/GPU UUID required')
     require(condition != CONDITIONS[2] or approximate, 'APPROX explicit opt-in required')
     require(extended or p['count'] == 5 and p['performance_knobs'] == knobs(), '20/50 or L3/L4 require separate extended experiment approval')
+    if replay_enabled(p):
+        require(continuous_replay and extended,
+                'CONTINUOUS_REPLAY requires explicit replay + extended opt-ins')
+        validate_replay_stream(p['stream'])
+    else:
+        require(not continuous_replay, 'replay opt-in requires a replay plan')
 
 
 def run(experiment, cpu_audit, condition, output_dir, source_commit, expected_gpu_uuid, *,
-        enable_gpu_experiment=False, enable_approximate_experiment=False, enable_extended_experiment=False):
+        enable_gpu_experiment=False, enable_approximate_experiment=False, enable_extended_experiment=False,
+        enable_continuous_replay=False):
     require(enable_gpu_experiment, 'explicit --enable-gpu-experiment required')
     remaining = allocation_guard()
     from .r5_d5_lightperf import approval
     p, _, _ = approval(experiment, cpu_audit, cpu_only=False)
-    launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment)
+    launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment,
+                 enable_continuous_replay)
     require(remaining >= p['resources']['worker_deadline_seconds'] + 120, 'insufficient remaining allocation')
     # Parent does not create output; child enforces fresh resolved path and input protection.
     argv = [sys.executable, str(SCRIPT), '_worker', '--experiment', str(Path(experiment).resolve()), '--cpu-audit',
@@ -452,6 +471,8 @@ def run(experiment, cpu_audit, condition, output_dir, source_commit, expected_gp
         argv.append('--enable-approximate-experiment')
     if enable_extended_experiment:
         argv.append('--enable-extended-experiment')
+    if enable_continuous_replay:
+        argv.append('--enable-continuous-replay')
     process = subprocess.Popen(argv, cwd=ROOT, start_new_session=True)
     try:
         rc = process.wait(timeout=p['resources']['worker_deadline_seconds'])

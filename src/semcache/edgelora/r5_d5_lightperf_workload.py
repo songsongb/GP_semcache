@@ -24,8 +24,9 @@ def knobs(bandwidth_mbps=None, ud_throughput_factor=1.0):
                 ud_scope='EMULATED_UD_SERVICE_TIME')
 
 
-def stream(workload, dataset, count, *, continuous_contract=None, strict_pilot_tasks=None):
-    require(dataset in DATASETS and type(count) is int and count in COUNTS, 'unsupported dataset/scale')
+def original_pool(workload, dataset):
+    """Validate original repetition-0 blocks without introducing replay semantics."""
+    require(dataset in DATASETS, 'unsupported dataset')
     require(workload['template_version'] == TEMPLATE and workload['clusters'] == 1, 'original template/cluster differs')
     blocks = [b for b in workload['blocks'] if b['dataset'] == dataset and
               b['track'] == 'NATURAL' and b['repetition'] == 0]
@@ -47,6 +48,12 @@ def stream(workload, dataset, count, *, continuous_contract=None, strict_pilot_t
         all_tasks.extend(b['tasks'])
     require(len({t['sample_id'] for t in all_tasks}) == len(all_tasks) and
             len({t['request_id'] for t in all_tasks}) == len(all_tasks), 'duplicate original request/sample')
+    return blocks, all_tasks
+
+
+def stream(workload, dataset, count, *, continuous_contract=None, strict_pilot_tasks=None):
+    require(dataset in DATASETS and type(count) is int and count in COUNTS, 'unsupported dataset/scale')
+    blocks, all_tasks = original_pool(workload, dataset)
     require(len(all_tasks) >= count, 'INSUFFICIENT_ORIGINAL_REQUESTS; no replication or alternative selection')
     chosen = all_tasks[:count]
     groups = {t['group_id'] for t in chosen}

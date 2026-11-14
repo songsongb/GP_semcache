@@ -15,6 +15,7 @@ from .r3a_artifacts import ROOT, THRESHOLDS
 from .r5_d5_lightperf_io import (SCHEMA, MODE, ENGINE, BRANCH, SummaryWriter, fresh, hidden_cuda,
                                source_identity, read_json, verify)
 from .r5_d5_lightperf_workload import DATASETS, COUNTS, CONDITIONS, knobs, stream, preflight, matrix
+from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, replay_stream, validate_replay_stream
 
 TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_d5_lightperf_native',
                 'test_r5_natural_shutdown', 'test_r5_natural_phase3a',
@@ -22,12 +23,17 @@ TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_
                 'test_r5_sparse_physical', 'test_r5_subsequence_audit', 'test_r5_natural_approx')
 
 
+def approval_modules(plan):
+    return list(TEST_MODULES) + (['test_r5_d5_lightperf_replay'] if replay_enabled(plan) else [])
+
+
 def dependencies():
     return {n: importlib.util.find_spec(n) is not None for n in ('torch', 'transformers', 'numpy')}
 
 
 def material(original_experiment, multi, dataset, count, performance_knobs, *,
-             continuous_contract=None, strict_pilot=None, ud_operation_seconds=None, cpu_only=True):
+             continuous_contract=None, strict_pilot=None, ud_operation_seconds=None, cpu_only=True,
+             workload_mode='NATURAL', enable_continuous_replay=False, baseline_plan=None):
     if cpu_only:
         hidden_cuda()
     require(all(dependencies().values()), 'BLOCKED_MISSING_NATIVE_DEPENDENCIES: ' + str(dependencies()))
@@ -47,7 +53,32 @@ def material(original_experiment, multi, dataset, count, performance_knobs, *,
         require(pilot['track'] == 'NATURAL' and len(pilot['tasks']) == 5 and
                 all(t['dataset'] == dataset for t in pilot['tasks']), 'incompatible frozen Strict pilot')
         pilot_tasks = pilot['tasks']
-    selected = stream(w, dataset, count, continuous_contract=continuous_contract, strict_pilot_tasks=pilot_tasks)
+    replay = replay_enabled(dict(workload_mode=workload_mode, enable_continuous_replay=enable_continuous_replay))
+    if replay:
+        require(continuous_contract is None, 'replay uses its own explicit contract')
+        baseline, bi = None, None
+        if baseline_plan is not None:
+            bi = verify(baseline_plan)
+            baseline = read_json(Path(baseline_plan) / 'plan.json')
+            require(baseline['schema'] == SCHEMA and baseline['engine'] == ENGINE and baseline['mode'] == MODE and
+                    baseline['dataset'] == dataset and baseline['count'] == 5 and not replay_enabled(baseline),
+                    'frozen baseline must be a same-dataset five-request NATURAL Light plan')
+        selected = replay_stream(w, dataset, count, enable_continuous_replay=True,
+            baseline_tasks=None if baseline is None else baseline['stream']['tasks'],
+            baseline_seed=None if baseline is None else baseline['seed'], strict_pilot_tasks=pilot_tasks)
+        if baseline is not None:
+            reasons = selected['first_five_match']['reasons']
+            for field, current in (('original_inventory', receipt), ('tokenizer_identity', tok.identity)):
+                if baseline[field] != current:
+                    reasons.append('BASELINE_' + field.upper() + '_DIFFERS')
+            if baseline['multi_inventory'] != Evidence(multi).verify('r5_output_manifest.json'):
+                reasons.append('BASELINE_MODEL_ADAPTER_ASSETS_DIFFER')
+            selected['first_five_match']['status'] = 'NOT_MATCHED' if reasons else 'MATCHED_SELECTION_ONLY'
+        selected['baseline_plan_inventory'] = bi
+        validate_replay_stream(selected)
+    else:
+        require(baseline_plan is None, '--baseline-plan is for CONTINUOUS_REPLAY only')
+        selected = stream(w, dataset, count, continuous_contract=continuous_contract, strict_pilot_tasks=pilot_tasks)
     network = transport(selected['tasks'], pm, specs, tok.identity, users)
     from .r5_i5_quality import validate_scorers
     validate_scorers({dataset})
@@ -71,14 +102,15 @@ def material(original_experiment, multi, dataset, count, performance_knobs, *,
 def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth_mbps=None,
             ud_throughput_factor=1., development=False, reviewed_commit=None,
             reviewed_fingerprint=None, continuous_contract=None, strict_pilot=None,
-            ud_operation_seconds=None):
+            ud_operation_seconds=None, workload_mode='NATURAL', enable_continuous_replay=False, baseline_plan=None):
     hidden_cuda()
     source = source_identity(development=development, reviewed_commit=reviewed_commit,
                              reviewed_fingerprint=reviewed_fingerprint)
     performance_knobs = knobs(bandwidth_mbps, ud_throughput_factor)
     contract = None if continuous_contract is None else read_json(continuous_contract)
     fields = material(original_experiment, multi, dataset, count, performance_knobs,
-                      continuous_contract=contract, strict_pilot=strict_pilot, ud_operation_seconds=ud_operation_seconds)
+                      continuous_contract=contract, strict_pilot=strict_pilot, ud_operation_seconds=ud_operation_seconds,
+                      workload_mode=workload_mode, enable_continuous_replay=enable_continuous_replay, baseline_plan=baseline_plan)
     p = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, source=source, dataset=dataset, count=count,
              original_experiment=str(Path(original_experiment).resolve()), multi=str(Path(multi).resolve()),
              continuous_contract=contract, strict_pilot=None if strict_pilot is None else str(Path(strict_pilot).resolve()),
@@ -87,12 +119,20 @@ def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth
              validation_mode='REQUEST_SCOPED_VERIFIED', thresholds=THRESHOLDS, warmup_requests=0,
              gpu_launch_status='REQUIRES_FRESH_NATIVE_CPU_APPROVAL_AND_MANUAL_GPU_OPT_IN',
              correctness_qualified_speedup='NOT_ESTABLISHED', **fields)
+    if workload_mode == REPLAY:
+        p.update(workload_mode=REPLAY, enable_continuous_replay=True,
+                 baseline_plan=None if baseline_plan is None else str(Path(baseline_plan).resolve()))
     p['plan_id'] = digest(p)
+    from .communication import canonical
+    from .r5_d5_lightperf_io import MAX_JSON
+    require(len(canonical(p)) <= MAX_JSON, 'BLOCKED_INFEASIBLE: PLAN_JSON_BOUND; no truncation or limit expansion')
     protected = [original_experiment, multi, *p['dataset_paths'].values()]
     if continuous_contract:
         protected.append(continuous_contract)
     if strict_pilot:
         protected.append(strict_pilot)
+    if baseline_plan:
+        protected.append(baseline_plan)
     writer = SummaryWriter(fresh(output_dir, protected))
     writer.write('plan.json', p)
     inventory = writer.seal()
@@ -116,7 +156,9 @@ def load_plan(experiment, *, cpu_only=True):
             p['correctness_qualified_speedup'] == 'NOT_ESTABLISHED', 'source/safety settings differ')
     fields = material(p['original_experiment'], p['multi'], p['dataset'], p['count'], p['performance_knobs'],
                       continuous_contract=p['continuous_contract'], strict_pilot=p['strict_pilot'],
-                      ud_operation_seconds=p['ud_operation_seconds'], cpu_only=cpu_only)
+                      ud_operation_seconds=p['ud_operation_seconds'], cpu_only=cpu_only,
+                      workload_mode=p.get('workload_mode', 'NATURAL'),
+                      enable_continuous_replay=p.get('enable_continuous_replay', False), baseline_plan=p.get('baseline_plan'))
     require(all(p[k] == value for k, value in fields.items()), 'changed prepared input/workload/resources')
     return p, inventory
 
@@ -129,7 +171,8 @@ def cpu_validate(experiment, output_dir):
     import torch
     require(not torch.cuda.is_initialized(), 'CPU approval initialized CUDA')
     sys.path.insert(0, str(ROOT / 'tests'))
-    suite = unittest.defaultTestLoader.loadTestsFromNames(TEST_MODULES)
+    modules = approval_modules(p)
+    suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
     result = unittest.TestResult()
     start = time.monotonic()
     suite.run(result)
@@ -142,9 +185,10 @@ def cpu_validate(experiment, output_dir):
     record = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, status='PASS' if clean else 'DEVELOPMENT_TESTS_PASS',
                   scope='CLEAN_NATIVE_CPU_APPROVAL' if clean else 'DEVELOPMENT_NOT_GPU_APPROVED',
                   source=p['source'], plan_inventory=inventory, tests=result.testsRun,
-                  failed=0, errors=0, skipped=0, wall_seconds=time.monotonic() - start, modules=list(TEST_MODULES),
+                  failed=0, errors=0, skipped=0, wall_seconds=time.monotonic() - start, modules=modules,
                   versions=native_versions(), native_parity='TINY_OPT_STRICT_LIGHT_CPU_PASS', gpu_parity='NOT_GPU_VERIFIED')
-    writer = SummaryWriter(fresh(output_dir, [experiment, p['original_experiment'], p['multi'], *p['dataset_paths'].values()]))
+    from .r5_d5_lightperf_runtime import protected
+    writer = SummaryWriter(fresh(output_dir, protected(p, experiment, experiment)))
     writer.write('cpu_validation.json', record)
     writer.seal()
     return record
@@ -161,6 +205,29 @@ def inspect_plan(experiment, cpu_audit=None):
                 GPU_status='GPU_NOT_RUN', source_commit=p['source']['commit'],
                 plan_id=p['plan_id'], cpu_approval=approval_label, resources=p['resources'],
                 remaining='manual allocation, GPU UUID/VRAM/runtime guards and explicit user GPU approval')
+
+
+def preflight_report(experiment):
+    hidden_cuda()
+    p, inventory = load_plan(experiment)
+    selected = p['stream']
+    from collections import Counter
+    from .communication import canonical
+    from .r5_d5_lightperf_io import MAX_JSON
+    reasons = list(p['resources']['reasons'])
+    plan_bytes = len(canonical(p))
+    if plan_bytes > MAX_JSON:
+        reasons.append('PLAN_JSON_BOUND')
+    return dict(status='BLOCKED_INFEASIBLE' if reasons else 'PASS', scope='CPU_STATIC_PREFLIGHT_NOT_GPU_APPROVAL',
+        dataset=p['dataset'], count=p['count'], workload_mode=p.get('workload_mode', 'NATURAL'),
+        request_ids=[t['request_id'] for t in selected['tasks']], tasks_sha256=selected['tasks_sha256'],
+        statistics=selected.get('statistics', dict(unique_samples=len({t['sample_id'] for t in selected['tasks']}),
+            repeated_requests=0, repeat_ratio=0., per_adapter_requests=dict(Counter(t['adapter_id'] for t in selected['tasks'])),
+            per_user_requests=dict(Counter(t['user_id'] for t in selected['tasks'])))),
+        first_five_match=selected.get('first_five_match', dict(status=selected['strict_five_parity'])),
+        resources=p['resources'], plan_json_bytes=plan_bytes, reasons=reasons, plan_inventory=inventory,
+        GPU_status='GPU_NOT_RUN', gpu_execution_approved=False,
+        correctness_qualified_speedup='NOT_ESTABLISHED')
 
 
 def approval(experiment, cpu_audit, *, cpu_only=True):
@@ -188,19 +255,26 @@ def analyze(registry, output_dir):
         runs.append(r)
         bindings.append(binding)
         protected.extend(paths.values())
+        pinned_plan = read_json(Path(paths['plan']) / 'plan.json')
+        protected.extend(pinned_plan[k] for k in ('baseline_plan', 'strict_pilot') if pinned_plan.get(k))
     require(len({digest(b['run']) for b in bindings}) == len(bindings), 'duplicate run registry')
     groups = {}
     for r in runs:
-        key = digest({k: r[k] for k in ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs')})
+        key = digest(dict({k: r[k] for k in ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs')},
+                          workload_mode=r.get('workload_mode', 'NATURAL')))
         group = groups.setdefault(key, {})
         require(r['condition'] not in group, 'duplicate condition; do not pool trials')
         group[r['condition']] = r
     comparisons = []
+    position_comparisons = []
+    from .r5_d5_lightperf_replay_analysis import run_segments, compare_segments
     for group in groups.values():
         if CONDITIONS[0] in group:
             comparisons.extend(dict(dataset=group[c]['dataset'], scale=group[c]['scale'],
                                     tasks_sha256=group[c]['tasks_sha256'], performance_knobs=group[c]['performance_knobs'],
                                     **compare(group[CONDITIONS[0]], group[c])) for c in CONDITIONS[1:] if c in group)
+            position_comparisons.extend(dict(dataset=group[c]['dataset'], scale=group[c]['scale'], condition=c,
+                **compare_segments(group[CONDITIONS[0]], group[c])) for c in CONDITIONS[1:] if c in group)
     rows = [summarize(r) for r in runs]
     rows.sort(key=lambda r: (r['dataset'], r['scale'], r['condition'], str(r['performance_knobs'])))
     report = dict(schema=SCHEMA, mode=MODE, status='LIGHT_RECEIPTS_VERIFIED_DESCRIPTIVE_ONLY',
@@ -219,6 +293,20 @@ def analyze(registry, output_dir):
         lines.append('| ' + ' | '.join(map(str, values)) + ' |')
     writer = SummaryWriter(fresh(output_dir, protected))
     writer.write('analysis.json', report)
+    positions = [run_segments(r) for r in runs]
+    writer.write('position_analysis.json', dict(scope='VERIFIED_LIGHT_RECEIPTS_SINGLE_TRIAL_DESCRIPTIVE',
+        runs=positions, comparisons=position_comparisons, correctness_qualified_speedup='NOT_ESTABLISHED'))
+    window_csv = io.StringIO()
+    wc = csv.writer(window_csv)
+    wc.writerow(['dataset', 'scale', 'condition', 'start', 'stop_exclusive', 'hit_rate', 'mean_e2e_ms', 'qkv_skip_ratio',
+                 'mean_input_tokens', 'mean_output_tokens', 'mean_owner_completion_ms', 'repeated_occurrences'])
+    for run in positions:
+        for window in run['windows']:
+            completion = window['timings']['owner_completion_ms']['statistics']
+            wc.writerow([run['dataset'], run['scale'], run['condition'], window['start'], window['stop_exclusive'],
+                window['hit_rate'], window['e2e_ms']['mean'], window['qkv_skip_ratio'], window['input_tokens']['mean'],
+                window['output_tokens']['mean'], None if completion is None else completion['mean'], window['repeated_occurrences']])
+    writer.write_text('position_windows.csv', window_csv.getvalue())
     writer.write_text('tables.csv', buf.getvalue())
     writer.write_text('tables.md', '\n'.join(lines) + '\n')
     writer.seal()
@@ -244,10 +332,14 @@ def main(argv=None):
     p.add_argument('--reviewed-fingerprint')
     p.add_argument('--continuous-contract')
     p.add_argument('--strict-pilot')
-    for command in ('cpu-validate', 'inspect'):
+    p.add_argument('--workload-mode', choices=('NATURAL', REPLAY), default='NATURAL')
+    p.add_argument('--enable-continuous-replay', action='store_true')
+    p.add_argument('--baseline-plan')
+    for command in ('cpu-validate', 'inspect', 'preflight'):
         p = sub.add_parser(command)
         p.add_argument('--experiment', required=True)
-        p.add_argument('--' + ('output-dir' if command == 'cpu-validate' else 'cpu-audit'), required=command == 'cpu-validate')
+        if command != 'preflight':
+            p.add_argument('--' + ('output-dir' if command == 'cpu-validate' else 'cpu-audit'), required=command == 'cpu-validate')
     for command in ('run', '_worker'):
         p = sub.add_parser(command, help='native execution; clean CPU approval + manual allocation required')
         p.add_argument('--experiment', required=True)
@@ -258,6 +350,7 @@ def main(argv=None):
         p.add_argument('--expected-gpu-uuid', required=True)
         p.add_argument('--enable-approximate-experiment', action='store_true')
         p.add_argument('--enable-extended-experiment', action='store_true')
+        p.add_argument('--enable-continuous-replay', action='store_true')
         if command == 'run':
             p.add_argument('--enable-gpu-experiment', action='store_true')
     p = sub.add_parser('_ud')
@@ -290,6 +383,8 @@ def main(argv=None):
             result = cpu_validate(**args)
         elif command == 'inspect':
             result = inspect_plan(**args)
+        elif command == 'preflight':
+            result = preflight_report(**args)
         elif command == 'run':
             result = run(**args)
         elif command == '_worker':
@@ -307,7 +402,7 @@ def main(argv=None):
             _, binding = verify_run(args['run'], args['experiment'], args['cpu_audit'])
             result = dict(status='LIGHT_RECEIPT_INTEGRITY_PASS', binding=binding, numerical_audit='NOT_EVALUATED')
         print(json.dumps(result, sort_keys=True, indent=2, allow_nan=False))
-        return 2 if result.get('status') == 'PARTIAL_BLOCKED' else 0
+        return 2 if result.get('status') in ('PARTIAL_BLOCKED', 'BLOCKED_INFEASIBLE') else 0
     except (ValueError, KeyError, OSError, ImportError) as exc:
         print(json.dumps(dict(status='PARTIAL_BLOCKED', reason=str(exc),
                               GPU_status='CHECK_FAILED_RECEIPTS' if command in ('run', '_worker') else 'GPU_NOT_RUN')), file=sys.stderr)

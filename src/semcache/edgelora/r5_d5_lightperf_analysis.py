@@ -54,8 +54,19 @@ def verify_run(root, plan_root, cpu_root):
     require(p['schema'] == r['schema'] == SCHEMA and p['mode'] == r['mode'] == MODE and digest(body) == pid,
             'unknown/changed LIGHT plan/schema')
     require(p['engine'] == r['engine'] == a['engine'] == ENGINE, 'obsolete Light receipt engine')
-    from .r5_d5_lightperf import TEST_MODULES
-    require(a['modules'] == list(TEST_MODULES) and a['native_parity'] == 'TINY_OPT_STRICT_LIGHT_CPU_PASS' and
+    from .r5_d5_lightperf import approval_modules
+    from .r5_d5_lightperf_replay import replay_enabled, validate_replay_stream
+    is_replay = replay_enabled(p)
+    if is_replay:
+        validate_replay_stream(p['stream'])
+        require(p['seed'] == p['stream']['seed'] and r.get('workload_mode') == 'CONTINUOUS_REPLAY' and
+                r['replay_stream_sha256'] == digest(p['stream']) and
+                r['replay_statistics'] == p['stream']['statistics'], 'run replay contract differs')
+    else:
+        require(r.get('workload_mode', 'NATURAL') == p['stream'].get('workload_mode', 'NATURAL') == 'NATURAL' and
+                len({t['sample_id'] for t in p['stream']['tasks']}) == len(p['stream']['tasks']),
+                'replay/duplicate samples cannot use NATURAL plan')
+    require(a['modules'] == approval_modules(p) and a['native_parity'] == 'TINY_OPT_STRICT_LIGHT_CPU_PASS' and
             a['errors'] == 0 and a['versions'] == r['versions'], 'native approval coverage/versions differ')
     require(p['source']['branch'] == BRANCH and p['source']['strict_baseline'] == BASE and
             p['source']['content_fingerprint'] == digest(p['source']['files']), 'source fingerprint contract differs')
@@ -82,6 +93,8 @@ def verify_run(root, plan_root, cpu_root):
         require(all(row[k] == task[k] for k in ('request_id', 'sample_id', 'user_id', 'adapter_id')) and
                 row['session_ordinal'] == index and row['condition'] == r['condition'] and
                 row['input_tokens'] == len(task['token_ids']), 'request order/identity differs')
+        if is_replay:
+            require(row.get('replay_provenance') == p['stream']['occurrences'][index], 'request replay provenance differs')
         ids, text = row['generated_token_ids'], row['generated_text']
         require(ids and len(ids) <= task['policy']['max_new_tokens'] and all(type(t) is int and t >= 0 for t in ids) and
                 row['output_tokens'] == len(ids) and row['generated_token_ids_sha256'] == digest(ids) and
@@ -157,6 +170,8 @@ def compare(full, other):
     keys = ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs', 'backend',
             'precision_policy', 'cpu_concurrency', 'warmup_requests', 'measurement_scope')
     mismatches = [key for key in keys if full[key] != other[key]]
+    mismatches.extend(k for k in ('workload_mode', 'replay_stream_sha256')
+                      if full.get(k, 'NATURAL' if k == 'workload_mode' else None) != other.get(k, 'NATURAL' if k == 'workload_mode' else None))
     mismatches.extend('gpu.' + k for k in ('uuid', 'name', 'device', 'total_bytes')
                       if full['gpu'].get(k) != other['gpu'].get(k))
     if mismatches:

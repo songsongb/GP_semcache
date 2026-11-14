@@ -60,7 +60,8 @@ class NativeParity(unittest.TestCase):
         self.assertFalse(torch.cuda.is_initialized())
         torch.set_num_threads(1)
 
-    def run_case(self, condition, *, strict=False, performance_knobs=None, corrupt=False, expire=False, eos=None):
+    def run_case(self, condition, *, strict=False, performance_knobs=None, corrupt=False, expire=False, eos=None,
+                 replay_count=None):
         import torch
         from transformers import OPTConfig, OPTForCausalLM
         from semcache.models.model_adapter import OPTModelAdapter
@@ -98,6 +99,11 @@ class NativeParity(unittest.TestCase):
             tasks.append(dict(request_id=f'TEST_{i:03d}', sample_id=f'CPU_NATIVE_SAMPLE_{i}', user_id=user, adapter_id=aid,
                               input_text='native CPU test', dataset='qasper', token_ids=ids, request_sequence_number=i,
                               policy=policy(special, 'fixed' if eos is None else 'quality', 3)))
+        occurrences = None
+        if replay_count is not None:
+            from test_r5_d5_lightperf_replay import replay_fixture
+            selected = replay_fixture(count=replay_count)[2]
+            tasks, occurrences = selected['tasks'], selected['occurrences']
         weights_before = [tensor_proof(x) for x in model.parameters()]
         sessions, logits, physicals, snapshots = {}, {}, {}, {}
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,13 +113,13 @@ class NativeParity(unittest.TestCase):
             writer = SummaryWriter(es)
             deadline = time.monotonic() + 180
             try:
-                for aid in ('Adapter_A', 'Adapter_B'):
-                    spec = dict(adapter_id=aid, matrix_sha256=('b' if aid == 'Adapter_A' else 'c') * 64,
+                for aid in sorted({t['adapter_id'] for t in tasks}):
+                    spec = dict(adapter_id=aid, matrix_sha256={'Adapter_A': 'b', 'Adapter_B': 'c', 'Adapter_C': 'd'}[aid] * 64,
                                 rank=8, matrix_dtype='float32')
                     identity = namespace(runtime_view(pm, spec), {'TEST_FIXTURE_ONLY': 'integer'}, 'cpu', 'CPU_FIXTURE', {'test': True})
                     subset = [t for t in tasks if t['adapter_id'] == aid]
                     reqs = [request(t, t['token_ids'], t['policy'], identity, fixture=True) for t in subset]
-                    values = {(layer, role, part): [(.01 if aid == 'Adapter_A' else .02)] * 32
+                    values = {(layer, role, part): [{'Adapter_A': .01, 'Adapter_B': .02, 'Adapter_C': .03}[aid]] * 32
                               for layer in range(2) for role in 'qkv' for part in ('A', 'B')}
                     out = root / aid
                     c = dict(identity=identity, session='native_cpu_test', requests=reqs, deadline_monotonic=deadline)
@@ -129,7 +135,7 @@ class NativeParity(unittest.TestCase):
                                            timeout=20, bandwidth_mbps=performance_knobs['bandwidth_mbps'], trace=s['wire'])
                     channel.condition_deadline = deadline
                     s.update(channel=channel, index=None if condition == CONDITIONS[0] else
-                             SemanticIndex(ControlledEncoder({'native CPU test': [1., 0.]}), clusters=1))
+                             SemanticIndex(ControlledEncoder({t['input_text']: [1., 0.] for t in tasks}), clusters=1))
                     if condition != CONDITIONS[0]:
                         evidence = None
                         if strict:
@@ -189,7 +195,8 @@ class NativeParity(unittest.TestCase):
                     return None
                 rows = execute_stream(tasks, sessions, model, adapter, self.tokenizer(), condition, writer, deadline,
                     request_fn=lambda t, ids, p, ident: request(t, ids, p, ident, fixture=True), generate_fn=generate,
-                    score_fn=lambda t, text: ({'metric': 'TEST_FIXTURE_ONLY', 'score': 1.}, 'CPU_TEST'))
+                    score_fn=lambda t, text: ({'metric': 'TEST_FIXTURE_ONLY', 'score': 1.}, 'CPU_TEST'),
+                    replay_occurrences=occurrences)
                 for aid, s in sessions.items():
                     self.assertTrue(s['stopped'])
                     self.assertEqual(s['process'].wait(15), 0)
@@ -260,6 +267,22 @@ class NativeParity(unittest.TestCase):
         self.assertEqual(strict['logits'], light['logits'])
         self.assertEqual(light['rows'][0]['termination'], 'EOS')
         self.assertEqual(light['rows'][0]['output_tokens'], 1)
+
+    def test_native_continuous_replay_reuses_and_resets_all_conditions(self):
+        for count in (20, 50):
+            for condition in CONDITIONS:
+                with self.subTest(count=count, condition=condition):
+                    strict = self.run_case(condition, strict=True, replay_count=count)
+                    light = self.run_case(condition, replay_count=count)
+                    self.assertEqual(strict['logits'], light['logits'])
+                    self.assertEqual(len(light['rows']), count)
+                    self.assertEqual(len({r['sample_id'] for r in light['rows']}), 10)
+                    self.assertEqual(len({r['request_id'] for r in light['rows']}), count)
+                    self.assertEqual(light['rows'][0]['skipped_qkv_rows'], 0)
+                    self.assertEqual([r['skipped_qkv_rows'] for r in strict['rows']], [r['skipped_qkv_rows'] for r in light['rows']])
+                    self.assertTrue(all('replay_provenance' in r for r in light['rows']))
+                    if condition != CONDITIONS[0]:
+                        self.assertTrue(any(r['physical_hit'] for r in light['rows'][10:]))
 
 
 if __name__ == '__main__':
