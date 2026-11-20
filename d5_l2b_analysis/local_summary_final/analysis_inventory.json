@@ -1,0 +1,19 @@
+{
+  "schema": "D5_L2B_OFFLINE_MODEL_V1_NOT_LIGHT_RECEIPT",
+  "files": {
+    "run_index.tsv": "a13bab592c49c672bea25e519ab081eb3b3eb98df8c338d29aa2e539eec880ec",
+    "break_even_summary.csv": "e3a21f8968fa2d1c78ef7eb48a2a63dfd01581f1ab8571d3620199846f12dac6",
+    "gpu_validation_candidates.csv": "a578e051d112d4500a8d1d9dcbd5f16714c8570b8995ef22bd00e6f16f2be420",
+    "registry.json": "5f80833681be2a815afaa055868c31c1bef1147fbe843ed5a1d79f370d8e6668",
+    "measured_ud_compute.csv": "cc9f41cbf37f50283026e8d880faf356af97115f96ad6ea7ac5ab1fa5e528ed4",
+    "measured_transport.csv": "6e2d7b1b0b21568e1f163e45e42c4c690a52650aff2ba0466758847ad9433ff7",
+    "ud_sensitivity.csv": "90b0910dde95061ba1c10d21ebe2bcd7c99e40555bf1d4526f552c211263aff2",
+    "analysis_metadata.json": "04cd404cbf71eb16ace32282b40002c2614e1e1e1fe52ba0dea469fdf696e525",
+    "bandwidth_sensitivity.csv": "8c92402f82892ee40aab978d8e4dcd152a670af4ca48567b43795df0e1ae215a",
+    "hypothetical_ud_assumptions.csv": "d200dce25dd4a0d1a748386e7811585eb1b25ca6b8390114cb5fea72abfc98da",
+    "input_mapping.csv": "6d5426ec181d3e091fdbc7b887f6d3a5797f3df94029714f743cedd1725b7bf4",
+    "combined_sensitivity.csv": "514002788b2b2684e8c3406261d61c0adcf2a2068475d7169d819ccbea83be1e",
+    "assumptions_and_limitations.md": "26bb84814771cf0e3860a9e1c760ebf0e0cc51af0b6690b8e87c31d00c7df953"
+  },
+  "status": "ANALYSIS_COMPLETE_GPU_NOT_RUN"
+}

@@ -1,0 +1,47 @@
+[
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_full_y3full20_20261120T085351Z_949768",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_full_y3full20_20261120T085351Z_949768",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_full_y3full20_20261120T085351Z_949768",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+  },
+  {
+    "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+    "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+    "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+  }
+]

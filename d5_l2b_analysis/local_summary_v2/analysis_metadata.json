@@ -1,0 +1,196 @@
+{
+  "schema": "D5_L2B_OFFLINE_MODEL_V1_NOT_LIGHT_RECEIPT",
+  "analysis_mode": "summary",
+  "analyzer_sha256": "caf2e09fca1b3ab5b212823f0beb859d4b3ecf1b92a68e9d16a7fc9e485c535c",
+  "GPU_status": "GPU_NOT_RUN",
+  "correctness_qualified_speedup": "NOT_ESTABLISHED",
+  "scenarios": {
+    "SERIAL_BLOCKING_REFERENCE": [
+      1.0,
+      "SUM"
+    ],
+    "PARTIAL_EXPOSURE_50PCT_ASSUMED": [
+      0.5,
+      "SUM"
+    ],
+    "DUPLEX_MAX_STRESS_ASSUMED": [
+      1.0,
+      "MAX"
+    ]
+  },
+  "bundle_sha256": "691ad1ab40b97838bda5d947ef758786106afce1486560f91e6d901f4243e2e6",
+  "members": {
+    "comparison_summary.csv": "ea34d1fbe677719995b2ed4eabf7d2eb1993c97433b571155f62a1281c497c9e",
+    "cycle_summary.csv": "c3f50ea29f0957660309b6e5aa9ccdf85affd6a7d91a61cbcc17cc727500617c",
+    "observed_profile_components.csv": "eef2b8ac9ebddfa935714842c9aa30df9d79e23fba42dd6d75886a9d2fb6c053",
+    "run_index.tsv": "a13bab592c49c672bea25e519ab081eb3b3eb98df8c338d29aa2e539eec880ec",
+    "registry.json": "5f80833681be2a815afaa055868c31c1bef1147fbe843ed5a1d79f370d8e6668"
+  },
+  "registry": [
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_full_y3full20_20261120T085351Z_949768",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/2wikimqa_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_full_y3full20_20261120T085351Z_949768",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/qasper_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_full_y3full20_20261120T085351Z_949768",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_exact_y3exact20_20261120T093607Z_2077504",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+    },
+    {
+      "run": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_approx_y3approx20_20261120T095749Z_2662104",
+      "plan": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_plan_atomicfix20_20261120T081835Z",
+      "cpu_audit": "/data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/multi_news_20_replay_cpu_atomicfix20_20261120T081835Z"
+    }
+  ],
+  "comparisons": [
+    {
+      "dataset": "2wikimqa",
+      "comparison": "FULL_vs_EXACT",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "4500.815",
+      "cache_mean_e2e_ms": "13676.318",
+      "change_e2e_pct": "203.863",
+      "speedup": "0.3291",
+      "total_delta_e2e_ms": "183510.061",
+      "token_agreement_count": "20",
+      "full_quality_mean": "0.057143",
+      "cache_quality_mean": "0.057143",
+      "quality_metric": "normalized_answer_f1",
+      "cache_hit_requests": "18",
+      "qkv_skip_ratio": "0.051734"
+    },
+    {
+      "dataset": "2wikimqa",
+      "comparison": "FULL_vs_APPROX",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "4500.815",
+      "cache_mean_e2e_ms": "14599.198",
+      "change_e2e_pct": "224.368",
+      "speedup": "0.30829",
+      "total_delta_e2e_ms": "201967.649",
+      "token_agreement_count": "6",
+      "full_quality_mean": "0.057143",
+      "cache_quality_mean": "0.086905",
+      "quality_metric": "normalized_answer_f1",
+      "cache_hit_requests": "18",
+      "qkv_skip_ratio": "0.094807"
+    },
+    {
+      "dataset": "qasper",
+      "comparison": "FULL_vs_EXACT",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "4506.694",
+      "cache_mean_e2e_ms": "13979.059",
+      "change_e2e_pct": "210.184",
+      "speedup": "0.32239",
+      "total_delta_e2e_ms": "189447.294",
+      "token_agreement_count": "20",
+      "full_quality_mean": "0.131667",
+      "cache_quality_mean": "0.131667",
+      "quality_metric": "normalized_answer_f1",
+      "cache_hit_requests": "17",
+      "qkv_skip_ratio": "0.047688"
+    },
+    {
+      "dataset": "qasper",
+      "comparison": "FULL_vs_APPROX",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "4506.694",
+      "cache_mean_e2e_ms": "14218.688",
+      "change_e2e_pct": "215.502",
+      "speedup": "0.31696",
+      "total_delta_e2e_ms": "194239.894",
+      "token_agreement_count": "11",
+      "full_quality_mean": "0.131667",
+      "cache_quality_mean": "0.139762",
+      "quality_metric": "normalized_answer_f1",
+      "cache_hit_requests": "17",
+      "qkv_skip_ratio": "0.077168"
+    },
+    {
+      "dataset": "multi_news",
+      "comparison": "FULL_vs_EXACT",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "8504.572",
+      "cache_mean_e2e_ms": "16374.34",
+      "change_e2e_pct": "92.536",
+      "speedup": "0.51938",
+      "total_delta_e2e_ms": "157395.354",
+      "token_agreement_count": "20",
+      "full_quality_mean": "0.08698",
+      "cache_quality_mean": "0.08698",
+      "quality_metric": "rouge-l",
+      "cache_hit_requests": "17",
+      "qkv_skip_ratio": "0.03232"
+    },
+    {
+      "dataset": "multi_news",
+      "comparison": "FULL_vs_APPROX",
+      "status": "DESCRIPTIVE_MATCHED_IDENTITY",
+      "mismatches": "",
+      "full_mean_e2e_ms": "8504.572",
+      "cache_mean_e2e_ms": "17935.232",
+      "change_e2e_pct": "110.889",
+      "speedup": "0.47418",
+      "total_delta_e2e_ms": "188613.19",
+      "token_agreement_count": "8",
+      "full_quality_mean": "0.08698",
+      "cache_quality_mean": "0.070364",
+      "quality_metric": "rouge-l",
+      "cache_hit_requests": "17",
+      "qkv_skip_ratio": "0.09337"
+    }
+  ],
+  "profile_rows": 363,
+  "identity_status": "SOURCE_GPU_REQUEST_IDS_NOT_AVAILABLE_IN_ATTACHMENTS",
+  "missing": "No request/UD receipts in bundle; profile socket wait is NOT LoRA compute; no phase wire/compute allocation",
+  "table_rows": {
+    "bandwidth_sensitivity.csv": 216,
+    "ud_sensitivity.csv": 162,
+    "combined_sensitivity.csv": 648,
+    "break_even_summary.csv": 648,
+    "measured_transport.csv": 27,
+    "measured_ud_compute.csv": 27,
+    "input_mapping.csv": 9,
+    "gpu_validation_candidates.csv": 0,
+    "hypothetical_ud_assumptions.csv": 216
+  },
+  "candidate_status": "NO_SUPPORTED_MODELED_CANDIDATES_OR_MISSING_MEASUREMENTS",
+  "missing_measurements": "Existing summaries do not retain PREFILL/DECODE wire or pure LoRA split. Point TTFT predictions unavailable."
+}

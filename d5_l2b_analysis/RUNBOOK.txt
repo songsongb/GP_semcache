@@ -1,0 +1,196 @@
+D5-L2B standalone CPU-only sensitivity analysis
+============================================
+
+Reviewed tracked source at development start:
+  branch exp/d5-l1-l5-lightperf
+  HEAD 7726f4e0db2835957fada50002495a3eea62d8ac
+No existing tracked source, reviewed source fingerprint, receipt, approval, HEAD,
+model, policy or protocol was edited. This directory is new/untracked until the
+user reviews it. Codex does not commit/push or connect to SERAPH.
+
+Files to review/transfer with the user's Git workflow:
+  d5_l2b_analysis/analyze.py
+  d5_l2b_analysis/test_analyze.py
+  d5_l2b_analysis/RUNBOOK.txt
+Generated local_summary* directories are WSL attachment-only reports, not GPU
+receipts. They need not be committed. The original archive is untouched.
+
+1. WSL tests (already installed Python stdlib; no installation required)
+
+  cd /path/to/GP_semcache_lightperf
+  PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES='' TMPDIR=/tmp \
+    PYTHONPATH=d5_l2b_analysis:src:tests python3 -m unittest test_analyze -v
+
+All numerical inputs inside test_analyze.py are SYNTHETIC_TEST_ONLY. Its nine-run
+fixture exercises the real official offline verifier with sealed test files,
+cross-endpoint wire and service totals, and tamper rejection. It is not native
+OPT, GPU, source approval or real performance verification.
+
+2. WSL attachment-only analysis
+
+Use a FRESH output path whose parent already exists:
+
+  PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES='' python3 d5_l2b_analysis/analyze.py \
+    summary --bundle d5_l2b_inputs.tar.gz \
+    --output-dir d5_l2b_analysis/NEW_ATTACHMENT_REPORT
+
+Optionally request an explicitly hypothetical UD grid, kept in a separate file:
+    --assumed-compute-fractions .1,.5,1 --assumed-saving-fractions .05,.1,.25,1
+
+This means assumed FULL LoRA wall=10%/50%/100% of FULL E2E and assumed compute
+saving=5%/10%/25%/100% of that cost. None is calibrated/observed. Main measured
+tables retain NOT_MEASURED; dependent main predictions remain NOT_ESTIMABLE.
+
+The five original archive members are read without extraction. Headerless
+run_index.tsv retains its FIRST row. Registry/index paths must match exactly;
+all nine dataset/condition pairs and twenty requests per run are checked against
+cycle summaries. Summary means are checked within their CSV rounding precision.
+The output registry.json and run_index.tsv are byte-for-byte reference copies
+from the attachment, not newly inferred paths. They can be used on SERAPH if the
+original files are unavailable and the recorded actual paths still exist.
+
+The archive SHA256 observed on WSL was:
+  691ad1ab40b97838bda5d947ef758786106afce1486560f91e6d901f4243e2e6
+No run.json or UD request receipts are included in this bundle. Consequently it
+does NOT provide actual wire bytes, CPU LoRA times, source commits, GPU UUIDs or
+per-request routing. Generic TCP wait/profile time must not fill these gaps.
+
+3. SERAPH minimum real inputs (read-only)
+
+  - Existing complete registry.json and headerless run_index.tsv: exact 9 triples.
+  - Each registry run directory, including run.json, primary request JSONs,
+    inventory and any other files covered by its existing inventory.
+  - Each run's original UD directories recorded in run.json (including ud.json,
+    request_*.json, ready/inventory and all other inventoried files).
+  - Original sealed PLAN and CPU Approval directories referenced by the registry.
+  - The repository's existing official Light offline verifier/modules.
+
+Prepared model weights, tokenizers, dataset files, a CUDA device, an allocation,
+new PLANs and new CPU Approvals are NOT required for this offline extraction.
+The official verify_run() checks the frozen original source/plan/approval/input
+bindings and all ES/UD receipts; this tool does not rewrite or reapprove them.
+The analysis repository's tracked tree must be clean. Analyzer/official-verifier
+SHA256 and analyzer HEAD are recorded separately from receipt source identities.
+
+To locate ORIGINAL reference files on SERAPH, the user can read these actual
+provided directories (do not invent a substitute run path):
+
+  rg --files \
+    /data/khuss/repos/GP_semcache_lightperf/results/r5/d5_lightperf/compare20_all3_20261120T103952Z_3850741 \
+    /data/khuss/tmp/d5_compare20_7xsifDM0 | rg '(^|/)(registry.json|run_index.tsv)$'
+
+Set D5_REGISTRY and D5_RUN_INDEX to the files actually found, or to the exact
+attachment reference copies transferred by the user. An optional Slurm job
+manifest is not required for receipt identity verification and is not read or
+queried automatically. Cross-condition GPU/backend/source/knob/workload/route
+mismatches fail closed. Missing original files fail; no summary fallback occurs
+in receipts mode. Per-request compute fields missing from an otherwise valid
+receipt remain NOT_MEASURED, not zero.
+
+4. User-only SERAPH invocation after review / user Git push / user pull
+
+  cd /data/khuss/repos/GP_semcache_lightperf
+  export PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES=''
+  : "${D5_REGISTRY:?set to actual existing registry.json}"
+  : "${D5_RUN_INDEX:?set to actual existing run_index.tsv}"
+  D5_L2B_WORK=$(mktemp -d /data/khuss/tmp/d5_l2b_cpu.XXXXXX)
+  python3 d5_l2b_analysis/analyze.py receipts \
+    --repo-root "$PWD" --registry "$D5_REGISTRY" --run-index "$D5_RUN_INDEX" \
+    --output-dir "$D5_L2B_WORK/results"
+
+The output child does not exist before the command. Existing outputs cannot be
+reused. No GPU/Slurm/model-loading command occurs. The only new experiment output
+is beneath /data/khuss/tmp. No remote connection, fetch/pull, install, submit,
+cancel or job query is performed by analyze.py. User Git operations are separate.
+Optional --expected-source-commit COMMIT enforces a known receipt-source commit;
+it is not the newly committed analyzer HEAD unless they actually match.
+
+CPU-only additional MODEL search, if needed, uses a SECOND fresh output child:
+
+  python3 d5_l2b_analysis/analyze.py receipts \
+    --repo-root "$PWD" --registry "$D5_REGISTRY" --run-index "$D5_RUN_INDEX" \
+    --bandwidths unlimited,200,100,50,20,10,5,1 \
+    --factors 1,.5,.25,.1,.05,.01 \
+    --output-dir "$D5_L2B_WORK/search"
+
+Sub-50 bandwidths and non-1/.5/.25 factors are MODEL SEARCH ONLY: existing native
+runtime knobs reject them. Finding such a root is not permission or runnable
+support for a GPU job. No parameter sweeps are submitted.
+
+5. Outputs and interpretation
+
+  measured_transport.csv
+    REQUEST/CYCLE/ADAPTER/SESSION actual app-framed bytes/frames, both endpoints'
+    inclusive socket times, payload/framing bytes and FULL savings. STOP/BYE bytes
+    are assigned once to the adapter's last request. Request model bytes include
+    that assignment; do not add them again. A real cycle group0 means cycle1,
+    group1 means cycle2 (zero-based authenticated cycle_index).
+  measured_ud_compute.csv
+    cpu_deltas wall compute, service, pacing, serialization/deserialization/hash,
+    operations, rows, FULL savings and adapter breakdown. TCP wait is separate.
+  bandwidth_sensitivity.csv / ud_sensitivity.csv / combined_sensitivity.csv
+    Actual baselines and MODELED target delays; sum-request E2E and means, delta,
+    speedup, strict benefit, quality/token/output confounds, scenario assumptions,
+    TTFT bounds (no phase point estimate), feasibility caveats and runtime support.
+  break_even_summary.csv
+    SESSION/CYCLE/ADAPTER roots, win direction, minimum LoRA saving, extreme upper
+    bound, missing-data reasons and NO_OBSERVED_BREAK_EVEN baseline-only status.
+  gpu_validation_candidates.csv
+    Only supported reference-scenario SESSION cases with MODELED speedup>1.
+    EXACT first, single-axis before combined, milder slowdown first. Empty means
+    no supported modeled candidate OR missing measurements: inspect metadata.
+    Compare all assumed scenarios before proposing a manual future GPU check.
+  hypothetical_ud_assumptions.csv
+    Optional, explicitly ASSUMED_MODELED, never used as measured data.
+  input_mapping.csv / analysis_metadata.json / analysis_inventory.json
+    Explicit path mapping, original verification bindings/identities, provenance,
+    analyzer hashes and output hashes. analysis_inventory is the completion marker
+    and explicitly NOT a LIGHT receipt, numerical audit, signature or CPU approval.
+  assumptions_and_limitations.md
+    Detailed modeling/overlap/phase/fidelity limits; read before conclusions.
+
+Root equations (all changes MODELED):
+  D0 = Cache_E2E - FULL_E2E
+  S  = FULL_LoRA_wall - Cache_LoRA_wall
+  A  = 0.008 * (FULL_effective_bytes - Cache_effective_bytes)
+  D(B,f) = D0 - exposure*A/B - exposure*S*(1/f-1)
+  unlimited => network increment0; equality is NOT speedup>1.
+  At fixed B, R = D0 - exposure*A/B:
+    f_root = exposure*S / (exposure*S + R), valid only in (0,1].
+  At fixed f, R = D0 - exposure*S*(1/f-1):
+    B_root = exposure*A/R, valid only when positive.
+  Negative/zero savings may yield no crossing or a reversed win region. Roots are
+  never labeled observed. Same B/f is applied to ALL modes; ES/proofs/semantics/
+  CPU serialization/hash are not scaled. The serial reference reflects blocking
+  sparse RPC; partial exposure and duplex-max are uncalibrated stress assumptions.
+  No assumed overlap is a confidence interval or a guaranteed hardware bound.
+
+6. What WSL alone can conclude from the attached rounded means
+
+At unlimited/factor1 all six cache comparisons are slower. Required baseline
+LoRA compute saving per request under the serial reference:
+                         UD-50          UD-25
+  2Wiki EXACT            >9175.503ms     >3058.501ms
+  2Wiki APPROX           >10098.383ms    >3366.128ms
+  Qasper EXACT           >9472.365ms     >3157.455ms
+  Qasper APPROX          >9711.994ms     >3237.331ms
+  MultiNews EXACT        >7869.768ms     >2623.256ms
+  MultiNews APPROX       >9430.660ms     >3143.553ms
+
+For UD-50, both Qasper/2Wiki modes and MultiNews APPROX require a saving larger
+than their entire FULL E2E. They cannot cross in the frozen serial additive UD-
+only model even under the extreme assumption that FULL is all LoRA and cache
+LoRA is zero. MultiNews EXACT UD-50 is only theoretically possible under a very
+large compute saving; no actual saving is supplied. UD-25 feasibility, bandwidth
+roots and combined roots require real measured CPU costs/bytes on SERAPH.
+Do not claim the hypothetical fraction table establishes a real crossing.
+
+Next selection rule: extract real data first. If a supported single-axis EXACT
+case has modeled speedup>1 with margin under all chosen assumptions, it is the
+first future manual GPU candidate. Otherwise inspect combined EXACT candidates.
+APPROX remains a separate quality/fidelity-unqualified follow-up. If only extreme
+unsupported knobs cross, or no positive saving exists, report that result instead
+of proposing an automatic GPU campaign. Per-frame/worker deadlines and actual
+GPU output/fidelity must be validated by separately approved future experiments.
+
+correctness_qualified_speedup=NOT_ESTABLISHED throughout.
