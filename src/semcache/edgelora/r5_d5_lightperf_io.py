@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 
 from .communication import canonical, digest, require, json_loads
 from .r3a_artifacts import ROOT
@@ -51,6 +52,36 @@ def fresh(path, protected=(), *, namespace=NAMESPACE):
     return p
 
 
+def _publish_once(path, data):
+    """Close a same-directory staging file before atomic, no-replace publication.
+
+    link() rejects an existing destination, unlike replace()/POSIX rename().
+    No fallback on unsupported filesystems. At most one private staging name is
+    added; after linking it aliases the final inode, not another payload copy.
+    This provides visibility atomicity, not fsync/power-loss durability.
+    """
+    path = no_symlinks(path)
+    temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex + '.tmp')
+    created, primary = False, None
+    try:
+        with temporary.open('xb') as f:
+            created = True
+            require(f.write(data) == len(data), 'short light write: ' + path.name)
+        os.link(temporary, path, follow_symlinks=False)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if created:
+            try:
+                temporary.unlink()
+            except OSError as exc:
+                if primary is None:
+                    raise
+                if hasattr(primary, 'add_note'):
+                    primary.add_note('Light staging cleanup failed: ' + repr(exc))
+
+
 class SummaryWriter:
     """Write-once bounded summaries. Incremental accounting; scan only at seal.
 
@@ -84,8 +115,7 @@ class SummaryWriter:
                 self.files + 1 < self.max_files, 'light summary budget exceeded')
         path = no_symlinks(self.root / name)
         start = time.monotonic_ns()
-        with path.open('xb') as f:
-            require(f.write(data) == len(data), 'short light write')
+        _publish_once(path, data)
         self.timings['file_write_ms'] += (time.monotonic_ns() - start) / 1e6
         start = time.monotonic_ns()
         self.hashes[name] = hashlib.sha256(data).hexdigest()
@@ -101,8 +131,7 @@ class SummaryWriter:
         value = dict(schema=SCHEMA, mode=MODE, files=self.hashes, data_bytes=self.bytes)
         data = canonical(value)
         require(len(data) <= MAX_JSON and self.bytes + len(data) <= self.max_bytes, 'seal budget exceeded')
-        with (self.root / MANIFEST).open('xb') as f:
-            f.write(data)
+        _publish_once(self.root / MANIFEST, data)
         self.sealed = True
         return verify(self.root)
 
@@ -110,7 +139,10 @@ class SummaryWriter:
 def read_json(path):
     path = no_symlinks(path)
     require(path.is_file() and path.stat().st_size <= MAX_JSON, 'missing/oversized light JSON')
-    return json_loads(path.read_bytes())
+    try:
+        return json_loads(path.read_bytes())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'LIGHT_JSON_PARSE file={path} line={exc.lineno} column={exc.colno}: {exc.msg}') from exc
 
 
 def verify(root):

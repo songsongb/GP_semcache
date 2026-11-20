@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 import os
+import json
 import subprocess
 import tempfile
 import threading
@@ -11,12 +12,181 @@ import unittest
 from unittest.mock import patch
 
 from semcache.edgelora.communication import connect, digest, header, listener
-from semcache.edgelora.r5_d5_lightperf_io import ENGINE, MODE, SCHEMA, SummaryWriter, read_json
+from semcache.edgelora.r5_d5_lightperf_io import ENGINE, MODE, SCHEMA, MANIFEST, SummaryWriter, read_json, verify
 from semcache.edgelora.r5_d5_lightperf_workload import CONDITIONS, knobs
 from semcache.edgelora.r5_d5_lightperf_emulation import LightChannel, UDServiceEmulator, serve_light_sparse
 from semcache.edgelora.r5_d5_lightperf_receipts import WireSummary, wire_equal, compact_profile
 from semcache.edgelora import r5_d5_lightperf_runtime as runtime
+from semcache.edgelora import r5_d5_lightperf_io as light_io
 import test_r5_sparse_physical as physical_fixture
+
+
+class AtomicPublication(unittest.TestCase):
+    def paused_publication(self, name, prefix_bytes=0):
+        """Pause after open/partial flush, before completing a real disk write."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = SummaryWriter(root)
+            value = {'port': 12345, 'request_id': 'R0', 'padding': 'x' * 1024}
+            if name == MANIFEST:
+                writer.write('ready.json', value)
+                operation = writer.seal
+            else:
+                operation = lambda: writer.write(name, value)
+            opened, release = threading.Event(), threading.Event()
+            errors = []
+            original_open = Path.open
+
+            class PausedFile:
+                def __init__(self, handle):
+                    self.handle = handle
+                def __enter__(self):
+                    self.handle.__enter__()
+                    return self
+                def __exit__(self, *args):
+                    return self.handle.__exit__(*args)
+                def write(self, data):
+                    first = self.handle.write(data[:prefix_bytes])
+                    self.handle.flush()
+                    opened.set()
+                    if not release.wait(5):
+                        raise TimeoutError('test writer was not released')
+                    return first + self.handle.write(data[prefix_bytes:])
+
+            def intercept(path, mode='r', *args, **kwargs):
+                handle = original_open(path, mode, *args, **kwargs)
+                return PausedFile(handle) if path.parent == root and mode == 'xb' else handle
+
+            def produce():
+                try:
+                    operation()
+                except BaseException as exc:
+                    errors.append(exc)
+
+            thread = threading.Thread(target=produce)
+            with patch.object(Path, 'open', intercept):
+                thread.start()
+                try:
+                    self.assertTrue(opened.wait(5), 'writer did not reach the controlled pause')
+                    path = root / name
+                    observed = None
+                    if path.exists():
+                        try:
+                            runtime.wait_file(path, SimpleNamespace(poll=lambda: None), time.monotonic() + 1)
+                        except ValueError as exc:
+                            observed = f'{type(exc).__name__}: {exc}'
+                    self.assertFalse(path.exists(), f'incomplete final file visible; reader saw {observed}')
+                finally:
+                    release.set()
+                    thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            actual = runtime.wait_file(root / name, SimpleNamespace(poll=lambda: 0), time.monotonic() + 1)
+            if name == MANIFEST:
+                self.assertEqual(actual['files'], writer.hashes)
+                self.assertEqual(verify(root)['files'], 2)
+            else:
+                self.assertEqual(actual, value)
+                self.assertEqual({p.name for p in root.iterdir()}, {name})
+                self.assertEqual(verify(root) if writer.sealed else writer.seal(), verify(root))
+
+    def test_ready_is_invisible_until_complete(self):
+        self.paused_publication('ready.json')
+
+    def test_request_receipt_is_invisible_until_complete(self):
+        self.paused_publication('request_000.json', prefix_bytes=20)
+
+    def test_inventory_is_invisible_until_complete(self):
+        self.paused_publication(MANIFEST, prefix_bytes=20)
+
+    def test_destination_created_at_publication_is_never_replaced(self):
+        for name in ('ready.json', 'request_000.json', MANIFEST):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                writer = SummaryWriter(root)
+                if name == MANIFEST:
+                    writer.write('ready.json', {'port': 12345})
+                before = (writer.bytes, writer.files, dict(writer.hashes))
+                original_link = os.link
+                def competing_publication(source, target, **kwargs):
+                    Path(target).write_bytes(b'preserved existing evidence')
+                    return original_link(source, target, **kwargs)
+                with patch.object(light_io.os, 'link', side_effect=competing_publication):
+                    with self.assertRaises(FileExistsError):
+                        writer.seal() if name == MANIFEST else writer.write(name, {'new': True})
+                self.assertEqual((root / name).read_bytes(), b'preserved existing evidence')
+                self.assertFalse(any(root.glob('.*.tmp')))
+                self.assertEqual((writer.bytes, writer.files, writer.hashes), before)
+                self.assertFalse(writer.sealed)
+
+    def test_short_write_discards_only_own_staging_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = SummaryWriter(root)
+            original_open = Path.open
+            def short_open(path, mode='r', *args, **kwargs):
+                handle = original_open(path, mode, *args, **kwargs)
+                if mode == 'xb':
+                    original_write = handle.write
+                    handle.write = lambda data: original_write(data[:1])
+                return handle
+            with patch.object(Path, 'open', short_open), self.assertRaisesRegex(ValueError, 'short light write'):
+                writer.write('request_000.json', {'request_id': 'R0'})
+            self.assertEqual(list(root.iterdir()), [])
+            self.assertEqual((writer.bytes, writer.files, writer.hashes), (0, 0, {}))
+            # Existing failure sealing remains possible; no successful receipt is invented.
+            runtime.seal_after(writer, OSError('injected short write'), [])
+            self.assertIn('injected short write', read_json(root / 'failure.json')['reason'])
+            verify(root)
+
+    def test_unsupported_publication_fails_closed_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = SummaryWriter(tmp)
+            with patch.object(light_io.os, 'link', side_effect=OSError('unsupported link')):
+                with self.assertRaisesRegex(OSError, 'unsupported link'):
+                    writer.write('ready.json', {'port': 12345})
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            self.assertEqual((writer.bytes, writer.files, writer.hashes), (0, 0, {}))
+
+    def test_corrupt_published_metadata_is_not_retried_and_names_stage(self):
+        for name, content, stage in (('ready.json', b'', 'UD_READY'),
+                                     ('request_000.json', b'{"request_id":', 'UD_REQUEST_RECEIPT')):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / name
+                path.write_bytes(content)
+                with patch.object(runtime, 'read_json', wraps=read_json) as reader, \
+                     patch.object(runtime.time, 'sleep') as sleep:
+                    with self.assertRaisesRegex(ValueError, stage + '.*' + name) as result:
+                        runtime.wait_file(path, SimpleNamespace(poll=lambda: None), time.monotonic() + 60, stage=stage)
+                self.assertEqual(reader.call_count, 1)
+                sleep.assert_not_called()
+                self.assertIsInstance(result.exception.__cause__.__cause__, json.JSONDecodeError)
+                self.assertEqual(path.read_bytes(), content)
+
+    def test_private_staging_is_ignored_until_final_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = SummaryWriter(root)
+            private = root / '.ready.json.TEST.tmp'
+            private.write_bytes(b'{')
+            def publish(_):
+                writer.write('ready.json', {'port': 12345})
+            with patch.object(runtime.time, 'sleep', side_effect=publish), \
+                 patch.object(runtime, 'read_json', wraps=read_json) as reader:
+                result = runtime.wait_file(root / 'ready.json', SimpleNamespace(poll=lambda: None), time.monotonic() + 1)
+            self.assertEqual(result, {'port': 12345})
+            reader.assert_called_once_with(root / 'ready.json')
+            self.assertEqual(private.read_bytes(), b'{')
+
+    def test_failed_process_is_not_hidden_by_published_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'ready.json'
+            path.write_text('{"port":12345}')
+            with patch.object(runtime, 'read_json') as reader, patch.object(runtime.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError, 'UD_READY.*ready.json.*returncode=7'):
+                    runtime.wait_file(path, SimpleNamespace(poll=lambda: 7), time.monotonic() + 60, stage='UD_READY')
+            reader.assert_not_called()
+            sleep.assert_not_called()
 
 
 class GPUUUIDValidation(unittest.TestCase):
@@ -161,7 +331,7 @@ class WorkerContracts(unittest.TestCase):
                 output = Path(tmp) / 'new_audit'
                 p = dict(source=dict(approval_scope='CLEAN_REVIEWED_SOURCE' if clean else 'DEVELOPMENT_NOT_GPU_APPROVED'),
                          resources=dict(status='STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING'),
-                         original_experiment='original', multi='multi', dataset_paths={})
+                         original_experiment='original', multi='multi', base_prepared='base', dataset_paths={})
                 def test_body():
                     if skip:
                         raise unittest.SkipTest('injected missing coverage')

@@ -96,13 +96,23 @@ def host_available():
     return result
 
 
-def wait_file(path, process, deadline):
-    while not Path(path).exists():
-        require(process.poll() is None, 'UD exited before metadata: ' + str(path.parent))
+def wait_file(path, process, deadline, *, stage='UD_METADATA'):
+    # SummaryWriter exposes only closed, complete files. A malformed published
+    # file is a permanent failure, not a reason to retry JSON parsing.
+    path = Path(path)
+    context = f'stage={stage} file={path}'
+    while True:
+        code = process.poll()
+        require(code is None or code == 0, f'UD process failed: {context} returncode={code}')
+        if path.exists():
+            try:
+                return read_json(path)
+            except (ValueError, OSError) as exc:
+                raise ValueError(f'UD metadata read failed: {context} cause={type(exc).__name__}: {exc}') from exc
+        require(code is None, 'UD exited before metadata: ' + context)
         if time.monotonic() >= deadline:
-            raise TimeoutError('UD metadata deadline exceeded: ' + str(path))
+            raise TimeoutError('UD metadata deadline exceeded: ' + context)
         time.sleep(min(.02, max(.001, deadline - time.monotonic())))
-    return read_json(path)
 
 
 def reap(process, *, timeout=30):
@@ -278,7 +288,8 @@ def execute_stream(tasks, sessions, model, adapter, tokenizer, condition, writer
                              mode=APPROX if condition == CONDITIONS[2] else EXACT,
                              allow_approximate=condition == CONDITIONS[2], deadline=deadline,
                              on_tcp_complete=lambda control, s=s, req=req: stop_after_ack(s, req, control, lifecycle))
-        ud = wait_file(s['ud_out'] / f'request_{s["completed"] - 1:03d}.json', s['process'], min(deadline, time.monotonic() + 30))
+        ud = wait_file(s['ud_out'] / f'request_{s["completed"] - 1:03d}.json', s['process'],
+                       min(deadline, time.monotonic() + 30), stage='UD_REQUEST_RECEIPT')
         require(ud['request_id'] == req['request_id'], 'UD request receipt differs')
         row = compact_request(task, ordinal, result, owner,
                               {k: s['policy'].counts[k] - before[k] for k in before}, tasks,
@@ -363,7 +374,7 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
             s = dict(process=proc, ud_out=ud_out, owner=None, channel=None, identity=identity,
                      ids=ids, completed=0, stopped=False, policy=PolicyCounter(), wire=WireSummary(ids))
             sessions[aid] = s
-            ready = wait_file(ud_out / 'ready.json', proc, min(deadline, time.monotonic() + 120))
+            ready = wait_file(ud_out / 'ready.json', proc, min(deadline, time.monotonic() + 120), stage='UD_READY')
             require(ready['source'] == p['source'] and ready['user_device_cuda_used'] is False and ready['full_model_loaded'] is False,
                     'UD startup identity/isolation differs')
             ch = LightChannel(connect(ready['port']), config['session'], spec['matrix_sha256'], timeout=min(1800., deadline - time.monotonic()),
