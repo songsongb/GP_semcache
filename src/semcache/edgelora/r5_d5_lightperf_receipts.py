@@ -100,7 +100,9 @@ def compact_request(task, ordinal, result, owner, policy_counts, tasks, wire, ud
                attention_impact=None if result['completion']['impact'] is None else
                    dict(layers=len(result['completion']['impact']['records']),
                         elapsed_ms=result['completion']['impact']['elapsed_ms'],
-                        values_sha256=digest([r['span_values'] for r in result['completion']['impact']['records']])),
+                        values_sha256=digest([r['span_values'] for r in result['completion']['impact']['records']]),
+                        implementation=result['completion']['impact'].get('implementation', 'REFERENCE_WINDOW_SCALAR'),
+                        host_materialization_calls=result['completion']['impact'].get('host_materialization_calls')),
                profile=compact_profile(result['components']), wire=wire, ud_compute=ud['compute'],
                timing_scope='wall; application includes quality and primary receipt I/O; init, final sealing excluded',
                unavailable=dict(gpu_qkv_kernel_ms='NOT_MEASURED', observer_total_ms='NOT_MEASURED',

@@ -1,0 +1,312 @@
+D5-L2C: conservative Attention Impact host batching
+==================================================
+
+Status on WSL: PARTIAL_BLOCKED_NATIVE_CPU_PARITY.
+Start HEAD: 93c10bd01b478c0aeec5a37b226ae7a9ae6b1f65
+Branch: exp/d5-l1-l5-lightperf
+No commit/push, remote connection, installation, GPU/Slurm action or existing
+receipt/approval rewrite. Original Strict generation/physical/integrity/profile
+files and all tracked L2B code/results remain byte-identical to start HEAD.
+
+Changed/added implementation:
+  src/semcache/edgelora/r5_d5_impact.py                  new candidate and bounds
+  src/semcache/edgelora/r5_d5_impact_review.py           new paired CPU reviewer
+  scripts/160_r5_d5_impact_compare.py                   new offline CLI
+  tests/test_r5_d5_impact.py                           new control/native tests
+  r5_d5_lightperf.py                                  plan flag/approval/budget/analysis labels
+  r5_d5_lightperf_timing.py                            Light factory selection
+  r5_d5_lightperf_runtime.py                          plan-bound generation option
+  r5_d5_lightperf_receipts.py                          compact implementation/counter
+  r5_d5_lightperf_analysis.py                          verifier/variant comparison guard
+  tests/test_r5_d5_lightperf_native.py                 optional test-helper parameter
+  this runbook
+
+Final local checks, all CUDA hidden and bytecode disabled:
+  LightPerf + new Contracts/ReviewContracts:90 PASS,0 FAIL/ERROR/SKIP,8.725s.
+  Related frozen regressions:81 PASS,0 FAIL/ERROR,7 SKIP;88 run,9.017s.
+  New torch parity7 + original native6:0 PASS,13 FAIL,0 ERROR/SKIP,0.042s.
+    All13 fail at missing dependency gates; no real tensor/OPT parity ran.
+    The7 existing regression skips also reflect absent native packages.
+  L2B FormulaTests/InputOutputTests:21 PASS,0 FAIL/ERROR/SKIP,0.545s.
+    Full L2B receipt integration was not rerun against a dirty reviewed-source
+    tree; its clean-source guard is intentionally retained.
+  AST parsing and git diff --check:PASS. No GPU success is established.
+
+Exact local test selections (prefix each with
+PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES='' TMPDIR=/tmp PYTHONPATH=src:tests):
+  python3 -m unittest test_r5_d5_lightperf test_r5_d5_lightperf_worker test_r5_d5_lightperf_replay test_r5_d5_impact.Contracts test_r5_d5_impact.ReviewContracts -q
+  python3 -m unittest test_r5_natural_shutdown test_r5_natural_phase3a test_r5_subsequence_generation test_r5_subsequence_validation test_r5_sparse_physical test_r5_subsequence_audit test_r5_natural_approx -q
+  python3 -m unittest test_r5_d5_impact.TorchParity test_r5_d5_lightperf_native -q
+For the L2B selection use PYTHONPATH=d5_l2b_analysis:src:tests:
+  python3 -m unittest test_analyze.FormulaTests test_analyze.InputOutputTests -q
+
+1. Paper abstraction versus actual path
+
+The user-supplied paper assumption and repository Eqs15-20 specification
+(docs/paper_experiment_spec.md:74) distinguish effective FLOP/s from time:
+
+  T_QKV_ES ~ 6*N*d*d/fES; T_LoRA_UD ~ 6*N*d*r/fUD.
+  T_QKV_ES / T_LoRA_UD ~ (d/r)*(fUD/fES).
+
+Under that analytical counting d=2560/r=8 gives d/r=320. Actual D5 cpu_deltas
+performs BOTH A and B linears for Q/K/V (six CPU linears); with multiply-add=2
+FLOPs this is about12*N*d*r versus6*N*d*d for ES QKV, giving d/(2*r)=160.
+Do not silently equate the repository paper-model6*N*d*r proxy with this exact
+implementation's physical operation count. Neither counting convention makes
+fES>>fUD alone establish negligible ES latency; effective rates, matrix sizes
+and precision matter. Attention/FFN and
+decode still execute on ES. The analytical max(ES,UD+communication)+rest_ES
+expression assumes useful overlap. D5 SparseSession.correction waits for UD
+response BEFORE native Linear, so that ideal overlap is not this implementation.
+Current hidden wire is FP16 and QKV deltas are FP32; use actual measured bytes,
+not a uniform-element paper payload shortcut or the planning wire bound.
+
+The supplied PDF is present locally; pdftotext/native Python packages are absent.
+No package was installed and no new quotation or paper result is asserted.
+
+Observed-time categories:
+ - ES Linear host scopes are native_dense_linear/native_sparse_linear; they are
+   asynchronous wall/enqueue scopes, NOT isolated ES GPU kernel time. Native
+   model forward includes communication and (cache modes) Impact; it is not pure
+   ES compute. Pure T_ES is NOT_MEASURED without attributable GPU timing.
+ - UD measured_compute_ms surrounds cpu_deltas (wall including casts/checks and
+   stacking), excluding serialization/hash/TCP/pacing. It is not CPU cycles.
+ - TCP send/receive scopes include peer waiting and often UD work. Do not add
+   receive wait to UD cost as though disjoint. Framed bytes exclude TCP/IP packet
+   headers/retransmissions. Link is application-loopback, per channel/direction.
+ - Impact executes in prefill hooks, nested under native model forward.
+ - Owner completion executes after decode/ACK. Tensor serialization/proof is
+   nested in projection and completion. CHU/history/materialization/proofs/PBR
+   are not extra disjoint timers to add to Owner completion.
+ - BytePacer reserves bounded chunks before sends in BOTH directions; UD emulator
+   executes LoRA once and pads measured service to cost/factor. Neither controls
+   ES hardware, semantic work or machine-wide CPU resources.
+
+Only the old attachment summaries are present in WSL. L2B's actual nine-run wire/
+LoRA extraction on SERAPH is user-reported and not independently re-read here.
+Thus no numeric ES/UD/communication percentage is invented. Existing extraction
+CSV fields remain suitable for C_UD/sum(E2E), but receive wait is overlapping and
+cannot be another independent percentage. At 50Mbps communication dominance may
+increase, yet the cache-specific overhead must remain in the E2E equation.
+
+The attached observed_profile_components.csv reports EXACT per-request reduction
+exclusive wall: 2Wiki3532.541ms, Qasper3568.905ms, MultiNews3568.742ms. It does not
+provide a new pure GPU T_ES. Owner inclusive and serialization timers overlap.
+The reported 3-5% total QKV row saving is not a 3-5% whole-model/E2E saving.
+
+2. Exactly one candidate; reference remains default
+
+  REFERENCE_WINDOW_SCALAR             frozen StreamingImpact/reducer
+  DEFERRED_HOST_PER_LAYER_V1          explicit new Light plan candidate
+
+For each layer/window the candidate keeps the same FP64 slice, causal/padding
+mask, masked_fill, finite predicate, norm(last axis), mean(head axis) and
+sum(window axis), with the same shapes. Instead of evaluating bool(finite) and
+item(value) per window, it stacks those scalars and performs one cpu().tolist()
+per layer. FP64 values are copied, not reduced by packing. Python 0.0+value and
+the original layer accumulation/record order are retained. No row precompute,
+prefix sum, kernel fusion, altered window selection or policy change is applied.
+
+All windows are still reduced. Invalid valid cells fail before returning values,
+committing the layer, history or admission; later window kernels may already
+have been queued before the batched error is read. Future/padding NaNs remain
+masked exactly as before. No partial layer result is committed. Existing native
+failure/owner.abort handling remains in force.
+
+For N512/L32/W510, static logical host observations change from up to2*L*W=32640
+scalar reads toL=32 packed host materializations. This is NOT a time/speedup
+ratio. The norm/mask/reduction count L*W remains16320. Packing and queued scalar
+storage add work and may produce no gain or a regression; GPU measurements decide.
+
+Windows are capped at512 and original-width<=3 in the streaming candidate.
+A conservative UNMEASURED4MiB staging reserve is added to the CPU plan's GPU/
+working-set estimate, and to the runtime1GiB Impact working-set guard. Allocation
+ceiling22GiB, post-load free12GiB, context/generation/cache/host/file/time bounds
+are NOT increased. Actual peak memory guards remain mandatory.
+
+The plan stores impact_implementation only for the opt-in candidate. Missing
+fields in frozen reference plans/receipts mean REFERENCE_WINDOW_SCALAR. Every
+new run and Impact receipt identifies the implementation. Official compare and
+analysis grouping reject/preserve variant identity rather than silently pooling
+reference FULL with optimized EXACT. Historical reference receipts remain readable.
+
+Candidate CPU approvals additionally require test_r5_d5_impact, whose native CPU
+tests FAIL on missing packages or bitwise differences (never silently SKIP/tolerate).
+The original required native suite remains required. All Source HEAD/fingerprint,
+clean-tree/commit/CPU approval/allocation/device/UUID/deadline/STOP-BYE guards stay.
+
+3. CPU validation and current limitation
+
+WSL torch/transformers/numpy are absent. Contracts/policy fixtures pass, but real
+FP64/Tiny OPT parity is BLOCKED and this candidate is NOT GPU READY. No framework
+or model was downloaded. Contract mocks do not establish tensor arithmetic.
+
+On SERAPH, in the already installed environment, with approved DATA-rooted TMPDIR
+and caches and CUDA hidden:
+
+  cd /data/khuss/repos/GP_semcache_lightperf
+  export CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+  : "${D5_TMPDIR:?existing scratch under /data/khuss}"
+  export TMPDIR="$D5_TMPDIR"
+  PYTHONPATH=src:tests python3 -m unittest test_r5_d5_impact test_r5_d5_lightperf_native -v
+
+Required native CPU cases cover FP16/32/64 inputs, FP64 bit patterns per window,
+multiple heads, noncontiguous/signed-zero inputs, repeated/boundary windows,
+causal/padding masks, masked NaN/Inf, valid nonfinite/overflow failures, one host
+batch/no Tensor bool/item, original layer accumulation, actual history/CHU/PBR/
+admission/eviction replay, and Tiny OPT full-vocabulary logits/cache snapshots/
+proof counts. Any mismatch fails with window bounds and hexadecimal FP64 values.
+Torch CPU PASS still does not prove OPT2.7B FP16 CUDA numerical fidelity.
+
+4. New reviewed source and matched five-request plans
+
+User reviews/commits/pushes; user pulls on SERAPH. No automatic Git action occurs.
+Then obtain the NEW clean commit and content_fingerprint:
+
+  python3 scripts/159_r5_d5_lightperf.py fingerprint
+
+Fingerprint discovery is not approval. Supply its hash and the reviewed commit
+below. Existing historical plans/CPU approvals remain immutable and cannot
+authorize this changed source. All new code/tests/docs must be committed before
+production source approval; --development never authorizes GPU.
+
+  : "${D5_COMMIT:?new reviewed clean HEAD}"
+  : "${D5_FINGERPRINT:?new reviewed content_fingerprint}"
+  : "${D5_I5:?existing original I5 plan}"
+  : "${D5_MULTI:?existing multi-adapter preparation}"
+  : "${D5_DATASET:?one of qasper/2wikimqa/multi_news}"
+  : "${D5_NEW_ROOT:?fresh parent under results/r5/d5_lightperf under /data/khuss}"
+
+  python3 scripts/159_r5_d5_lightperf.py prepare \
+    --original-experiment "$D5_I5" --multi "$D5_MULTI" --dataset "$D5_DATASET" --count 5 \
+    --reviewed-commit "$D5_COMMIT" --reviewed-fingerprint "$D5_FINGERPRINT" \
+    --impact-implementation REFERENCE_WINDOW_SCALAR --output-dir "$D5_NEW_ROOT/reference_plan"
+
+  python3 scripts/159_r5_d5_lightperf.py prepare \
+    --original-experiment "$D5_I5" --multi "$D5_MULTI" --dataset "$D5_DATASET" --count 5 \
+    --reviewed-commit "$D5_COMMIT" --reviewed-fingerprint "$D5_FINGERPRINT" \
+    --impact-implementation DEFERRED_HOST_PER_LAYER_V1 --output-dir "$D5_NEW_ROOT/candidate_plan"
+
+No generation budget or token length is changed. These first gate plans use
+default NATURAL5 (no replay flags) so the existing baseline job
+template can be used. Verify their tasks equal the intended original20 stream's
+first five, including routing, tokens, policy and seed; mismatch is NOT_MATCHED,
+not a reproduced continuous20 experiment. Both plans must have identical tasks.
+
+For each new plan separately, no shortcuts or old CPU approval reuse:
+
+  python3 scripts/159_r5_d5_lightperf.py preflight --experiment "$D5_NEW_ROOT/reference_plan"
+  python3 scripts/159_r5_d5_lightperf.py cpu-validate \
+    --experiment "$D5_NEW_ROOT/reference_plan" --output-dir "$D5_NEW_ROOT/reference_cpu"
+  python3 scripts/159_r5_d5_lightperf.py inspect \
+    --experiment "$D5_NEW_ROOT/reference_plan" --cpu-audit "$D5_NEW_ROOT/reference_cpu"
+
+  python3 scripts/159_r5_d5_lightperf.py preflight --experiment "$D5_NEW_ROOT/candidate_plan"
+  python3 scripts/159_r5_d5_lightperf.py cpu-validate \
+    --experiment "$D5_NEW_ROOT/candidate_plan" --output-dir "$D5_NEW_ROOT/candidate_cpu"
+  python3 scripts/159_r5_d5_lightperf.py inspect \
+    --experiment "$D5_NEW_ROOT/candidate_plan" --cpu-audit "$D5_NEW_ROOT/candidate_cpu"
+
+If any CPU test errors/fails/skips or a resource bound fails, stop before GPU.
+
+5. Future user-only GPU gates (NOT EXECUTED)
+
+One dataset first, reference EXACT then candidate EXACT, separate fresh outputs,
+same actual GPU UUID/backend/precision/CPU affinity/source/workload/knobs. Existing
+jobs/r5_d5_lightperf.sh supports these NATURAL baseline5 plans. User supplies its
+normal D5L_* environment/expected UUID/approved node and manual Slurm submission;
+one job per condition, never an array/sweep. Restore Slurm-assigned GPU visibility
+instead of inheriting the CPU-only empty CUDA variable. Resource envelope remains
+1 compatible RTX3090,4 allocated CPUs,64GiB,04:30 allocation,7200s worker deadline,
+post-load12GiB free and22GiB allocation ceiling. Do not forge allocation variables.
+
+After BOTH GPU runs complete and official verify passes:
+
+  CUDA_VISIBLE_DEVICES='' python3 scripts/159_r5_d5_lightperf.py verify \
+    --experiment "$D5_NEW_ROOT/reference_plan" --cpu-audit "$D5_NEW_ROOT/reference_cpu" --run "$D5_REFERENCE_RUN"
+  CUDA_VISIBLE_DEVICES='' python3 scripts/159_r5_d5_lightperf.py verify \
+    --experiment "$D5_NEW_ROOT/candidate_plan" --cpu-audit "$D5_NEW_ROOT/candidate_cpu" --run "$D5_CANDIDATE_RUN"
+  CUDA_VISIBLE_DEVICES='' python3 scripts/160_r5_d5_impact_compare.py \
+    --reference-run "$D5_REFERENCE_RUN" --reference-plan "$D5_NEW_ROOT/reference_plan" --reference-cpu-audit "$D5_NEW_ROOT/reference_cpu" \
+    --candidate-run "$D5_CANDIDATE_RUN" --candidate-plan "$D5_NEW_ROOT/candidate_plan" --candidate-cpu-audit "$D5_NEW_ROOT/candidate_cpu" \
+    --output-dir "$D5_NEW_ROOT/pair_review"
+
+Comparison checks Impact hashes, tokens/text/quality, routes, physical rows/
+reuse summaries, policy counts, occupancy and proof execution/byte counters;
+it exposes separate Impact and E2E/TTFT changes. It does not claim full policy
+identity trace, dense QKV or independent vocabulary audit unavailable in Light.
+CPU Tiny OPT policy snapshots help, but do not replace needed GPU fidelity proof.
+
+Run matched new-source FULL using the candidate plan as a third job if measuring
+the actual research goal. The plan label is candidate even though FULL has no
+Impact work. Optional --full-run/--full-plan/--full-cpu-audit on script160 records
+official FULL/candidate speedup. Without FULL, full_vs_candidate is NOT_EVALUATED;
+reference-vs-candidate EXACT improvement does not establish FULL speedup>1.
+
+Only after preservation gates pass, prepare a NEW candidate5 plan with
+--bandwidth-mbps 50, then separate FULL and
+EXACT fresh runs at that same bandwidth/factor1. Next, separately approve NEW
+plans with --ud-throughput-factor .25 and an explicitly reviewed conservative
+--ud-operation-seconds planning bound. A per-request aggregate divided by its
+operation count is an average, not a measured per-operation upper bound. Do not
+invent calibration; missing bound/calibration or budget failure remains blocked. Both FULL
+and EXACT get identical knobs. Never compare FULL unlimited to EXACT50Mbps.
+
+The baseline job intentionally does not pass --enable-extended-experiment and
+must NOT be used for50Mbps/UD25. In a separately user-approved allocation, after
+all existing D5L/R5 opt-ins and real allocation/UUID/deadline guards, use the
+native CLI with --enable-gpu-experiment --enable-extended-experiment:
+
+  python3 scripts/159_r5_d5_lightperf.py run \
+    --experiment "$D5_SENSITIVITY_PLAN" --cpu-audit "$D5_SENSITIVITY_CPU" \
+    --condition "$D5_ONE_CONDITION" --output-dir "$D5_FRESH_OUTPUT" \
+    --source-commit "$D5_COMMIT" --expected-gpu-uuid "$D5_ACTUAL_EXPECTED_UUID" \
+    --enable-gpu-experiment --enable-extended-experiment
+
+Each invocation is ONE separately user-approved condition, with real Slurm
+allocation variables, D5N_NODE and three original R5/D5 GPU opt-ins. No job or
+resource guard is weakened here. No such command has been run by Codex.
+
+For later20, create NEW --count 20 plans using
+--workload-mode CONTINUOUS_REPLAY --enable-continuous-replay and the fixed
+original stream/baseline reference. Preserve one continuous cache lifetime per
+condition. Add run --enable-continuous-replay and --enable-extended-experiment.
+Existing extended replay job is unlimited/factor1 only; sensitivity needs a
+separately reviewed manual command. Stop on infeasible preflight, never shorten
+generation, drop requests, increase time/memory or automatically retry.
+
+6. E2E forecast, NOT observations
+
+The updated real L2B wire/compute tables are absent in WSL. The user-reported
+50Mbps EXACT residual4.25-4.93s/request is an L2B MODEL, not a new GPU observation.
+Let I=3.5-3.6s reduction scope, r=removed internal fraction and e=E2E-exposed
+fraction. A deliberately simple hypothesis is gain=I*r*e, NOT gain=measured
+function-time reduction by definition. Packing costs/scheduling may erase gains.
+
+  Hypothesis                       modeled gain       remaining50Mbps gap
+  no benefit                       0                  4.25-4.93s
+  conservative r=.25,e=.5           .438-.450s          3.80-4.49s
+  optimistic r=.5,e=1               1.75-1.80s          2.45-3.18s
+  generous direct-scope ceiling     3.50-3.60s          .65-1.43s
+
+The last row is NOT an expectation: norm/mask/window kernels still run. Even it
+does not close the reported gap. Other bandwidths must be recomposed from the
+actual matched L2B curves: D_new(B,1)=D_L2B(B,1)-gain. At50/UD25 subtract the
+measured3*(C_FULL-C_EXACT) additionally, keeping all other work fixed. Its actual
+value is absent locally. Do not invent a positive speedup or a pure ES share.
+
+At unlimited, the known EXACT baseline gap is about7.87-9.47s/request. If the
+reference L2B model is linear1/B, D200=.75*Dinf+.25*D50 and D100=.5*Dinf+.5*D50.
+Using only coarse cross-dataset envelopes gives roughly6.96-8.34s at200 and
+6.06-7.20s at100 BEFORE optimization; these are derived MODELED envelopes, not
+dataset-specific measured curves or statistical confidence intervals. Subtract
+only explicitly assumed exposed savings until paired GPU E2E exists.
+
+If this first candidate preserves results but fails FULL speedup>1, report that
+outcome. Do not replace the research goal with internal reduction speedup. Owner
+input-proof deferral, redundant metadata-check consolidation, materialization
+copy reduction and row-norm reuse remain separate UNIMPLEMENTED candidates. No
+proof is removed or policy changed as part of this first optimization.
+
+correctness_qualified_speedup=NOT_ESTABLISHED; GPU numerical fidelity NOT_VERIFIED.

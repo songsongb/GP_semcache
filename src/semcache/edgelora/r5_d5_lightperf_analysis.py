@@ -54,6 +54,8 @@ def verify_run(root, plan_root, cpu_root):
     require(p['schema'] == r['schema'] == SCHEMA and p['mode'] == r['mode'] == MODE and digest(body) == pid,
             'unknown/changed LIGHT plan/schema')
     require(p['engine'] == r['engine'] == a['engine'] == ENGINE, 'obsolete Light receipt engine')
+    from .r5_d5_impact import implementation as impact_implementation
+    require(impact_implementation(p) == impact_implementation(r), 'plan/run impact implementation differs')
     from .r5_d5_lightperf import approval_modules
     from .r5_d5_lightperf_replay import replay_enabled, validate_replay_stream
     is_replay = replay_enabled(p)
@@ -95,6 +97,13 @@ def verify_run(root, plan_root, cpu_root):
                 row['input_tokens'] == len(task['token_ids']), 'request order/identity differs')
         if is_replay:
             require(row.get('replay_provenance') == p['stream']['occurrences'][index], 'request replay provenance differs')
+        impact = row.get('attention_impact')
+        if impact_implementation(p) != 'REFERENCE_WINDOW_SCALAR' and r['condition'] != CONDITIONS[0]:
+            require(isinstance(impact, dict) and impact.get('layers') == 32, 'candidate actual Impact receipt missing')
+        if impact is not None:
+            require(impact.get('implementation', 'REFERENCE_WINDOW_SCALAR') == impact_implementation(p), 'request impact implementation differs')
+            if impact_implementation(p) != 'REFERENCE_WINDOW_SCALAR':
+                require(impact['host_materialization_calls'] == 32, 'incomplete deferred Impact layer coverage')
         ids, text = row['generated_token_ids'], row['generated_text']
         require(ids and len(ids) <= task['policy']['max_new_tokens'] and all(type(t) is int and t >= 0 for t in ids) and
                 row['output_tokens'] == len(ids) and row['generated_token_ids_sha256'] == digest(ids) and
@@ -147,11 +156,13 @@ def verify_run(root, plan_root, cpu_root):
 
 
 def summarize(r):
+    from .r5_d5_impact import implementation as impact_implementation
     rows = r['requests']
     span = r['sequence_span_ms'] / 1000
     quality_names = {x['quality']['metric'] for x in rows}
     require(len(quality_names) == 1, 'unrelated quality metrics cannot be pooled')
     return dict(dataset=r['dataset'], scale=r['scale'], condition=r['condition'],
+                impact_implementation=impact_implementation(r),
                 performance_knobs=r['performance_knobs'], gpu_uuid=r['gpu']['uuid'],
                 ttft_ms=describe([x['application_ttft_ms'] for x in rows]),
                 e2e_ms=describe([x['application_e2e_ms'] for x in rows]),
@@ -172,6 +183,9 @@ def compare(full, other):
     mismatches = [key for key in keys if full[key] != other[key]]
     mismatches.extend(k for k in ('workload_mode', 'replay_stream_sha256')
                       if full.get(k, 'NATURAL' if k == 'workload_mode' else None) != other.get(k, 'NATURAL' if k == 'workload_mode' else None))
+    from .r5_d5_impact import implementation as impact_implementation
+    if impact_implementation(full) != impact_implementation(other):
+        mismatches.append('impact_implementation')
     mismatches.extend('gpu.' + k for k in ('uuid', 'name', 'device', 'total_bytes')
                       if full['gpu'].get(k) != other['gpu'].get(k))
     if mismatches:

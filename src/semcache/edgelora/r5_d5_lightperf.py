@@ -16,6 +16,8 @@ from .r5_d5_lightperf_io import (SCHEMA, MODE, ENGINE, BRANCH, SummaryWriter, fr
                                source_identity, read_json, verify)
 from .r5_d5_lightperf_workload import DATASETS, COUNTS, CONDITIONS, knobs, stream, preflight, matrix
 from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, replay_stream, validate_replay_stream
+from .r5_d5_impact import (REFERENCE as IMPACT_REFERENCE, HOST_BATCH, IMPLEMENTATIONS,
+                           implementation as impact_implementation, resource_bounds as impact_resource_bounds)
 
 TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_d5_lightperf_native',
                 'test_r5_natural_shutdown', 'test_r5_natural_phase3a',
@@ -24,7 +26,8 @@ TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_
 
 
 def approval_modules(plan):
-    return list(TEST_MODULES) + (['test_r5_d5_lightperf_replay'] if replay_enabled(plan) else [])
+    return (list(TEST_MODULES) + (['test_r5_d5_lightperf_replay'] if replay_enabled(plan) else []) +
+            (['test_r5_d5_impact'] if impact_implementation(plan) == HOST_BATCH else []))
 
 
 def dependencies():
@@ -102,8 +105,10 @@ def material(original_experiment, multi, dataset, count, performance_knobs, *,
 def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth_mbps=None,
             ud_throughput_factor=1., development=False, reviewed_commit=None,
             reviewed_fingerprint=None, continuous_contract=None, strict_pilot=None,
-            ud_operation_seconds=None, workload_mode='NATURAL', enable_continuous_replay=False, baseline_plan=None):
+            ud_operation_seconds=None, workload_mode='NATURAL', enable_continuous_replay=False, baseline_plan=None,
+            impact_implementation=IMPACT_REFERENCE):
     hidden_cuda()
+    require(impact_implementation in IMPLEMENTATIONS, 'unknown impact implementation')
     source = source_identity(development=development, reviewed_commit=reviewed_commit,
                              reviewed_fingerprint=reviewed_fingerprint)
     performance_knobs = knobs(bandwidth_mbps, ud_throughput_factor)
@@ -111,6 +116,8 @@ def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth
     fields = material(original_experiment, multi, dataset, count, performance_knobs,
                       continuous_contract=contract, strict_pilot=strict_pilot, ud_operation_seconds=ud_operation_seconds,
                       workload_mode=workload_mode, enable_continuous_replay=enable_continuous_replay, baseline_plan=baseline_plan)
+    if impact_implementation == HOST_BATCH:
+        fields['resources'] = impact_resource_bounds(fields['resources'], impact_implementation)
     p = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, source=source, dataset=dataset, count=count,
              original_experiment=str(Path(original_experiment).resolve()), multi=str(Path(multi).resolve()),
              continuous_contract=contract, strict_pilot=None if strict_pilot is None else str(Path(strict_pilot).resolve()),
@@ -122,6 +129,8 @@ def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth
     if workload_mode == REPLAY:
         p.update(workload_mode=REPLAY, enable_continuous_replay=True,
                  baseline_plan=None if baseline_plan is None else str(Path(baseline_plan).resolve()))
+    if impact_implementation != IMPACT_REFERENCE:
+        p['impact_implementation'] = impact_implementation
     p['plan_id'] = digest(p)
     from .communication import canonical
     from .r5_d5_lightperf_io import MAX_JSON
@@ -143,6 +152,7 @@ def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth
 def load_plan(experiment, *, cpu_only=True):
     inventory = verify(experiment)
     p = read_json(Path(experiment) / 'plan.json')
+    impact_implementation(p)
     body = dict(p)
     pid = body.pop('plan_id')
     require(p['schema'] == SCHEMA and p['mode'] == MODE and p['engine'] == ENGINE and digest(body) == pid,
@@ -159,6 +169,9 @@ def load_plan(experiment, *, cpu_only=True):
                       ud_operation_seconds=p['ud_operation_seconds'], cpu_only=cpu_only,
                       workload_mode=p.get('workload_mode', 'NATURAL'),
                       enable_continuous_replay=p.get('enable_continuous_replay', False), baseline_plan=p.get('baseline_plan'))
+    if impact_implementation(p) == HOST_BATCH:
+        require(isinstance(fields.get('resources'), dict), 'changed prepared input/resources')
+        fields['resources'] = impact_resource_bounds(fields['resources'], impact_implementation(p))
     require(all(p[k] == value for k, value in fields.items()), 'changed prepared input/workload/resources')
     return p, inventory
 
@@ -204,6 +217,7 @@ def inspect_plan(experiment, cpu_audit=None):
     return dict(status='CPU_APPROVED_MANUAL_GPU_NOT_RUN' if cpu_audit is not None else 'PARTIAL_BLOCKED',
                 GPU_status='GPU_NOT_RUN', source_commit=p['source']['commit'],
                 plan_id=p['plan_id'], cpu_approval=approval_label, resources=p['resources'],
+                impact_implementation=impact_implementation(p),
                 remaining='manual allocation, GPU UUID/VRAM/runtime guards and explicit user GPU approval')
 
 
@@ -261,7 +275,7 @@ def analyze(registry, output_dir):
     groups = {}
     for r in runs:
         key = digest(dict({k: r[k] for k in ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs')},
-                          workload_mode=r.get('workload_mode', 'NATURAL')))
+                          workload_mode=r.get('workload_mode', 'NATURAL'), impact_implementation=impact_implementation(r)))
         group = groups.setdefault(key, {})
         require(r['condition'] not in group, 'duplicate condition; do not pool trials')
         group[r['condition']] = r
@@ -271,9 +285,11 @@ def analyze(registry, output_dir):
     for group in groups.values():
         if CONDITIONS[0] in group:
             comparisons.extend(dict(dataset=group[c]['dataset'], scale=group[c]['scale'],
+                                    impact_implementation=impact_implementation(group[c]),
                                     tasks_sha256=group[c]['tasks_sha256'], performance_knobs=group[c]['performance_knobs'],
                                     **compare(group[CONDITIONS[0]], group[c])) for c in CONDITIONS[1:] if c in group)
             position_comparisons.extend(dict(dataset=group[c]['dataset'], scale=group[c]['scale'], condition=c,
+                impact_implementation=impact_implementation(group[c]),
                 **compare_segments(group[CONDITIONS[0]], group[c])) for c in CONDITIONS[1:] if c in group)
     rows = [summarize(r) for r in runs]
     rows.sort(key=lambda r: (r['dataset'], r['scale'], r['condition'], str(r['performance_knobs'])))
@@ -281,19 +297,19 @@ def analyze(registry, output_dir):
                   rows=rows, comparisons=comparisons, bindings=bindings,
                   break_even='NOT_EVALUATED_UNTIL_MATCHED_SINGLE_AXIS_SERIES',
                   correctness_qualified_speedup='NOT_ESTABLISHED')
-    columns = ('dataset', 'scale', 'condition', 'mean_ttft_ms', 'mean_e2e_ms', 'p95_e2e_ms', 'requests_per_second', 'output_tokens_per_second', 'quality_metric', 'quality_mean')
+    columns = ('dataset', 'scale', 'condition', 'impact_implementation', 'mean_ttft_ms', 'mean_e2e_ms', 'p95_e2e_ms', 'requests_per_second', 'output_tokens_per_second', 'quality_metric', 'quality_mean')
     buf = io.StringIO()
     csv_writer = csv.writer(buf)
     csv_writer.writerow(columns)
     lines = ['| ' + ' | '.join(columns) + ' |', '| ' + ' | '.join(['---'] * len(columns)) + ' |']
     for r in rows:
-        values = [r['dataset'], r['scale'], r['condition'], r['ttft_ms']['mean'], r['e2e_ms']['mean'], r['e2e_ms']['p95'],
+        values = [r['dataset'], r['scale'], r['condition'], r['impact_implementation'], r['ttft_ms']['mean'], r['e2e_ms']['mean'], r['e2e_ms']['p95'],
                   r['requests_per_second'], r['output_tokens_per_second'], r['quality']['metric'], r['quality']['mean']]
         csv_writer.writerow(values)
         lines.append('| ' + ' | '.join(map(str, values)) + ' |')
     writer = SummaryWriter(fresh(output_dir, protected))
     writer.write('analysis.json', report)
-    positions = [run_segments(r) for r in runs]
+    positions = [dict(run_segments(r), impact_implementation=impact_implementation(r)) for r in runs]
     writer.write('position_analysis.json', dict(scope='VERIFIED_LIGHT_RECEIPTS_SINGLE_TRIAL_DESCRIPTIVE',
         runs=positions, comparisons=position_comparisons, correctness_qualified_speedup='NOT_ESTABLISHED'))
     window_csv = io.StringIO()
@@ -335,6 +351,8 @@ def main(argv=None):
     p.add_argument('--workload-mode', choices=('NATURAL', REPLAY), default='NATURAL')
     p.add_argument('--enable-continuous-replay', action='store_true')
     p.add_argument('--baseline-plan')
+    p.add_argument('--impact-implementation', choices=IMPLEMENTATIONS, default=IMPACT_REFERENCE,
+                   help='candidate requires new reviewed plan and mandatory native CPU parity; reference remains default')
     for command in ('cpu-validate', 'inspect', 'preflight'):
         p = sub.add_parser(command)
         p.add_argument('--experiment', required=True)

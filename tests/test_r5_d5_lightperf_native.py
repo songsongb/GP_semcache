@@ -61,7 +61,7 @@ class NativeParity(unittest.TestCase):
         torch.set_num_threads(1)
 
     def run_case(self, condition, *, strict=False, performance_knobs=None, corrupt=False, expire=False, eos=None,
-                 replay_count=None):
+                 replay_count=None, impact_implementation='REFERENCE_WINDOW_SCALAR'):
         import torch
         from transformers import OPTConfig, OPTForCausalLM
         from semcache.models.model_adapter import OPTModelAdapter
@@ -173,7 +173,8 @@ class NativeParity(unittest.TestCase):
                                  generated_text_sha256=hashlib.sha256(r['generated_text'].encode()).hexdigest())
                     else:
                         logits[rid] = []
-                        r = generate_native(*args, **kwargs, cpu_logit_observer=lambda step, history, values: logits[rid].append(values))
+                        r = generate_native(*args, **kwargs, impact_implementation=impact_implementation,
+                                            cpu_logit_observer=lambda step, history, values: logits[rid].append(values))
                     physicals[rid] = r['completion']['physical']
                     impact = r['completion']['impact']
                     if impact is not None:

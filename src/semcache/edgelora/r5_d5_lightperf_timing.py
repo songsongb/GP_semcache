@@ -75,7 +75,7 @@ def generate_loop(req, forward, complete, decode_text, *, clock_ns=time.monotoni
 
 def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
                     condition, mode, allow_approximate=False, on_tcp_complete=None,
-                    cpu_logit_observer=None, deadline=None):
+                    cpu_logit_observer=None, deadline=None, impact_implementation='REFERENCE_WINDOW_SCALAR'):
     """Opt-in kernel, caller must enforce real model/device/source/session guards.
 
     This function is not a GPU launcher. The CLI deliberately blocks native run
@@ -84,13 +84,15 @@ def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
     import torch
     import inspect
     from .r5_sparse_qkv import SparseSession
-    from .r5_subsequence_generation import StreamingImpact, fresh_path, complete_request
+    from .r5_subsequence_generation import fresh_path, complete_request
+    from .r5_d5_impact import create_impact, IMPLEMENTATIONS
     from .r5_subsequence_physical import projection_path, EXACT, APPROX
     from .r4a_diagnostics import observe_opt_positions
     from .r4a_generation import past_summary
     require(condition in ('FULL_RECOMPUTE', 'SEMCACHE_D5_EXACT', 'SEMCACHE_D5_APPROX'), 'unknown Light condition')
     require(mode == (APPROX if condition == 'SEMCACHE_D5_APPROX' else EXACT) and
             (condition != 'SEMCACHE_D5_APPROX' or allow_approximate), 'condition/mode/opt-in mismatch')
+    require(impact_implementation in IMPLEMENTATIONS, 'unknown impact implementation')
     require(not torch.is_autocast_enabled() and not model.training and
             all(type(l.self_attn).__name__ == 'OPTAttention' for l in adapter.layers), 'eager eval OPT required')
     require(owner is None or owner.evidence is None, 'Light must not use Strict evidence sink')
@@ -114,7 +116,7 @@ def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
             if assignment is not None:
                 with profiler.scope('matching_setup_inclusive'):
                     matching = owner.begin(req, assignment, mode=mode, allow_approximate=allow_approximate)
-            impact = None if assignment is None else StreamingImpact(req, len(adapter.layers), owner.active['windows'], evidence=None)
+            impact = None if assignment is None else create_impact(req, len(adapter.layers), owner.active['windows'], impact_implementation)
 
             def forward(step, generated, past):
                 if deadline is not None and time.monotonic() >= deadline:
@@ -151,7 +153,9 @@ def generate_native(model, adapter, tokenizer, req, channel, owner, index, *,
                                                        attentions=impact, on_tcp_complete=on_tcp_complete)
                 return dict(control=control, physical=physical,
                             impact=None if impact is None else dict(records=impact.records,
-                                elapsed_ms=impact.elapsed_ms, peak_probability_bytes=impact.peak_bytes))
+                                elapsed_ms=impact.elapsed_ms, peak_probability_bytes=impact.peak_bytes,
+                                implementation=impact_implementation,
+                                host_materialization_calls=getattr(impact, 'host_materialization_calls', None)))
 
             result = generate_loop(req, forward, complete,
                                    lambda ids: tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False),

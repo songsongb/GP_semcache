@@ -1,5 +1,6 @@
 """Native OPT ES/isolated CPU UD orchestration; no implicit GPU execution."""
 from collections import Counter
+from functools import partial
 from pathlib import Path
 import importlib.metadata
 import os
@@ -20,6 +21,7 @@ from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, validate_rep
 from .r5_d5_lightperf_emulation import LightChannel, UDServiceEmulator, serve_light_sparse
 from .r5_d5_lightperf_receipts import WireSummary, PolicyCounter, compact_request, wire_equal
 from .r5_d5_lightperf_timing import generate_native, SessionLifecycle
+from .r5_d5_impact import implementation as impact_implementation
 
 SCRIPT = ROOT / 'scripts/159_r5_d5_lightperf.py'
 
@@ -390,6 +392,7 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
         initialized = time.monotonic_ns()
         rows = execute_stream(tasks, sessions, driver.model, driver.adapter, tokenizer, condition, writer, deadline,
                               score_fn=lambda t, text: (score(t['prepared']['sample'], text, t['prepared']['template_version']), SCORING_VERSION),
+                              generate_fn=partial(generate_native, impact_implementation=impact_implementation(p)),
                               replay_occurrences=p['stream'].get('occurrences') if replay_enabled(p) else None)
         sequence_end = time.monotonic_ns()
         uds = {}
@@ -427,6 +430,7 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
         if replay_enabled(p):
             r.update(workload_mode=REPLAY, replay_stream_sha256=digest(p['stream']),
                      replay_statistics=p['stream']['statistics'])
+        r['impact_implementation'] = impact_implementation(p)
         writer.write('run.json', r)
     except BaseException as exc:
         primary = exc
