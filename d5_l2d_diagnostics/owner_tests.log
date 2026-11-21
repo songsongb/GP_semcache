@@ -1,0 +1,262 @@
+test_chu_pbr_remain_legal_after_records_expire (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_corruption_after_authorization_all_roles (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_corruption_before_authorization_all_roles (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_equal_byte_replacement_before_request_verification_rejected (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_eviction_disposal_and_abort_expire_records (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_failure_cannot_resurrect_authorization (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_metadata_policy_registry_and_physical_tampering (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_new_request_revalidates_resident_entry (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_old_verification_record_cannot_grant_a_new_request (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_private_snapshot_has_no_cache_alias (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_tensor_replacement_even_equal_values_rejected (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_admit_and_both_reject_reasons_count_input_proof_before_decision (test_r5_d5_owner_diagnostics.OwnerObservation) ... test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) ... test_capacity_rejection_still_raises_on_invalid_input_before_insert (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_cpu_guard_precedes_serialization_and_no_raw_detail_export (test_r5_d5_owner_diagnostics.OwnerObservation) ... ERROR
+test_equal_content_does_not_imply_same_tensor_object (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_reuse_keeps_three_validation_counters_separate (test_r5_d5_owner_diagnostics.OwnerObservation) ... ERROR
+test_scalar_autoregressive_tokens_text_and_logits_under_observer (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_wrappers_restore_after_failure_without_masking_primary (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+
+======================================================================
+ERROR: test_admit_and_both_reject_reasons_count_input_proof_before_decision (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='ADMIT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 46, in test_admit_and_both_reject_reasons_count_input_proof_before_decision
+    result = harness.run_fixture(scenario, CPUOwnerDiagnostics())
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_admit_and_both_reject_reasons_count_input_proof_before_decision (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='CAPACITY_REJECT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 46, in test_admit_and_both_reject_reasons_count_input_proof_before_decision
+    result = harness.run_fixture(scenario, CPUOwnerDiagnostics())
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_admit_and_both_reject_reasons_count_input_proof_before_decision (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='POLICY_REJECT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 46, in test_admit_and_both_reject_reasons_count_input_proof_before_decision
+    result = harness.run_fixture(scenario, CPUOwnerDiagnostics())
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='ADMIT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='CAPACITY_REJECT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='POLICY_REJECT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='REUSE')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='EVICTION')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='CHU_PBR')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) (scenario='ALL_PRESENT')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 31, in test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy
+    reference = harness.run_fixture(scenario)
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_cpu_guard_precedes_serialization_and_no_raw_detail_export (test_r5_d5_owner_diagnostics.OwnerObservation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 121, in test_cpu_guard_precedes_serialization_and_no_raw_detail_export
+    result = harness.run_fixture('REUSE', CPUOwnerDiagnostics())
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+======================================================================
+ERROR: test_reuse_keeps_three_validation_counters_separate (test_r5_d5_owner_diagnostics.OwnerObservation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/songsong/GP_semcache_lightperf/tests/test_r5_d5_owner_diagnostics.py", line 127, in test_reuse_keeps_three_validation_counters_separate
+    result = harness.run_fixture('REUSE', CPUOwnerDiagnostics())
+  File "/home/songsong/GP_semcache_lightperf/scripts/161_r5_d5_owner_diagnostics.py", line 80, in run_fixture
+    return dict(semantic_sha256=digest(state), completion_ms=completion_ms, elapsed_ms=elapsed_ms,
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 40, in digest
+    return digest_bytes(canonical(value))
+  File "/home/songsong/GP_semcache_lightperf/src/semcache/edgelora/communication.py", line 36, in canonical
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+  File "/usr/lib/python3.10/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+  File "/usr/lib/python3.10/json/encoder.py", line 199, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+  File "/usr/lib/python3.10/json/encoder.py", line 257, in iterencode
+    return _iterencode(o, 0)
+TypeError: keys must be str, int, float, bool or None, not tuple
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.836s
+
+FAILED (errors=12)

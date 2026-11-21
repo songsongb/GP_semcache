@@ -1,0 +1,24 @@
+test_chu_pbr_remain_legal_after_records_expire (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_corruption_after_authorization_all_roles (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_corruption_before_authorization_all_roles (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_equal_byte_replacement_before_request_verification_rejected (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_eviction_disposal_and_abort_expire_records (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_failure_cannot_resurrect_authorization (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_metadata_policy_registry_and_physical_tampering (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_new_request_revalidates_resident_entry (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_old_verification_record_cannot_grant_a_new_request (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_private_snapshot_has_no_cache_alias (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_tensor_replacement_even_equal_values_rejected (test_r5_d5_owner_diagnostics.ObservedIntegrity) ... ok
+test_admit_and_both_reject_reasons_count_input_proof_before_decision (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_all_scenarios_preserve_outputs_metadata_proofs_policy_and_occupancy (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_capacity_rejection_still_raises_on_invalid_input_before_insert (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_cpu_guard_precedes_serialization_and_no_raw_detail_export (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_equal_content_does_not_imply_same_tensor_object (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_reuse_keeps_three_validation_counters_separate (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_scalar_autoregressive_tokens_text_and_logits_under_observer (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+test_wrappers_restore_after_failure_without_masking_primary (test_r5_d5_owner_diagnostics.OwnerObservation) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.597s
+
+OK
