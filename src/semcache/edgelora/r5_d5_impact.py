@@ -13,7 +13,8 @@ from .r5_subsequence_profile import call
 
 REFERENCE = 'REFERENCE_WINDOW_SCALAR'
 HOST_BATCH = 'DEFERRED_HOST_PER_LAYER_V1'
-IMPLEMENTATIONS = (REFERENCE, HOST_BATCH)
+MASK_INDEX_REUSE = 'MASK_INDEX_REUSE_PER_LAYER_V1'
+IMPLEMENTATIONS = (REFERENCE, HOST_BATCH, MASK_INDEX_REUSE)
 MAX_WINDOWS = 512
 STAGING_RESERVE_BYTES = 4 * 2**20  # Conservative extra scalar/packing allocator reserve, not measured VRAM.
 
@@ -32,6 +33,11 @@ def resource_bounds(resources, mode):
     result['impact_batch_staging_reserve_bytes'] = STAGING_RESERVE_BYTES
     result['impact_layer_working_bytes'] += STAGING_RESERVE_BYTES
     result['gpu_estimate_bytes'] += STAGING_RESERVE_BYTES
+    if mode == MASK_INDEX_REUSE:
+        from .r5_d5_impact_compute import INDEX_RESERVE_BYTES
+        result['impact_index_reuse_reserve_bytes'] = INDEX_RESERVE_BYTES
+        result['impact_layer_working_bytes'] += INDEX_RESERVE_BYTES
+        result['gpu_estimate_bytes'] += INDEX_RESERVE_BYTES
     if (result['impact_layer_working_bytes'] > 2**30 or
             result['gpu_estimate_bytes'] >= result['gpu_allocation_ceiling_bytes']):
         result['reasons'].append('IMPACT_BATCH_STAGING_MEMORY_BOUND')
@@ -124,5 +130,8 @@ class DeferredHostImpact(StreamingImpact):
 
 def create_impact(req, layers, windows, mode=REFERENCE):
     require(mode in IMPLEMENTATIONS, 'unknown impact implementation')
+    if mode == MASK_INDEX_REUSE:
+        from .r5_d5_impact_compute import IndexReuseImpact
+        return IndexReuseImpact(req, layers, windows, evidence=None)
     cls = StreamingImpact if mode == REFERENCE else DeferredHostImpact
     return cls(req, layers, windows, evidence=None)

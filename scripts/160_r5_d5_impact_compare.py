@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only CPU review of two newly approved L2C Light runs; never GPU launch."""
+"""Read-only CPU review of newly approved L2C/L2E Light runs; never GPU launch."""
 import argparse
 import json
 from pathlib import Path

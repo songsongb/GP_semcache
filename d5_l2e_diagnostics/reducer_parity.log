@@ -1,0 +1,12 @@
+test_all_dtypes_heads_lengths_boundaries_noncontiguous_and_signed_zero (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_bounds_remain_fail_closed_and_layer_sum_order_unchanged (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_invalid_shapes_masks_windows_nonfinite_overflow_and_empty (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_layer_accumulation_records_and_partial_failure (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_one_index_padding_conversion_host_batch_and_no_scalar_reads (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_padding_mask_shapes_dtypes_and_masked_nonfinite (test_r5_d5_impact_compute.ReducerParity) ... ok
+test_repeated_and_out_of_order_windows_keep_exact_order (test_r5_d5_impact_compute.ReducerParity) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 74.941s
+
+OK

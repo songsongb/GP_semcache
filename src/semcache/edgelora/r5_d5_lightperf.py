@@ -16,7 +16,7 @@ from .r5_d5_lightperf_io import (SCHEMA, MODE, ENGINE, BRANCH, SummaryWriter, fr
                                source_identity, read_json, verify)
 from .r5_d5_lightperf_workload import DATASETS, COUNTS, CONDITIONS, knobs, stream, preflight, matrix
 from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, replay_stream, validate_replay_stream
-from .r5_d5_impact import (REFERENCE as IMPACT_REFERENCE, HOST_BATCH, IMPLEMENTATIONS,
+from .r5_d5_impact import (REFERENCE as IMPACT_REFERENCE, HOST_BATCH, MASK_INDEX_REUSE, IMPLEMENTATIONS,
                            implementation as impact_implementation, resource_bounds as impact_resource_bounds)
 
 TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_d5_lightperf_native',
@@ -27,7 +27,9 @@ TEST_MODULES = ('test_r5_d5_lightperf', 'test_r5_d5_lightperf_worker', 'test_r5_
 
 def approval_modules(plan):
     return (list(TEST_MODULES) + (['test_r5_d5_lightperf_replay'] if replay_enabled(plan) else []) +
-            (['test_r5_d5_impact'] if impact_implementation(plan) == HOST_BATCH else []))
+            (['test_r5_d5_impact'] if impact_implementation(plan) == HOST_BATCH else
+             ['test_r5_d5_impact', 'test_r5_d5_impact_compute', 'test_r5_d5_owner_diagnostics']
+             if impact_implementation(plan) == MASK_INDEX_REUSE else []))
 
 
 def dependencies():
@@ -116,7 +118,7 @@ def prepare(original_experiment, multi, dataset, count, output_dir, *, bandwidth
     fields = material(original_experiment, multi, dataset, count, performance_knobs,
                       continuous_contract=contract, strict_pilot=strict_pilot, ud_operation_seconds=ud_operation_seconds,
                       workload_mode=workload_mode, enable_continuous_replay=enable_continuous_replay, baseline_plan=baseline_plan)
-    if impact_implementation == HOST_BATCH:
+    if impact_implementation != IMPACT_REFERENCE:
         fields['resources'] = impact_resource_bounds(fields['resources'], impact_implementation)
     p = dict(schema=SCHEMA, mode=MODE, engine=ENGINE, source=source, dataset=dataset, count=count,
              original_experiment=str(Path(original_experiment).resolve()), multi=str(Path(multi).resolve()),
@@ -169,7 +171,7 @@ def load_plan(experiment, *, cpu_only=True):
                       ud_operation_seconds=p['ud_operation_seconds'], cpu_only=cpu_only,
                       workload_mode=p.get('workload_mode', 'NATURAL'),
                       enable_continuous_replay=p.get('enable_continuous_replay', False), baseline_plan=p.get('baseline_plan'))
-    if impact_implementation(p) == HOST_BATCH:
+    if impact_implementation(p) != IMPACT_REFERENCE:
         require(isinstance(fields.get('resources'), dict), 'changed prepared input/resources')
         fields['resources'] = impact_resource_bounds(fields['resources'], impact_implementation(p))
     require(all(p[k] == value for k, value in fields.items()), 'changed prepared input/workload/resources')

@@ -1,14 +1,16 @@
 """CPU-only paired reference/candidate Light review; no new numerical audit."""
 from pathlib import Path
 from .communication import require
-from .r5_d5_impact import REFERENCE, HOST_BATCH, implementation
+from .r5_d5_impact import REFERENCE, HOST_BATCH, MASK_INDEX_REUSE, implementation
 from .r5_d5_lightperf_analysis import verify_run, compare, describe
 from .r5_d5_lightperf_io import hidden_cuda, read_json, SummaryWriter, fresh
 
 
 def _compare(reference, candidate):
     require(reference['condition'] == candidate['condition'] == 'SEMCACHE_D5_EXACT', 'paired EXACT runs required')
-    require(implementation(reference) == REFERENCE and implementation(candidate) == HOST_BATCH, 'reference/candidate implementation pair required')
+    pair = (implementation(reference), implementation(candidate))
+    require(pair in ((REFERENCE, HOST_BATCH), (REFERENCE, MASK_INDEX_REUSE), (HOST_BATCH, MASK_INDEX_REUSE)),
+            'reference/candidate implementation pair required')
     keys = ('dataset', 'scale', 'tasks_sha256', 'source', 'performance_knobs', 'backend', 'versions',
             'precision_policy', 'cpu_concurrency', 'warmup_requests', 'measurement_scope')
     require(all(reference[k] == candidate[k] for k in keys), 'NOT_COMPARABLE: source/device/backend/workload/knobs/resources differ')
@@ -41,6 +43,7 @@ def _compare(reference, candidate):
             delta_e2e_ms=b['application_e2e_ms'] - a['application_e2e_ms'],
             reference_ttft_ms=a['application_ttft_ms'], candidate_ttft_ms=b['application_ttft_ms']))
     return dict(status='IMPACT_TOKEN_AND_LIGHT_SUMMARY_PARITY_PASS' if all(r['preserved'] for r in rows) else 'PARITY_FAILED',
+        reference_impact_implementation=pair[0], candidate_impact_implementation=pair[1],
         requests=rows, reference_e2e_ms=describe([r['application_e2e_ms'] for r in left]),
         candidate_e2e_ms=describe([r['application_e2e_ms'] for r in right]),
         total_reference_e2e_ms=sum(r['application_e2e_ms'] for r in left),

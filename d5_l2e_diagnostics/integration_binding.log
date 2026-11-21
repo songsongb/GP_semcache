@@ -1,0 +1,10 @@
+test_explicit_selector_default_and_approval_modules_preserve_l2c (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_official_verifier_binds_variant_host_count_and_new_approval_modules (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_paired_review_supports_l2c_l2e_but_rejects_pooling_variants (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_plan_binds_selector_and_additive_resource_reserve (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_resource_reserve_is_additive_and_can_only_tighten_bounds (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.214s
+
+OK

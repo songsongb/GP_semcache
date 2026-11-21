@@ -1,0 +1,4257 @@
+{
+  "CPU_ONLY": true,
+  "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "cases": [
+    {
+      "amortized_window_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": 0.179374875,
+        "MASK_INDEX_REUSE_PER_LAYER_V1": 0.16607475,
+        "REFERENCE_WINDOW_SCALAR": 0.18482474999999998
+      },
+      "case": "NO_PADDING",
+      "fp64_sha256": "a6317598e09964c5728e117f97a784a844aef8c3e922139a760df88b4a4db29e",
+      "layers": 1,
+      "raw_samples": [
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.035699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.825099,
+            "REFERENCE_WINDOW_SCALAR": 0.565899
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 0
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.598699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.571799,
+            "REFERENCE_WINDOW_SCALAR": 0.558399
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 1
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.660699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.5008,
+            "REFERENCE_WINDOW_SCALAR": 1.059698
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 2
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.618199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.5758,
+            "REFERENCE_WINDOW_SCALAR": 0.657699
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 3
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.835198,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.707099,
+            "REFERENCE_WINDOW_SCALAR": 0.737499
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 4
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.401598,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.743499,
+            "REFERENCE_WINDOW_SCALAR": 0.881999
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 5
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.964499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.009298,
+            "REFERENCE_WINDOW_SCALAR": 1.120498
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 6
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.645799,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.5665,
+            "REFERENCE_WINDOW_SCALAR": 0.858898
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 7
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.762399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.337799,
+            "REFERENCE_WINDOW_SCALAR": 1.593397
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 8
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.685299,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.878199,
+            "REFERENCE_WINDOW_SCALAR": 0.642299
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 9
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.259998,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.980299,
+            "REFERENCE_WINDOW_SCALAR": 1.338998
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 10
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.633099,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.680999,
+            "REFERENCE_WINDOW_SCALAR": 0.724999
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 11
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.746399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.933999,
+            "REFERENCE_WINDOW_SCALAR": 0.804599
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 12
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.599199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.594199,
+            "REFERENCE_WINDOW_SCALAR": 0.609899
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 13
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.585599,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.527499,
+            "REFERENCE_WINDOW_SCALAR": 0.742899
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 14
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.608699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.559999,
+            "REFERENCE_WINDOW_SCALAR": 4.736894
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 15
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.573199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.6296,
+            "REFERENCE_WINDOW_SCALAR": 0.559499
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 16
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.774399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.539399,
+            "REFERENCE_WINDOW_SCALAR": 0.629999
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 17
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.030999,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.528299,
+            "REFERENCE_WINDOW_SCALAR": 0.649899
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 18
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.545999,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.605399,
+            "REFERENCE_WINDOW_SCALAR": 0.5865
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 19
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.749699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.7031,
+            "REFERENCE_WINDOW_SCALAR": 0.928899
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 20
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.867499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.773599,
+            "REFERENCE_WINDOW_SCALAR": 0.861399
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 21
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.987798,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.878799,
+            "REFERENCE_WINDOW_SCALAR": 2.045297
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 22
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.549799,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.825298,
+            "REFERENCE_WINDOW_SCALAR": 0.6052
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 23
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.614099,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.584899,
+            "REFERENCE_WINDOW_SCALAR": 0.741099
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 24
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.653099,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.583299,
+            "REFERENCE_WINDOW_SCALAR": 0.643399
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 25
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.7168,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.690899,
+            "REFERENCE_WINDOW_SCALAR": 0.6905
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 26
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.867499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.643799,
+            "REFERENCE_WINDOW_SCALAR": 1.779898
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 27
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.718199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.647599,
+            "REFERENCE_WINDOW_SCALAR": 0.886899
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 28
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.761398,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 3.465895,
+            "REFERENCE_WINDOW_SCALAR": 0.582499
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 29
+        }
+      ],
+      "timing_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 1.761398,
+          "mean": 0.8017188666666667,
+          "median": 0.7174995,
+          "minimum": 0.545999,
+          "p25": 0.612749,
+          "p75": 0.891749
+        },
+        "MASK_INDEX_REUSE_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 3.465895,
+          "mean": 0.8364256333333333,
+          "median": 0.664299,
+          "minimum": 0.5008,
+          "p25": 0.5747997499999999,
+          "p75": 0.8783489999999999
+        },
+        "REFERENCE_WINDOW_SCALAR": {
+          "count": 30,
+          "maximum": 4.736894,
+          "mean": 0.9941853,
+          "median": 0.7392989999999999,
+          "minimum": 0.558399,
+          "p25": 0.6249739999999999,
+          "p75": 0.9615987500000001
+        }
+      },
+      "window_count": 4
+    },
+    {
+      "amortized_window_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": 0.20464975,
+        "MASK_INDEX_REUSE_PER_LAYER_V1": 0.20599974999999998,
+        "REFERENCE_WINDOW_SCALAR": 0.24351224999999999
+      },
+      "case": "PADDING_2D",
+      "fp64_sha256": "33bc3fd3b4882ebff790060692cff6c3c74c3f6471b09439b2a8cf5d5052d057",
+      "layers": 1,
+      "raw_samples": [
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.741899,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.912999,
+            "REFERENCE_WINDOW_SCALAR": 3.991194
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 0
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.966799,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.911499,
+            "REFERENCE_WINDOW_SCALAR": 1.103499
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 1
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.694998,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.907999,
+            "REFERENCE_WINDOW_SCALAR": 1.461198
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 2
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 4.358394,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.944299,
+            "REFERENCE_WINDOW_SCALAR": 2.054597
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 3
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.053098,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.908599,
+            "REFERENCE_WINDOW_SCALAR": 1.127898
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 4
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.829998,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.945799,
+            "REFERENCE_WINDOW_SCALAR": 1.655798
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 5
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.732199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.781999,
+            "REFERENCE_WINDOW_SCALAR": 0.709499
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 6
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.752999,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.914899,
+            "REFERENCE_WINDOW_SCALAR": 2.478697
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 7
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.817499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 2.199797,
+            "REFERENCE_WINDOW_SCALAR": 0.757298
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 8
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.694199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.6438,
+            "REFERENCE_WINDOW_SCALAR": 0.718999
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 9
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.919996,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.009899,
+            "REFERENCE_WINDOW_SCALAR": 1.079498
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 10
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.528398,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.941099,
+            "REFERENCE_WINDOW_SCALAR": 1.014699
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 11
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.651899,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.820399,
+            "REFERENCE_WINDOW_SCALAR": 2.572896
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 12
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.782799,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.566099,
+            "REFERENCE_WINDOW_SCALAR": 0.689999
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 13
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.495297,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.522599,
+            "REFERENCE_WINDOW_SCALAR": 0.962599
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 14
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.689599,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.930099,
+            "REFERENCE_WINDOW_SCALAR": 0.985499
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 15
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.653499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.483999,
+            "REFERENCE_WINDOW_SCALAR": 0.685399
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 16
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.081398,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.575,
+            "REFERENCE_WINDOW_SCALAR": 0.643099
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 17
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.716899,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.583999,
+            "REFERENCE_WINDOW_SCALAR": 0.848799
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 18
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.822198,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.236498,
+            "REFERENCE_WINDOW_SCALAR": 1.833298
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 19
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.715499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.676599,
+            "REFERENCE_WINDOW_SCALAR": 0.831499
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 20
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.956799,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.595499,
+            "REFERENCE_WINDOW_SCALAR": 0.703299
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 21
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.719199,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.720299,
+            "REFERENCE_WINDOW_SCALAR": 1.168598
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 22
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.766099,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.971799,
+            "REFERENCE_WINDOW_SCALAR": 0.823599
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 23
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.986399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.648699,
+            "REFERENCE_WINDOW_SCALAR": 0.722499
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 24
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.879598,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.671999,
+            "REFERENCE_WINDOW_SCALAR": 0.752299
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 25
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.819699,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.895099,
+            "REFERENCE_WINDOW_SCALAR": 0.805099
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 26
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.761499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.780399,
+            "REFERENCE_WINDOW_SCALAR": 0.711999
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 27
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 0.740999,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.603799,
+            "REFERENCE_WINDOW_SCALAR": 1.529198
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 28
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.378298,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.827599,
+            "REFERENCE_WINDOW_SCALAR": 1.339498
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 29
+        }
+      ],
+      "timing_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 4.358394,
+          "mean": 1.1569384,
+          "median": 0.818599,
+          "minimum": 0.651899,
+          "p25": 0.7289490000000001,
+          "p75": 1.155623
+        },
+        "MASK_INDEX_REUSE_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 2.199797,
+          "mean": 0.8377723,
+          "median": 0.8239989999999999,
+          "minimum": 0.483999,
+          "p25": 0.63379975,
+          "p75": 0.9328489999999999
+        },
+        "REFERENCE_WINDOW_SCALAR": {
+          "count": 30,
+          "maximum": 3.991194,
+          "mean": 1.2254016333333333,
+          "median": 0.9740489999999999,
+          "minimum": 0.643099,
+          "p25": 0.721624,
+          "p75": 1.4781980000000001
+        }
+      },
+      "window_count": 4
+    },
+    {
+      "amortized_window_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": 0.18348725,
+        "MASK_INDEX_REUSE_PER_LAYER_V1": 0.1646998125,
+        "REFERENCE_WINDOW_SCALAR": 0.19794974999999998
+      },
+      "case": "STREAM_LAYERS",
+      "fp64_sha256": "ed3a521ef0a9983fd0175f2984f929c71070712967325f6329620c8df83104bb",
+      "layers": 2,
+      "raw_samples": [
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.976897,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.678498,
+            "REFERENCE_WINDOW_SCALAR": 2.301597
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 0
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.530896,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.761398,
+            "REFERENCE_WINDOW_SCALAR": 1.714398
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 1
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.536398,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.399698,
+            "REFERENCE_WINDOW_SCALAR": 2.028097
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 2
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.525698,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.469598,
+            "REFERENCE_WINDOW_SCALAR": 1.605398
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 3
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.149097,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 2.392097,
+            "REFERENCE_WINDOW_SCALAR": 1.777597
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 4
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.672597,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.427498,
+            "REFERENCE_WINDOW_SCALAR": 2.089298
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 5
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.602498,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.424998,
+            "REFERENCE_WINDOW_SCALAR": 1.814898
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 6
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.611798,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.496098,
+            "REFERENCE_WINDOW_SCALAR": 1.810297
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 7
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.681698,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.308398,
+            "REFERENCE_WINDOW_SCALAR": 1.582998
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 8
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.573798,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.296399,
+            "REFERENCE_WINDOW_SCALAR": 1.872998
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 9
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.464698,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.195798,
+            "REFERENCE_WINDOW_SCALAR": 1.752598
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 10
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.805598,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.720197,
+            "REFERENCE_WINDOW_SCALAR": 2.353697
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 11
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.778297,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.323299,
+            "REFERENCE_WINDOW_SCALAR": 1.551098
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 12
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.391298,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.434998,
+            "REFERENCE_WINDOW_SCALAR": 1.355898
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 13
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.303998,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.311898,
+            "REFERENCE_WINDOW_SCALAR": 1.300599
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 14
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.286698,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 2.113997,
+            "REFERENCE_WINDOW_SCALAR": 1.363198
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 15
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.515997,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 2.230897,
+            "REFERENCE_WINDOW_SCALAR": 2.448997
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 16
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 2.886896,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 2.141797,
+            "REFERENCE_WINDOW_SCALAR": 2.764596
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 17
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.354098,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.112099,
+            "REFERENCE_WINDOW_SCALAR": 1.415098
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 18
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.077598,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.079499,
+            "REFERENCE_WINDOW_SCALAR": 1.135199
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 19
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.261499,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.399799,
+            "REFERENCE_WINDOW_SCALAR": 1.584198
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 20
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.112999,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.016198,
+            "REFERENCE_WINDOW_SCALAR": 1.167498
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 21
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.032899,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.228198,
+            "REFERENCE_WINDOW_SCALAR": 1.232099
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 22
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.071598,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.026098,
+            "REFERENCE_WINDOW_SCALAR": 1.176399
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 23
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.040399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.998098,
+            "REFERENCE_WINDOW_SCALAR": 1.087999
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 24
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.247599,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.958998,
+            "REFERENCE_WINDOW_SCALAR": 1.147499
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 25
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.086298,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.070998,
+            "REFERENCE_WINDOW_SCALAR": 1.120799
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 26
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.471098,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 0.979699,
+            "REFERENCE_WINDOW_SCALAR": 1.824798
+          },
+          "order": [
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1"
+          ],
+          "repeat": 27
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.079698,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.181299,
+            "REFERENCE_WINDOW_SCALAR": 1.050198
+          },
+          "order": [
+            "DEFERRED_HOST_PER_LAYER_V1",
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR"
+          ],
+          "repeat": 28
+        },
+        {
+          "ms": {
+            "DEFERRED_HOST_PER_LAYER_V1": 1.096399,
+            "MASK_INDEX_REUSE_PER_LAYER_V1": 1.072399,
+            "REFERENCE_WINDOW_SCALAR": 1.088098
+          },
+          "order": [
+            "MASK_INDEX_REUSE_PER_LAYER_V1",
+            "REFERENCE_WINDOW_SCALAR",
+            "DEFERRED_HOST_PER_LAYER_V1"
+          ],
+          "repeat": 29
+        }
+      ],
+      "timing_ms": {
+        "DEFERRED_HOST_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 2.886896,
+          "mean": 1.5409012333333334,
+          "median": 1.467898,
+          "minimum": 1.032899,
+          "p25": 1.108849,
+          "p75": 1.70584775
+        },
+        "MASK_INDEX_REUSE_PER_LAYER_V1": {
+          "count": 30,
+          "maximum": 2.392097,
+          "mean": 1.4083647666666668,
+          "median": 1.3175985,
+          "minimum": 0.958998,
+          "p25": 1.077724,
+          "p75": 1.541698
+        },
+        "REFERENCE_WINDOW_SCALAR": {
+          "count": 30,
+          "maximum": 2.764596,
+          "mean": 1.6172713,
+          "median": 1.5835979999999998,
+          "minimum": 1.050198,
+          "p25": 1.17417375,
+          "p75": 1.836848
+        }
+      },
+      "window_count": 4
+    }
+  ],
+  "cpu_approval": "NOT_CREATED",
+  "gpu": "NOT_RUN",
+  "input": {
+    "contiguous": true,
+    "dtype": "torch.float32",
+    "probability_bytes": 288,
+    "seed": 42,
+    "shape": [
+      1,
+      2,
+      6,
+      6
+    ]
+  },
+  "interop_threads": 1,
+  "layers": 2,
+  "limitations": "synthetic real PyTorch CPU attention; same tensor reused across 32 layers; compute times do not include a model/communication/owner/E2E; window mean is amortized, not isolated norm time; CPU clocks/affinity not pinned; no GPU gain inference; memory profiler excludes Python/allocator overhead",
+  "observers": [
+    {
+      "case": "NO_PADDING",
+      "component_inclusive_ms": {
+        "__bool__": {
+          "count": 30,
+          "maximum": 0.0211,
+          "mean": 0.0106,
+          "median": 0.0095,
+          "minimum": 0.0088,
+          "p25": 0.0093,
+          "p75": 0.010025
+        },
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.0427,
+          "mean": 0.0235633,
+          "median": 0.02155,
+          "minimum": 0.0201,
+          "p25": 0.020975,
+          "p75": 0.022175
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.07300000000000001,
+          "mean": 0.027343233333333335,
+          "median": 0.02465,
+          "minimum": 0.0228,
+          "p25": 0.0236,
+          "p75": 0.02515
+        },
+        "all": {
+          "count": 30,
+          "maximum": 0.08929999999999999,
+          "mean": 0.03141663333333333,
+          "median": 0.026099499999999998,
+          "minimum": 0.0249,
+          "p25": 0.025674999999999996,
+          "p75": 0.027975
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.1795,
+          "mean": 0.0777366,
+          "median": 0.06855,
+          "minimum": 0.0629,
+          "p25": 0.06467500000000001,
+          "p75": 0.07409925
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 2.811496,
+          "mean": 0.11548653333333334,
+          "median": 0.017750000000000002,
+          "minimum": 0.0159,
+          "p25": 0.017099999999999997,
+          "p75": 0.022375000000000003
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.0624,
+          "mean": 0.021433266666666666,
+          "median": 0.01645,
+          "minimum": 0.015499999999999998,
+          "p25": 0.0161,
+          "p75": 0.019700000000000002
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.193299,
+          "mean": 0.0708866,
+          "median": 0.0601,
+          "minimum": 0.057499999999999996,
+          "p25": 0.0585,
+          "p75": 0.065425
+        },
+        "item": {
+          "count": 30,
+          "maximum": 0.0361,
+          "mean": 0.010086633333333333,
+          "median": 0.008199999999999999,
+          "minimum": 0.0075,
+          "p25": 0.007899999999999999,
+          "p75": 0.0087
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.1845,
+          "mean": 0.05835323333333334,
+          "median": 0.04825,
+          "minimum": 0.0458,
+          "p25": 0.0471,
+          "p75": 0.053774999999999996
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.4971979999999999,
+          "mean": 0.0950998,
+          "median": 0.074,
+          "minimum": 0.07039899999999999,
+          "p25": 0.071875,
+          "p75": 0.0852
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.193899,
+          "mean": 0.09287323333333333,
+          "median": 0.07995000000000001,
+          "minimum": 0.0748,
+          "p25": 0.0771,
+          "p75": 0.09187499999999998
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.0856,
+          "mean": 0.0270533,
+          "median": 0.0233,
+          "minimum": 0.0223,
+          "p25": 0.022974750000000002,
+          "p75": 0.024800000000000003
+        }
+      },
+      "implementation": "REFERENCE_WINDOW_SCALAR",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4164,
+        "memory_events": 131,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 375.4180000000015,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 323.6290000000017,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 51.78899999999976,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 51.78899999999976,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 1642.1720000000023,
+            "name": "aten::to",
+            "net_cpu_bytes": 608,
+            "self_cpu_time_us": 292.9349999999995,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 1349.2370000000028,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 608,
+            "self_cpu_time_us": 1236.2770000000019,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 90.32599999999911,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 608,
+            "self_cpu_time_us": 90.32599999999911,
+            "self_net_cpu_bytes": 608
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 42.95600000000195,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 42.95600000000195,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 92.09800000000541,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 85.74200000000928,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 44,
+            "cpu_time_us": 44.81399999999121,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 44.81399999999121,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 38.9380000000001,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 33.53799999999683,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 938.4779999999919,
+            "name": "aten::arange",
+            "net_cpu_bytes": 576,
+            "self_cpu_time_us": 748.7839999999887,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 32.56600000000981,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 32.56600000000981,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 15.891999999998006,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 288,
+            "self_cpu_time_us": 15.891999999998006,
+            "self_net_cpu_bytes": 288
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 53.492999999994936,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 42.213999999992666,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 24.98099999999613,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 24.98099999999613,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 26.69000000000051,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 26.69000000000051,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 1794.9219999999968,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 1282.840999999993,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 30.22700000000077,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 22.239000000005035,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 466.8560000000034,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 421.00900000000183,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.525000000001455,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 12.394000000002052,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 14.997999999999593,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 14.997999999999593,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 149.78400000000147,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 26.677999999998065,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 95.50600000000122,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 70.36599999999453,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 23.41599999999744,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 23.41599999999744,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 11.749000000005253,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 11.749000000005253,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 12.768000000001848,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 12.768000000001848,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 437.42399999999907,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 430.1600000000053,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 10.670000000001892,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 10.670000000001892,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 46.64700000000266,
+            "name": "aten::is_nonzero",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.6450000000040745,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 49.02799999999661,
+            "name": "aten::item",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 40.24399999999878,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 8.783999999997832,
+            "name": "aten::_local_scalar_dense",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 8.783999999997832,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 48.45899999999892,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 45.01300000000083,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 247.15499999999884,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 134.00900000000001,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 82.84499999999753,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 69.09399999999368,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 73.27700000000004,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 34.63199999999779,
+            "self_net_cpu_bytes": -32
+          }
+        ],
+        "peak_above_preexisting_bytes": 1278,
+        "peak_live_tensor_bytes": 1566,
+        "preexisting_tensor_bytes": 288,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 4.295095,
+        "mean": 1.1841051,
+        "median": 0.959449,
+        "minimum": 0.878499,
+        "p25": 0.91399825,
+        "p75": 1.037849
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__bool__": 4,
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 8,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "item": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "sum": 4
+      }
+    },
+    {
+      "case": "NO_PADDING",
+      "component_inclusive_ms": {
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.111,
+          "mean": 0.03449666666666667,
+          "median": 0.033299999999999996,
+          "minimum": 0.0231,
+          "p25": 0.02515,
+          "p75": 0.037524999999999996
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.0683,
+          "mean": 0.036993333333333336,
+          "median": 0.03685,
+          "minimum": 0.0252,
+          "p25": 0.027125000000000003,
+          "p75": 0.041575
+        },
+        "all": {
+          "count": 30,
+          "maximum": 2.0498979999999998,
+          "mean": 0.11278326666666666,
+          "median": 0.0436,
+          "minimum": 0.0276,
+          "p25": 0.031675,
+          "p75": 0.05014999999999999
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.3126,
+          "mean": 0.11516666666666667,
+          "median": 0.10919999999999999,
+          "minimum": 0.0652,
+          "p25": 0.07442499999999999,
+          "p75": 0.1305
+        },
+        "cpu": {
+          "count": 30,
+          "maximum": 0.0079,
+          "mean": 0.004576666666666666,
+          "median": 0.0044,
+          "minimum": 0.003,
+          "p25": 0.0038,
+          "p75": 0.004975
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 0.0825,
+          "mean": 0.03301333333333333,
+          "median": 0.03145,
+          "minimum": 0.0174,
+          "p25": 0.022575,
+          "p75": 0.039225
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.13780000000000003,
+          "mean": 0.037026633333333336,
+          "median": 0.02935,
+          "minimum": 0.018199999999999997,
+          "p25": 0.0228,
+          "p75": 0.0448
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.21059999999999998,
+          "mean": 0.10357986666666667,
+          "median": 0.09775,
+          "minimum": 0.0646,
+          "p25": 0.0734,
+          "p75": 0.126025
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.1542,
+          "mean": 0.07992323333333333,
+          "median": 0.0784,
+          "minimum": 0.052199999999999996,
+          "p25": 0.05777475,
+          "p75": 0.09720000000000001
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.247199,
+          "mean": 0.11817646666666666,
+          "median": 0.1130995,
+          "minimum": 0.0753,
+          "p25": 0.087925,
+          "p75": 0.12672499999999998
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.295198,
+          "mean": 0.12813656666666667,
+          "median": 0.1221,
+          "minimum": 0.07840000000000001,
+          "p25": 0.0866,
+          "p75": 0.1311
+        },
+        "stack": {
+          "count": 30,
+          "maximum": 0.0753,
+          "mean": 0.040056633333333334,
+          "median": 0.0373995,
+          "minimum": 0.025500000000000002,
+          "p25": 0.032525,
+          "p75": 0.0464
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.1932,
+          "mean": 0.04250333333333333,
+          "median": 0.038099999999999995,
+          "minimum": 0.0254,
+          "p25": 0.028325,
+          "p75": 0.042325
+        },
+        "to": {
+          "count": 30,
+          "maximum": 0.0199,
+          "mean": 0.011479966666666666,
+          "median": 0.01145,
+          "minimum": 0.0073,
+          "p25": 0.008549999999999999,
+          "p75": 0.01325
+        },
+        "tolist": {
+          "count": 30,
+          "maximum": 0.0137,
+          "mean": 0.00689,
+          "median": 0.00635,
+          "minimum": 0.0038,
+          "p25": 0.0055,
+          "p75": 0.0075
+        }
+      },
+      "implementation": "DEFERRED_HOST_PER_LAYER_V1",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4296,
+        "memory_events": 139,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 27.37900000000002,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 15.212000000000046,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 12.166999999999973,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 12.166999999999973,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 11,
+            "cpu_time_us": 114.42099999999982,
+            "name": "aten::to",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 16.20900000000006,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 6,
+            "cpu_time_us": 98.21199999999976,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 41.10299999999995,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 6,
+            "cpu_time_us": 30.479999999999905,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 30.479999999999905,
+            "self_net_cpu_bytes": 640
+          },
+          {
+            "count": 10,
+            "cpu_time_us": 39.96899999999971,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 39.96899999999971,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 32.323999999999955,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 26.84800000000007,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 52,
+            "cpu_time_us": 46.78199999999981,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 46.78199999999981,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.30099999999993,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 21.35200000000009,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 126.01499999999976,
+            "name": "aten::arange",
+            "net_cpu_bytes": 576,
+            "self_cpu_time_us": 61.924999999999386,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 20.692000000000576,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 20.692000000000576,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 10.232000000000198,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 288,
+            "self_cpu_time_us": 10.232000000000198,
+            "self_net_cpu_bytes": 288
+          },
+          {
+            "count": 20,
+            "cpu_time_us": 71.06600000000014,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 54.75500000000011,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 21.51300000000026,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 21.51300000000026,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 21.589000000000055,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 21.589000000000055,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 135.75200000000018,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 31.69300000000044,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 26.18899999999951,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 19.073999999999387,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 68.20900000000006,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 36.46000000000049,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 18.408999999999764,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 11.01099999999974,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 9.661000000000172,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 9.661000000000172,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 107.38999999999976,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 26.894000000000233,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 50.48399999999958,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 32.071999999999434,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 21.443999999999846,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 21.443999999999846,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 11.371999999999844,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 11.371999999999844,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 12.384000000000128,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 12.384000000000128,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 43.05299999999977,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 36.82099999999991,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 9.693999999999619,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 9.693999999999619,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 82.50399999999979,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 79.01799999999969,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 148.197,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 27.709000000000515,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 79.3019999999998,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 65.39500000000021,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 81.88799999999969,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 40.05499999999972,
+            "self_net_cpu_bytes": -32
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 963.2420000000006,
+            "name": "aten::stack",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 921.2370000000003,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 16.670000000000073,
+            "name": "aten::cat",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 16.670000000000073,
+            "self_net_cpu_bytes": 100
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 2.8910000000000764,
+            "name": "aten::view",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 2.8910000000000764,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.5,
+            "name": "aten::resolve_conj",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.5,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.1610000000000582,
+            "name": "aten::resolve_neg",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.1610000000000582,
+            "self_net_cpu_bytes": 0
+          }
+        ],
+        "peak_above_preexisting_bytes": 1305,
+        "peak_live_tensor_bytes": 1593,
+        "preexisting_tensor_bytes": 288,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 4.668394,
+        "mean": 1.7815044333333334,
+        "median": 1.662248,
+        "minimum": 1.119599,
+        "p25": 1.22969875,
+        "p75": 1.86972225
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 8,
+        "cpu": 1,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "stack": 3,
+        "sum": 4,
+        "to": 1,
+        "tolist": 1
+      }
+    },
+    {
+      "case": "NO_PADDING",
+      "component_inclusive_ms": {
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.0925,
+          "mean": 0.033793333333333335,
+          "median": 0.032799999999999996,
+          "minimum": 0.019,
+          "p25": 0.0251,
+          "p75": 0.0373
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.1003,
+          "mean": 0.04344,
+          "median": 0.04245,
+          "minimum": 0.022900000000000004,
+          "p25": 0.031075,
+          "p75": 0.046175
+        },
+        "all": {
+          "count": 30,
+          "maximum": 0.053000000000000005,
+          "mean": 0.03874993333333333,
+          "median": 0.04005,
+          "minimum": 0.0235,
+          "p25": 0.0312,
+          "p75": 0.045525
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.0514,
+          "mean": 0.023176666666666665,
+          "median": 0.0208,
+          "minimum": 0.012,
+          "p25": 0.018549999999999997,
+          "p75": 0.025525
+        },
+        "cpu": {
+          "count": 30,
+          "maximum": 0.0056,
+          "mean": 0.0038466666666666666,
+          "median": 0.0041,
+          "minimum": 0.002,
+          "p25": 0.0031,
+          "p75": 0.0046
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 0.04819999999999999,
+          "mean": 0.027086633333333332,
+          "median": 0.02765,
+          "minimum": 0.0147,
+          "p25": 0.019750000000000004,
+          "p75": 0.032
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.06459999999999999,
+          "mean": 0.026589966666666666,
+          "median": 0.02595,
+          "minimum": 0.0148,
+          "p25": 0.01975,
+          "p75": 0.030199999999999998
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.3059,
+          "mean": 0.0971999,
+          "median": 0.09225,
+          "minimum": 0.052,
+          "p25": 0.07365000000000001,
+          "p75": 0.102825
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.1143,
+          "mean": 0.0727765,
+          "median": 0.0746995,
+          "minimum": 0.0451,
+          "p25": 0.056025,
+          "p75": 0.086725
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.156899,
+          "mean": 0.10413643333333333,
+          "median": 0.108,
+          "minimum": 0.0628,
+          "p25": 0.07747475,
+          "p75": 0.12442500000000001
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.1966,
+          "mean": 0.1162999,
+          "median": 0.11729999999999999,
+          "minimum": 0.0658,
+          "p25": 0.09015,
+          "p75": 0.13364925
+        },
+        "stack": {
+          "count": 30,
+          "maximum": 0.0713,
+          "mean": 0.03583323333333333,
+          "median": 0.03635,
+          "minimum": 0.0195,
+          "p25": 0.028425,
+          "p75": 0.04062475
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.104,
+          "mean": 0.03720333333333333,
+          "median": 0.0388,
+          "minimum": 0.0204,
+          "p25": 0.0255,
+          "p75": 0.04335
+        },
+        "to": {
+          "count": 30,
+          "maximum": 0.014,
+          "mean": 0.010806666666666668,
+          "median": 0.011800000000000001,
+          "minimum": 0.0063,
+          "p25": 0.0083,
+          "p75": 0.013125000000000001
+        },
+        "tolist": {
+          "count": 30,
+          "maximum": 0.0082,
+          "mean": 0.005253333333333333,
+          "median": 0.005350000000000001,
+          "minimum": 0.0028,
+          "p25": 0.00425,
+          "p75": 0.0062
+        }
+      },
+      "implementation": "MASK_INDEX_REUSE_PER_LAYER_V1",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4056,
+        "memory_events": 125,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 28.522000000000105,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 15.143000000000029,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 13.379000000000076,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 13.379000000000076,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 11,
+            "cpu_time_us": 352.48100000000045,
+            "name": "aten::to",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 14.079000000000121,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 6,
+            "cpu_time_us": 338.4020000000003,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 55.806999999999505,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 6,
+            "cpu_time_us": 143.23800000000074,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 640,
+            "self_cpu_time_us": 143.23800000000074,
+            "self_net_cpu_bytes": 640
+          },
+          {
+            "count": 10,
+            "cpu_time_us": 152.12799999999993,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 152.12799999999993,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 38.28700000000015,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 32.33400000000029,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 56,
+            "cpu_time_us": 45.38500000000056,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 45.38500000000056,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 43.74799999999959,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 37.73199999999906,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 2,
+            "cpu_time_us": 33.436000000000035,
+            "name": "aten::arange",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 15.192000000000007,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 11.832999999999743,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 11.832999999999743,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 3.2029999999999745,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 48,
+            "self_cpu_time_us": 3.2029999999999745,
+            "self_net_cpu_bytes": 48
+          },
+          {
+            "count": 20,
+            "cpu_time_us": 56.93299999999988,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 44.45299999999986,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.288999999999987,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 25.288999999999987,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.983999999999924,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 22.983999999999924,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 130.3309999999998,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 38.7769999999997,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 21.784999999999968,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 15.291000000000167,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 59.40900000000022,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 24.039000000000215,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.59900000000016,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 15.934000000000196,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 10.3599999999999,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 10.3599999999999,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 153.51600000000008,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 63.681000000000495,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 59.20099999999991,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 38.02400000000023,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.382999999999925,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 22.382999999999925,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 11.989999999999782,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 11.989999999999782,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 14.918999999999869,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 14.918999999999869,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 50.070000000000164,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 43.63900000000024,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 10.583999999999946,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 10.583999999999946,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 45.784000000000106,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 42.69999999999993,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 253.42599999999982,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 28.6429999999998,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 75.30099999999982,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 59.78999999999962,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 190.73400000000015,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 37.62300000000005,
+            "self_net_cpu_bytes": -32
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 54.45500000000038,
+            "name": "aten::stack",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 22.22700000000009,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 15.162999999999784,
+            "name": "aten::cat",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 15.162999999999784,
+            "self_net_cpu_bytes": 100
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 4.028000000000247,
+            "name": "aten::view",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 4.028000000000247,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 1.3550000000000182,
+            "name": "aten::resolve_conj",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 1.3550000000000182,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.2800000000002001,
+            "name": "aten::resolve_neg",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.2800000000002001,
+            "self_net_cpu_bytes": 0
+          }
+        ],
+        "peak_above_preexisting_bytes": 1353,
+        "peak_live_tensor_bytes": 1641,
+        "preexisting_tensor_bytes": 288,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 1.750297,
+        "mean": 1.3114717666666666,
+        "median": 1.395549,
+        "minimum": 0.770399,
+        "p25": 1.067873,
+        "p75": 1.521973
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 1,
+        "cpu": 1,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "stack": 3,
+        "sum": 4,
+        "to": 1,
+        "tolist": 1
+      }
+    },
+    {
+      "case": "PADDING_2D",
+      "component_inclusive_ms": {
+        "__and__": {
+          "count": 30,
+          "maximum": 0.140699,
+          "mean": 0.04927326666666667,
+          "median": 0.0429,
+          "minimum": 0.030400000000000003,
+          "p25": 0.035,
+          "p75": 0.053899999999999997
+        },
+        "__bool__": {
+          "count": 30,
+          "maximum": 0.08289899999999999,
+          "mean": 0.016296633333333334,
+          "median": 0.01265,
+          "minimum": 0.0085,
+          "p25": 0.009775,
+          "p75": 0.015425000000000001
+        },
+        "__iand__": {
+          "count": 30,
+          "maximum": 0.0574,
+          "mean": 0.027923299999999998,
+          "median": 0.026049999999999997,
+          "minimum": 0.0185,
+          "p25": 0.021425,
+          "p75": 0.033025
+        },
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.050099000000000005,
+          "mean": 0.026769933333333336,
+          "median": 0.0249,
+          "minimum": 0.0172,
+          "p25": 0.021125,
+          "p75": 0.0311
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.1568,
+          "mean": 0.03536993333333333,
+          "median": 0.0313,
+          "minimum": 0.0207,
+          "p25": 0.024075,
+          "p75": 0.038575
+        },
+        "all": {
+          "count": 30,
+          "maximum": 0.050300000000000004,
+          "mean": 0.03692996666666667,
+          "median": 0.036199999999999996,
+          "minimum": 0.025,
+          "p25": 0.029225,
+          "p75": 0.043899999999999995
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.205,
+          "mean": 0.09239990000000001,
+          "median": 0.09895,
+          "minimum": 0.058499999999999996,
+          "p25": 0.06944999999999998,
+          "p75": 0.10565
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 0.1167,
+          "mean": 0.028549933333333333,
+          "median": 0.027549999999999998,
+          "minimum": 0.015600000000000001,
+          "p25": 0.018924999999999997,
+          "p75": 0.03025
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.38310000000000005,
+          "mean": 0.036526633333333336,
+          "median": 0.02705,
+          "minimum": 0.0142,
+          "p25": 0.017975,
+          "p75": 0.028675
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.1317,
+          "mean": 0.0847833,
+          "median": 0.0839,
+          "minimum": 0.0548,
+          "p25": 0.065625,
+          "p75": 0.10015
+        },
+        "item": {
+          "count": 30,
+          "maximum": 0.0185,
+          "mean": 0.0110633,
+          "median": 0.010700000000000001,
+          "minimum": 0.006999999999999999,
+          "p25": 0.008525,
+          "p75": 0.01364975
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.195099,
+          "mean": 0.0766698,
+          "median": 0.06924999999999999,
+          "minimum": 0.0437,
+          "p25": 0.05157425,
+          "p75": 0.08732475
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.14730000000000001,
+          "mean": 0.0966033,
+          "median": 0.0904,
+          "minimum": 0.0648,
+          "p25": 0.077725,
+          "p75": 0.11725000000000001
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.3215,
+          "mean": 0.11769656666666667,
+          "median": 0.1112,
+          "minimum": 0.07100000000000001,
+          "p25": 0.081975,
+          "p75": 0.13225
+        },
+        "padding_mask_to": {
+          "count": 30,
+          "maximum": 0.0842,
+          "mean": 0.040013233333333335,
+          "median": 0.0382,
+          "minimum": 0.0263,
+          "p25": 0.02954925,
+          "p75": 0.047499999999999994
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.0422,
+          "mean": 0.031039999999999998,
+          "median": 0.028499999999999998,
+          "minimum": 0.020999999999999998,
+          "p25": 0.024374999999999997,
+          "p75": 0.039
+        }
+      },
+      "implementation": "REFERENCE_WINDOW_SCALAR",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4260,
+        "memory_events": 156,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 26.214000000000055,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 12.610999999999876,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 13.60300000000018,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 13.60300000000018,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 13,
+            "cpu_time_us": 226.3569999999998,
+            "name": "aten::to",
+            "net_cpu_bytes": 632,
+            "self_cpu_time_us": 15.852999999999952,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 210.50399999999985,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 632,
+            "self_cpu_time_us": 48.092999999999506,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 138.4850000000003,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 632,
+            "self_cpu_time_us": 138.4850000000003,
+            "self_net_cpu_bytes": 632
+          },
+          {
+            "count": 13,
+            "cpu_time_us": 35.24700000000007,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 35.24700000000007,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 53.65299999999996,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 44.06499999999977,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 60,
+            "cpu_time_us": 52.21600000000046,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 52.21600000000046,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 44.724999999999795,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 38.98299999999949,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 119.88499999999988,
+            "name": "aten::arange",
+            "net_cpu_bytes": 576,
+            "self_cpu_time_us": 57.64499999999998,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 19.398000000000707,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 19.398000000000707,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 10.055999999999813,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 288,
+            "self_cpu_time_us": 10.055999999999813,
+            "self_net_cpu_bytes": 288
+          },
+          {
+            "count": 20,
+            "cpu_time_us": 83.04400000000044,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 65.29300000000012,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 20.250999999999863,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 20.250999999999863,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 36.468999999999596,
+            "name": "aten::__and__",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 8.289999999999623,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 28.178999999999974,
+            "name": "aten::bitwise_and",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 28.178999999999974,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 192.90800000000036,
+            "name": "aten::__iand__",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.789000000000556,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 186.1189999999998,
+            "name": "aten::bitwise_and_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 186.1189999999998,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 23.732000000000312,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 23.732000000000312,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 99.43100000000027,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 30.731000000000222,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 22.87999999999988,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 15.542000000000257,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 35.835000000000264,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 11.271000000000186,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 13.243000000000052,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 6.472999999999502,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 9.9849999999999,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 9.9849999999999,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 99.14199999999948,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 23.038999999999646,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 49.62500000000068,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 30.842000000000553,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 21.637999999999465,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 21.637999999999465,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 9.860999999999876,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 9.860999999999876,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 10.813000000000102,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 10.813000000000102,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 38.91300000000001,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 33.40399999999977,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 8.497000000000298,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 8.497000000000298,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 15.980999999999995,
+            "name": "aten::is_nonzero",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.406000000000176,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 17.563000000000102,
+            "name": "aten::item",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 11.250000000000227,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 6.3129999999998745,
+            "name": "aten::_local_scalar_dense",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.3129999999998745,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 38.56600000000003,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 35.52199999999971,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 131.5640000000003,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 23.95400000000018,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 65.45799999999986,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 53.7170000000001,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 76.22400000000016,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 41.91300000000024,
+            "self_net_cpu_bytes": -32
+          }
+        ],
+        "peak_above_preexisting_bytes": 1284,
+        "peak_live_tensor_bytes": 1596,
+        "preexisting_tensor_bytes": 312,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 3.031296,
+        "mean": 1.6016947666666668,
+        "median": 1.487098,
+        "minimum": 0.985099,
+        "p25": 1.2348237499999999,
+        "p75": 1.8424230000000001
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__and__": 4,
+        "__bool__": 4,
+        "__iand__": 4,
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 8,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "item": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "padding_mask_to": 4,
+        "sum": 4
+      }
+    },
+    {
+      "case": "PADDING_2D",
+      "component_inclusive_ms": {
+        "__and__": {
+          "count": 30,
+          "maximum": 0.10800000000000001,
+          "mean": 0.039836533333333334,
+          "median": 0.03545,
+          "minimum": 0.030100000000000002,
+          "p25": 0.03309975,
+          "p75": 0.039725
+        },
+        "__iand__": {
+          "count": 30,
+          "maximum": 0.0351,
+          "mean": 0.023563333333333332,
+          "median": 0.0215,
+          "minimum": 0.019,
+          "p25": 0.020575,
+          "p75": 0.024550000000000002
+        },
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.0659,
+          "mean": 0.023059966666666668,
+          "median": 0.01975,
+          "minimum": 0.0172,
+          "p25": 0.018775,
+          "p75": 0.023575000000000002
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.054299999999999994,
+          "mean": 0.028786633333333332,
+          "median": 0.0249,
+          "minimum": 0.0208,
+          "p25": 0.023450000000000002,
+          "p75": 0.031849249999999996
+        },
+        "all": {
+          "count": 30,
+          "maximum": 0.0605,
+          "mean": 0.03231323333333333,
+          "median": 0.029349999999999998,
+          "minimum": 0.0258,
+          "p25": 0.027575,
+          "p75": 0.032
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.3025,
+          "mean": 0.08202323333333333,
+          "median": 0.0676495,
+          "minimum": 0.058399999999999994,
+          "p25": 0.06272499999999999,
+          "p75": 0.0866
+        },
+        "cpu": {
+          "count": 30,
+          "maximum": 0.025,
+          "mean": 0.0041466666666666666,
+          "median": 0.0032,
+          "minimum": 0.0022,
+          "p25": 0.0026,
+          "p75": 0.0038
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 0.0834,
+          "mean": 0.023366633333333334,
+          "median": 0.0182,
+          "minimum": 0.015399999999999999,
+          "p25": 0.016649999999999998,
+          "p75": 0.0228
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.054199,
+          "mean": 0.023179966666666666,
+          "median": 0.0191,
+          "minimum": 0.015199999999999998,
+          "p25": 0.016475,
+          "p75": 0.026574999999999998
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.1414,
+          "mean": 0.07126326666666667,
+          "median": 0.06420000000000001,
+          "minimum": 0.0557,
+          "p25": 0.059925,
+          "p75": 0.072325
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.1303,
+          "mean": 0.0599332,
+          "median": 0.0531,
+          "minimum": 0.045200000000000004,
+          "p25": 0.04845000000000001,
+          "p75": 0.065175
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.2234,
+          "mean": 0.08413323333333333,
+          "median": 0.073,
+          "minimum": 0.06609899999999999,
+          "p25": 0.070575,
+          "p75": 0.079575
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.22280000000000003,
+          "mean": 0.0935432,
+          "median": 0.08059999999999999,
+          "minimum": 0.0706,
+          "p25": 0.0773,
+          "p75": 0.093525
+        },
+        "padding_mask_to": {
+          "count": 30,
+          "maximum": 0.0795,
+          "mean": 0.0355233,
+          "median": 0.0303,
+          "minimum": 0.0267,
+          "p25": 0.02835,
+          "p75": 0.034925000000000005
+        },
+        "stack": {
+          "count": 30,
+          "maximum": 0.0717,
+          "mean": 0.03171996666666667,
+          "median": 0.025249999999999998,
+          "minimum": 0.0209,
+          "p25": 0.023399999999999997,
+          "p75": 0.035425
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.09119999999999999,
+          "mean": 0.027566666666666666,
+          "median": 0.0235,
+          "minimum": 0.0211,
+          "p25": 0.022975,
+          "p75": 0.025949999999999997
+        },
+        "to": {
+          "count": 30,
+          "maximum": 0.0159,
+          "mean": 0.007549966666666666,
+          "median": 0.0067,
+          "minimum": 0.0058,
+          "p25": 0.0063,
+          "p75": 0.00709925
+        },
+        "tolist": {
+          "count": 30,
+          "maximum": 0.0123,
+          "mean": 0.005393333333333333,
+          "median": 0.0044,
+          "minimum": 0.0031,
+          "p25": 0.0038749999999999995,
+          "p75": 0.006625
+        }
+      },
+      "implementation": "DEFERRED_HOST_PER_LAYER_V1",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4392,
+        "memory_events": 164,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 22.309999999999775,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 11.429999999999723,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 10.880000000000052,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 10.880000000000052,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 15,
+            "cpu_time_us": 165.33699999999993,
+            "name": "aten::to",
+            "net_cpu_bytes": 664,
+            "self_cpu_time_us": 16.6790000000002,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 10,
+            "cpu_time_us": 148.65799999999973,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 664,
+            "self_cpu_time_us": 49.595999999999094,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 10,
+            "cpu_time_us": 73.58200000000016,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 664,
+            "self_cpu_time_us": 73.58200000000016,
+            "self_net_cpu_bytes": 664
+          },
+          {
+            "count": 14,
+            "cpu_time_us": 35.12900000000013,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 35.12900000000013,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 43.03899999999982,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 35.97099999999966,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 68,
+            "cpu_time_us": 46.56700000000018,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 46.56700000000018,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 39.143999999999664,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 33.221999999999525,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 136.918,
+            "name": "aten::arange",
+            "net_cpu_bytes": 576,
+            "self_cpu_time_us": 51.24900000000048,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 16,
+            "cpu_time_us": 16.362999999999488,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 16.362999999999488,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 24.353999999999928,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 288,
+            "self_cpu_time_us": 24.353999999999928,
+            "self_net_cpu_bytes": 288
+          },
+          {
+            "count": 28,
+            "cpu_time_us": 98.47500000000014,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 81.82299999999987,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.152999999999793,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 22.152999999999793,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 31.476000000000113,
+            "name": "aten::__and__",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 6.059000000000424,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.41699999999969,
+            "name": "aten::bitwise_and",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 25.41699999999969,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 20.44900000000007,
+            "name": "aten::__iand__",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.017000000000053,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 14.432000000000016,
+            "name": "aten::bitwise_and_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 14.432000000000016,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 16.77599999999984,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 16.77599999999984,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 83.6460000000003,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 25.56100000000049,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 17.954000000000065,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 12.317000000000235,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 31.36199999999974,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 10.279999999999973,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 11.433000000000106,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 5.66900000000021,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 8.769000000000005,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 8.769000000000005,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 87.05199999999991,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 19.774,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 44.00400000000013,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 27.485000000000127,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 18.727999999999952,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 18.727999999999952,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 8.531999999999925,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 8.531999999999925,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 10.012999999999806,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 10.012999999999806,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 34.138999999999896,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 29.264000000000237,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 8.271999999999252,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 8.271999999999252,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 39.149000000000115,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 36.164000000000215,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 111.15700000000004,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 25.380999999999972,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 88.7529999999997,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 77.05300000000022,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 56.57100000000014,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 27.46000000000015,
+            "self_net_cpu_bytes": -32
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 35.049000000000206,
+            "name": "aten::stack",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 13.736999999999625,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 8.83600000000024,
+            "name": "aten::cat",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 8.83600000000024,
+            "self_net_cpu_bytes": 100
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 1.3920000000000528,
+            "name": "aten::view",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 1.3920000000000528,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.46699999999987085,
+            "name": "aten::resolve_conj",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.46699999999987085,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.21499999999991815,
+            "name": "aten::resolve_neg",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.21499999999991815,
+            "self_net_cpu_bytes": 0
+          }
+        ],
+        "peak_above_preexisting_bytes": 1311,
+        "peak_live_tensor_bytes": 1623,
+        "preexisting_tensor_bytes": 312,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 2.354897,
+        "mean": 1.3545583333333333,
+        "median": 1.207498,
+        "minimum": 1.040398,
+        "p25": 1.138524,
+        "p75": 1.421898
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__and__": 4,
+        "__iand__": 4,
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 8,
+        "cpu": 1,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "padding_mask_to": 4,
+        "stack": 3,
+        "sum": 4,
+        "to": 1,
+        "tolist": 1
+      }
+    },
+    {
+      "case": "PADDING_2D",
+      "component_inclusive_ms": {
+        "__and__": {
+          "count": 30,
+          "maximum": 0.1063,
+          "mean": 0.0359733,
+          "median": 0.02995,
+          "minimum": 0.0281,
+          "p25": 0.0288,
+          "p75": 0.035625
+        },
+        "__iand__": {
+          "count": 30,
+          "maximum": 0.0557,
+          "mean": 0.0244833,
+          "median": 0.021699999999999997,
+          "minimum": 0.0201,
+          "p25": 0.0208,
+          "p75": 0.026750000000000003
+        },
+        "__invert__": {
+          "count": 30,
+          "maximum": 0.049699999999999994,
+          "mean": 0.0223666,
+          "median": 0.02035,
+          "minimum": 0.0184,
+          "p25": 0.019475,
+          "p75": 0.023725
+        },
+        "__le__": {
+          "count": 30,
+          "maximum": 0.0499,
+          "mean": 0.02990656666666667,
+          "median": 0.02765,
+          "minimum": 0.0254,
+          "p25": 0.02615,
+          "p75": 0.032275
+        },
+        "all": {
+          "count": 30,
+          "maximum": 0.2356,
+          "mean": 0.041836566666666665,
+          "median": 0.028650000000000002,
+          "minimum": 0.0265,
+          "p25": 0.027175,
+          "p75": 0.03539925
+        },
+        "arange": {
+          "count": 30,
+          "maximum": 0.0494,
+          "mean": 0.019566633333333333,
+          "median": 0.0169,
+          "minimum": 0.0133,
+          "p25": 0.01465,
+          "p75": 0.020125000000000004
+        },
+        "cpu": {
+          "count": 30,
+          "maximum": 0.0085,
+          "mean": 0.0034933333333333335,
+          "median": 0.0029,
+          "minimum": 0.0021,
+          "p25": 0.00265,
+          "p75": 0.003575
+        },
+        "detach": {
+          "count": 30,
+          "maximum": 0.041499999999999995,
+          "mean": 0.020086633333333333,
+          "median": 0.018099999999999998,
+          "minimum": 0.015799999999999998,
+          "p25": 0.016675,
+          "p75": 0.0203
+        },
+        "double": {
+          "count": 30,
+          "maximum": 0.05,
+          "mean": 0.020226633333333334,
+          "median": 0.0177,
+          "minimum": 0.015600000000000001,
+          "p25": 0.016825000000000003,
+          "p75": 0.020275
+        },
+        "isfinite": {
+          "count": 30,
+          "maximum": 0.11069999999999999,
+          "mean": 0.07152326666666667,
+          "median": 0.0645,
+          "minimum": 0.0585,
+          "p25": 0.062074750000000005,
+          "p75": 0.07997425
+        },
+        "masked_fill": {
+          "count": 30,
+          "maximum": 0.0771,
+          "mean": 0.05684666666666666,
+          "median": 0.0537,
+          "minimum": 0.0484,
+          "p25": 0.0508,
+          "p75": 0.062375
+        },
+        "mean": {
+          "count": 30,
+          "maximum": 0.1409,
+          "mean": 0.0834432,
+          "median": 0.07515,
+          "minimum": 0.0706,
+          "p25": 0.072325,
+          "p75": 0.091625
+        },
+        "norm": {
+          "count": 30,
+          "maximum": 0.358,
+          "mean": 0.09886323333333333,
+          "median": 0.08105000000000001,
+          "minimum": 0.07419999999999999,
+          "p25": 0.076875,
+          "p75": 0.100575
+        },
+        "padding_mask_to": {
+          "count": 30,
+          "maximum": 0.0374,
+          "mean": 0.01086,
+          "median": 0.00925,
+          "minimum": 0.008,
+          "p25": 0.008575,
+          "p75": 0.011
+        },
+        "stack": {
+          "count": 30,
+          "maximum": 0.07769999999999999,
+          "mean": 0.030573299999999998,
+          "median": 0.025849999999999998,
+          "minimum": 0.022299,
+          "p25": 0.024,
+          "p75": 0.030950000000000002
+        },
+        "sum": {
+          "count": 30,
+          "maximum": 0.042800000000000005,
+          "mean": 0.025399966666666666,
+          "median": 0.023649999999999997,
+          "minimum": 0.0222,
+          "p25": 0.0228,
+          "p75": 0.027999999999999997
+        },
+        "to": {
+          "count": 30,
+          "maximum": 0.0237,
+          "mean": 0.008403333333333334,
+          "median": 0.0071,
+          "minimum": 0.0065,
+          "p25": 0.0069,
+          "p75": 0.007824999999999999
+        },
+        "tolist": {
+          "count": 30,
+          "maximum": 0.0212,
+          "mean": 0.00501,
+          "median": 0.0039,
+          "minimum": 0.0031,
+          "p25": 0.0033,
+          "p75": 0.0055
+        }
+      },
+      "implementation": "MASK_INDEX_REUSE_PER_LAYER_V1",
+      "memory": {
+        "cumulative_created_tensor_bytes": 4134,
+        "memory_events": 144,
+        "operators": [
+          {
+            "count": 5,
+            "cpu_time_us": 23.29099999999994,
+            "name": "aten::detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 10.706999999999823,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 12.584000000000117,
+            "name": "detach",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 12.584000000000117,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 88.22100000000012,
+            "name": "aten::to",
+            "net_cpu_bytes": 646,
+            "self_cpu_time_us": 13.118000000000052,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 7,
+            "cpu_time_us": 75.10300000000007,
+            "name": "aten::_to_copy",
+            "net_cpu_bytes": 646,
+            "self_cpu_time_us": 34.27000000000021,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 7,
+            "cpu_time_us": 19.099000000000046,
+            "name": "aten::empty_strided",
+            "net_cpu_bytes": 646,
+            "self_cpu_time_us": 19.099000000000046,
+            "self_net_cpu_bytes": 646
+          },
+          {
+            "count": 11,
+            "cpu_time_us": 34.23299999999972,
+            "name": "aten::copy_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 34.23299999999972,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 5,
+            "cpu_time_us": 34.48500000000013,
+            "name": "aten::select",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 28.756000000000085,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 69,
+            "cpu_time_us": 53.24500000000029,
+            "name": "aten::as_strided",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 53.24500000000029,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 56.730000000000416,
+            "name": "aten::slice",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 46.90899999999999,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 2,
+            "cpu_time_us": 31.452999999999975,
+            "name": "aten::arange",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 15.477999999999952,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 9,
+            "cpu_time_us": 13.56000000000023,
+            "name": "aten::empty",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 13.56000000000023,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 2.3380000000000223,
+            "name": "aten::resize_",
+            "net_cpu_bytes": 48,
+            "self_cpu_time_us": 2.3380000000000223,
+            "self_net_cpu_bytes": 48
+          },
+          {
+            "count": 28,
+            "cpu_time_us": 78.16199999999964,
+            "name": "aten::unsqueeze",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 60.868000000000336,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.053000000000054,
+            "name": "aten::le",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 25.053000000000054,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 32.840999999999894,
+            "name": "aten::__and__",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 7.746999999999957,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 25.093999999999937,
+            "name": "aten::bitwise_and",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 25.093999999999937,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.803999999999974,
+            "name": "aten::__iand__",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 6.708999999999946,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 16.095000000000027,
+            "name": "aten::bitwise_and_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 16.095000000000027,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 19.42800000000011,
+            "name": "aten::bitwise_not",
+            "net_cpu_bytes": 72,
+            "self_cpu_time_us": 19.42800000000011,
+            "self_net_cpu_bytes": 72
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 136.3750000000001,
+            "name": "aten::masked_fill",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 61.13599999999997,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 25.579000000000292,
+            "name": "aten::expand",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 18.37300000000016,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 40.51099999999997,
+            "name": "aten::clone",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 12.509999999999877,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 15.50200000000018,
+            "name": "aten::empty_like",
+            "net_cpu_bytes": 1152,
+            "self_cpu_time_us": 6.950000000000159,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 9.148999999999887,
+            "name": "aten::masked_fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 9.148999999999887,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 101.3330000000002,
+            "name": "aten::isfinite",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 22.595000000000255,
+            "self_net_cpu_bytes": -1440
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 50.383000000000266,
+            "name": "aten::abs",
+            "net_cpu_bytes": 2304,
+            "self_cpu_time_us": 31.070999999999913,
+            "self_net_cpu_bytes": 1152
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 22.148999999999887,
+            "name": "aten::ne",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 22.148999999999887,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 10.703999999999837,
+            "name": "aten::eq",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 10.703999999999837,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 11.717000000000098,
+            "name": "aten::mul",
+            "net_cpu_bytes": 144,
+            "self_cpu_time_us": 11.717000000000098,
+            "self_net_cpu_bytes": 144
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 38.731000000000336,
+            "name": "aten::all",
+            "net_cpu_bytes": 4,
+            "self_cpu_time_us": 32.39500000000055,
+            "self_net_cpu_bytes": 4
+          },
+          {
+            "count": 12,
+            "cpu_time_us": 8.925999999999817,
+            "name": "aten::fill_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 8.925999999999817,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 41.396999999999935,
+            "name": "aten::linalg_vector_norm",
+            "net_cpu_bytes": 192,
+            "self_cpu_time_us": 37.773000000000025,
+            "self_net_cpu_bytes": 192
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 118.85599999999977,
+            "name": "aten::mean",
+            "net_cpu_bytes": 96,
+            "self_cpu_time_us": 25.042999999999665,
+            "self_net_cpu_bytes": 96
+          },
+          {
+            "count": 8,
+            "cpu_time_us": 67.32999999999993,
+            "name": "aten::sum",
+            "net_cpu_bytes": 32,
+            "self_cpu_time_us": 55.168999999999414,
+            "self_net_cpu_bytes": 32
+          },
+          {
+            "count": 4,
+            "cpu_time_us": 61.85599999999988,
+            "name": "aten::div_",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 30.09199999999987,
+            "self_net_cpu_bytes": -32
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 39.95199999999977,
+            "name": "aten::stack",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 15.809000000000196,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 3,
+            "cpu_time_us": 9.592999999999847,
+            "name": "aten::cat",
+            "net_cpu_bytes": 100,
+            "self_cpu_time_us": 9.592999999999847,
+            "self_net_cpu_bytes": 100
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 1.47199999999998,
+            "name": "aten::view",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 1.47199999999998,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.6539999999999964,
+            "name": "aten::resolve_conj",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.6539999999999964,
+            "self_net_cpu_bytes": 0
+          },
+          {
+            "count": 1,
+            "cpu_time_us": 0.16999999999984539,
+            "name": "aten::resolve_neg",
+            "net_cpu_bytes": 0,
+            "self_cpu_time_us": 0.16999999999984539,
+            "self_net_cpu_bytes": 0
+          }
+        ],
+        "peak_above_preexisting_bytes": 1359,
+        "peak_live_tensor_bytes": 1671,
+        "preexisting_tensor_bytes": 312,
+        "scope": "one instrumented CPU layer; torch tensor allocations only; cumulative allocation traffic is not peak; not process RSS or GPU VRAM"
+      },
+      "observed_wall_ms": {
+        "count": 30,
+        "maximum": 2.011397,
+        "mean": 1.1983452,
+        "median": 1.106749,
+        "minimum": 0.960498,
+        "p25": 1.00799875,
+        "p75": 1.26757375
+      },
+      "observer_scope": "30 separate patched observations; wall includes patch install/restore; component times include timer/wrapper cost and may nest; profiler is separate",
+      "python_api_counts": {
+        "__and__": 4,
+        "__iand__": 4,
+        "__invert__": 4,
+        "__le__": 4,
+        "all": 4,
+        "arange": 1,
+        "cpu": 1,
+        "detach": 5,
+        "double": 5,
+        "isfinite": 4,
+        "masked_fill": 4,
+        "mean": 4,
+        "norm": 4,
+        "padding_mask_to": 1,
+        "stack": 3,
+        "sum": 4,
+        "to": 1,
+        "tolist": 1
+      }
+    }
+  ],
+  "repeats": 30,
+  "schema": "D5_L2E_NATIVE_CPU_COMPUTE_BENCHMARK_V1",
+  "source_files_sha256": {
+    "scripts/162_r5_d5_impact_compute_cpu.py": "f47b086635f7d0a73be1962aed774004798ac4ae9e7156ddb3143121716f7c52",
+    "src/semcache/cache/attention_impact.py": "831b2b220b55a409f96725c7d5be5c3a9b223b76d124ad8d8231fd617a548ee5",
+    "src/semcache/edgelora/r5_d5_impact.py": "dbd5c12c69bdb8e383e881fccb51c22a65dced43da0d1e7203354f1872f0d758",
+    "src/semcache/edgelora/r5_d5_impact_compute.py": "6fd720d16698d6f13241980ee250e796f6c2ff2e76fd2c0b7a5ea915461254aa",
+    "src/semcache/edgelora/r5_subsequence_generation.py": "01f0a31374f1bd83ee30ac951f9e2ffe428445a774bfa1861bc494f08a017fd4"
+  },
+  "source_head": "e0b2d37f67b958ba28995b3639d140139c0b7b49",
+  "threads": 1,
+  "versions": {
+    "numpy": "2.2.6",
+    "torch": "2.14.1+cpu",
+    "transformers": "4.57.6"
+  },
+  "warmup": 3
+}

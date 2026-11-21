@@ -1,0 +1,9 @@
+{
+  "approval_scope": "DEVELOPMENT_NOT_GPU_APPROVED",
+  "branch": "exp/d5-l1-l5-lightperf",
+  "commit": "e0b2d37f67b958ba28995b3639d140139c0b7b49",
+  "content_fingerprint": "92123867f5d4b553af2e1d152e08c92467f89a5cd5afe8cd9c0ab3d5c613d2ed",
+  "root": "/home/songsong/GP_semcache_lightperf",
+  "strict_baseline": "4916836ce328e119f3a8d85c6c1afc7cf8d363e5",
+  "tracked_dirty": true
+}

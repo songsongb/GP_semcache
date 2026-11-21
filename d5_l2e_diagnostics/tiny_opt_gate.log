@@ -1,0 +1,7 @@
+test_native_integrity_failure_deadline_and_impact_abort_cleanup (test_r5_d5_impact_compute.TinyOPTParity) ... ok
+test_three_way_real_cpu_logits_tokens_policy_integrity_and_metadata (test_r5_d5_impact_compute.TinyOPTParity) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 66.943s
+
+OK

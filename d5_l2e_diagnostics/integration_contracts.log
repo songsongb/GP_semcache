@@ -1,0 +1,22 @@
+test_explicit_selector_default_and_approval_modules_preserve_l2c (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_paired_review_supports_l2c_l2e_but_rejects_pooling_variants (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_resource_reserve_is_additive_and_can_only_tighten_bounds (test_r5_d5_impact_compute.IntegrationContracts) ... ok
+test_approval_requires_new_native_module_only_for_candidate (test_r5_d5_impact.Contracts) ... ok
+test_empty_and_oversized_staging_are_bounded_without_torch (test_r5_d5_impact.Contracts) ... ok
+test_existing_probability_and_working_set_guards_remain (test_r5_d5_impact.Contracts) ... ok
+test_invalid_reduction_never_commits_layer_or_impacts (test_r5_d5_impact.Contracts) ... ok
+test_policy_trace_fixture_runs_real_chu_pbr_and_eviction (test_r5_d5_impact.Contracts) ... ok
+test_reference_remains_default_and_candidate_is_explicit (test_r5_d5_impact.Contracts) ... ok
+test_resource_reserve_tightens_bounds_without_mutating_reference (test_r5_d5_impact.Contracts) ... ok
+test_scalar_batch_does_not_call_row_precompute_or_prefix_sum (test_r5_d5_impact.Contracts) ... ok
+test_streaming_keeps_original_layer_accumulation_and_record_order (test_r5_d5_impact.Contracts) ... ok
+test_changed_impact_policy_or_tokens_fails_parity (test_r5_d5_impact.ReviewContracts) ... ok
+test_full_and_exact_different_implementations_are_not_pooled (test_r5_d5_impact.ReviewContracts) ... ok
+test_identity_mismatch_and_failed_integrity_never_pass (test_r5_d5_impact.ReviewContracts) ... ok
+test_official_verifier_failure_prevents_output (test_r5_d5_impact.ReviewContracts) ... ok
+test_pair_reports_bounded_parity_not_full_fidelity (test_r5_d5_impact.ReviewContracts) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.113s
+
+OK
