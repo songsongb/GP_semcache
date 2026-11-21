@@ -1,0 +1,71 @@
+{
+  "authoritative_benchmark": "d5_l2d_diagnostics/cpu_profile_serial.json",
+  "branch": "exp/d5-l1-l5-lightperf",
+  "candidate": null,
+  "commit": "NOT_CREATED",
+  "date": "2026-11-21",
+  "exploratory_benchmarks": [
+    "d5_l2d_diagnostics/cpu_profile.json",
+    "d5_l2d_diagnostics/cpu_profile_final.json"
+  ],
+  "files_sha256": {
+    "d5_l2d_diagnostics/baseline_tests.log": "faa7a5c6e09a6b07a301fe6fb5dcb310672b7a76dda5cccc35b6ff1bf4d91288",
+    "d5_l2d_diagnostics/baseline_tests_loopback.log": "983a16d4f1b0f48dfb84056b7013ac7644a6b7a7cac5cd73549c0c15e104e21b",
+    "d5_l2d_diagnostics/cpu_profile.json": "fd88d96c3e41e96cfa164383babdce1ffb73e9618521365f464c83ec5754f6c3",
+    "d5_l2d_diagnostics/cpu_profile_final.json": "d4bfba7d79a55a9c15dd90aef1747741b076939dddf0073771d76d32fb6c8749",
+    "d5_l2d_diagnostics/cpu_profile_serial.json": "c396e1c2c34efc77637f0b24416b52c9398919bc2d520e3dbe575fb9493d33bf",
+    "d5_l2d_diagnostics/final_regression.log": "e4fe4af850bf44681d9df8d2dcec2202994552d183b0ef93c59342130212241d",
+    "d5_l2d_diagnostics/final_regression_complete.log": "695871ad50024afec1d50a0d6a808580d5cc51f66da5806fa777b48fc7c65173",
+    "d5_l2d_diagnostics/owner_tests.log": "99ae25e70ca7672701d6773cd83fba1c9d95472a760d660442963e04514d14d3",
+    "d5_l2d_diagnostics/owner_tests_final.log": "57377a5f468eae3a26af398d9ee6ee9898f6572bb3eb60574144984d4f2a937e",
+    "d5_l2d_diagnostics/owner_tests_fixed.log": "6629f8a2aa6c31b43f5a113720545435bb9dc2bc643b7db5f0f62786867c1fab",
+    "d5_l2d_diagnostics/owner_tests_v2.log": "5d86502fdd0044f678177f34d216875235f5229d94488fd30bfe184a8d318964",
+    "docs/D5_L2D_OWNER_OPTIMIZATION_REVIEW.md": "833f11a69aef4b143145ae024470fa0210bbb5296158f2054d6a79d9c81c45b6",
+    "scripts/161_r5_d5_owner_diagnostics.py": "56d0468c95f2b0bd0359fab261a4dfe0122bf380e0a7b826636ba5bcfdbf1c96",
+    "src/semcache/edgelora/r5_d5_owner_diagnostics.py": "43f987863082ac72e4dcd15ca7eb15fbb6ed2e313071bcd1447eeb74c45b0533",
+    "tests/test_r5_d5_owner_diagnostics.py": "b88ed7abbb2480aed9e7b36d20857e695ed0f863afa5cc29625d843d5e8681a1"
+  },
+  "gpu": "NOT_RUN",
+  "head": "53407e74f941509fa0b565386b5b0a9b82aaab23",
+  "note": "Initial sandbox and harness development failure logs retained; authoritative test results are explicitly identified above. Hashes are local provenance, not official receipt/approval bindings.",
+  "official_cpu_approval": "NOT_CREATED",
+  "original_untracked": [
+    "d5_l2b_inputs.tar.gz",
+    "results/r5/"
+  ],
+  "packages": "NOT_INSTALLED",
+  "push": "NOT_RUN",
+  "remote": "NOT_ACCESSED",
+  "schema": "D5_L2D_LOCAL_VERIFICATION_V1",
+  "slurm": "NOT_SUBMITTED",
+  "status": "BLOCKED_NATIVE_CPU_APPROVAL",
+  "strict_baseline": "4916836ce328e119f3a8d85c6c1afc7cf8d363e5",
+  "tests": {
+    "baseline": {
+      "errors": 0,
+      "failures": 13,
+      "log": "baseline_tests_loopback.log",
+      "passed": 148,
+      "skipped": 7,
+      "total": 168
+    },
+    "final": {
+      "errors": 0,
+      "failures": 13,
+      "log": "final_regression_complete.log",
+      "passed": 210,
+      "skipped": 8,
+      "total": 231
+    },
+    "owner": {
+      "errors": 0,
+      "failures": 0,
+      "log": "owner_tests_v2.log",
+      "passed": 21,
+      "skipped": 0,
+      "total": 21
+    }
+  },
+  "tracked_files_unchanged": true,
+  "unresolved": "Native CPU dependencies absent: 13 original assertion failures and 8 original conditional skips; no native/GPU parity or performance approval"
+}
