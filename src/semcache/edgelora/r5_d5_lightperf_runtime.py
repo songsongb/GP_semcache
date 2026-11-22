@@ -456,8 +456,9 @@ def protected(p, experiment, cpu_audit):
 
 
 def launch_scope(p, condition, source_commit, expected_gpu_uuid, approximate, extended, continuous_replay=False):
+    # The dynamic PyTorch probe can omit GPU-; use the execution matcher's format contract.
     require(condition in CONDITIONS and source_commit == p['source']['commit'] and
-            isinstance(expected_gpu_uuid, str) and expected_gpu_uuid.startswith('GPU-'), 'condition/reviewed source/GPU UUID required')
+            gpu_uuid_matches(expected_gpu_uuid, expected_gpu_uuid), 'condition/reviewed source/GPU UUID required')
     require(condition != CONDITIONS[2] or approximate, 'APPROX explicit opt-in required')
     require(extended or p['count'] == 5 and p['performance_knobs'] == knobs(), '20/50 or L3/L4 require separate extended experiment approval')
     if replay_enabled(p):

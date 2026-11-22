@@ -193,6 +193,26 @@ class GPUUUIDValidation(unittest.TestCase):
     UUID = '880f065c-37fc-f142-05e1-f043a8fb49ff'
     OTHER = '880f065c-37fc-f142-05e1-f043a8fb49fe'
 
+    def test_launch_and_execution_accept_same_uuid_with_either_prefix(self):
+        p = dict(count=5, performance_knobs=knobs(), source=dict(commit='current'))
+        for actual in (self.UUID, 'GPU-' + self.UUID):
+            for expected in (self.UUID, 'GPU-' + self.UUID):
+                for condition in CONDITIONS:
+                    with self.subTest(actual=actual, expected=expected, condition=condition):
+                        runtime.launch_scope(p, condition, 'current', expected,
+                                             condition == CONDITIONS[2], False)
+                        runtime.validate_execution_gpu(dict(uuid=actual), expected, device_count=1,
+                                                       free=12 * 2**30, max_position_embeddings=2048)
+
+    def test_launch_rejects_malformed_expected_uuid(self):
+        p = dict(count=5, performance_knobs=knobs(), source=dict(commit='current'))
+        for value in (None, '', 'GPU-TEST', 'GPU-', 'UNAVAILABLE', 123, self.UUID.encode(),
+                      'GPU-' + self.UUID[:-1] + 'z', self.UUID.replace('-', ''),
+                      '{' + self.UUID + '}', 'urn:uuid:' + self.UUID, ' ' + self.UUID,
+                      self.UUID + '\n', 'gpu-' + self.UUID, 'GPU-GPU-' + self.UUID):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                runtime.launch_scope(p, CONDITIONS[0], 'current', value, False, False)
+
     def test_same_uuid_with_and_without_prefix(self):
         for actual, expected in ((self.UUID, 'GPU-' + self.UUID), ('GPU-' + self.UUID, self.UUID),
                                  (self.UUID, self.UUID), ('GPU-' + self.UUID, 'GPU-' + self.UUID),
@@ -202,9 +222,12 @@ class GPUUUIDValidation(unittest.TestCase):
 
     def test_different_uuid_rejected(self):
         self.assertFalse(runtime.gpu_uuid_matches(self.UUID, 'GPU-' + self.OTHER))
-        with self.assertRaisesRegex(ValueError, 'GPU UUID/device/context/12GiB'):
-            runtime.validate_execution_gpu(dict(uuid=self.UUID), 'GPU-' + self.OTHER,
-                device_count=1, free=18 * 2**30, max_position_embeddings=2048)
+        for actual in (self.UUID, 'GPU-' + self.UUID):
+            for expected in (self.OTHER, 'GPU-' + self.OTHER):
+                with self.subTest(actual=actual, expected=expected), self.assertRaisesRegex(
+                        ValueError, 'GPU UUID/device/context/12GiB'):
+                    runtime.validate_execution_gpu(dict(uuid=actual), expected,
+                        device_count=1, free=18 * 2**30, max_position_embeddings=2048)
 
     def test_invalid_and_unavailable_values_rejected_on_either_side(self):
         for value in (None, '', 'UNAVAILABLE', 'UNKNOWN', 'None', 'not-a-uuid', 123, b'GPU-' + self.UUID.encode(),
@@ -269,16 +292,17 @@ class WorkerContracts(unittest.TestCase):
 
     def test_approx_extended_count_and_gpu_uuid_gates(self):
         p = dict(count=5, performance_knobs=knobs(), source=dict(commit='current'))
-        runtime.launch_scope(p, CONDITIONS[0], 'current', 'GPU-TEST', False, False)
-        for condition, commit, gpu, approximate in ((CONDITIONS[2], 'current', 'GPU-TEST', False),
-                                                  (CONDITIONS[0], 'old', 'GPU-TEST', False),
+        gpu_uuid = 'GPU-' + GPUUUIDValidation.UUID
+        runtime.launch_scope(p, CONDITIONS[0], 'current', gpu_uuid, False, False)
+        for condition, commit, gpu, approximate in ((CONDITIONS[2], 'current', gpu_uuid, False),
+                                                  (CONDITIONS[0], 'old', gpu_uuid, False),
                                                   (CONDITIONS[0], 'current', 'unknown', False)):
             with self.assertRaises(ValueError):
                 runtime.launch_scope(p, condition, commit, gpu, approximate, False)
         for changed in (dict(p, count=20), dict(p, performance_knobs=knobs(50, .25))):
             with self.assertRaises(ValueError):
-                runtime.launch_scope(changed, CONDITIONS[0], 'current', 'GPU-TEST', False, False)
-            runtime.launch_scope(changed, CONDITIONS[0], 'current', 'GPU-TEST', False, True)
+                runtime.launch_scope(changed, CONDITIONS[0], 'current', gpu_uuid, False, False)
+            runtime.launch_scope(changed, CONDITIONS[0], 'current', gpu_uuid, False, True)
 
     def approval_files(self, root, mutation=None):
         from semcache.edgelora.r5_d5_lightperf import TEST_MODULES

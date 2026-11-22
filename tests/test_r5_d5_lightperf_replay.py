@@ -162,16 +162,17 @@ class ReplayWorkload(unittest.TestCase):
 
     def test_explicit_launch_approvals_and_baseline_knobs(self):
         _, _, selected = replay_fixture()
+        gpu_uuid = 'GPU-880f065c-37fc-f142-05e1-f043a8fb49ff'
         p = dict(workload_mode='CONTINUOUS_REPLAY', enable_continuous_replay=True, stream=selected,
                  count=20, performance_knobs=knobs(), source=dict(commit='reviewed'))
         for extended, replay in ((False, False), (True, False), (False, True)):
             with self.assertRaises(ValueError):
-                launch_scope(p, CONDITIONS[0], 'reviewed', 'GPU-TEST', False, extended, replay)
-        launch_scope(p, CONDITIONS[0], 'reviewed', 'GPU-TEST', False, True, True)
+                launch_scope(p, CONDITIONS[0], 'reviewed', gpu_uuid, False, extended, replay)
+        launch_scope(p, CONDITIONS[0], 'reviewed', gpu_uuid, False, True, True)
         with self.assertRaises(ValueError):
-            launch_scope(p, CONDITIONS[2], 'reviewed', 'GPU-TEST', False, True, True)
+            launch_scope(p, CONDITIONS[2], 'reviewed', gpu_uuid, False, True, True)
         # Generic future sensitivity interface remains; L2 job template pins baseline.
-        launch_scope(dict(p, performance_knobs=knobs(50)), CONDITIONS[0], 'reviewed', 'GPU-TEST', False, True, True)
+        launch_scope(dict(p, performance_knobs=knobs(50)), CONDITIONS[0], 'reviewed', gpu_uuid, False, True, True)
         from semcache.edgelora.r5_d5_lightperf import run
         with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValueError):
             run(experiment='none', cpu_audit='none', condition=CONDITIONS[0], output_dir='none',
