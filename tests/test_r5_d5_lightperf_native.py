@@ -245,7 +245,7 @@ class NativeParity(unittest.TestCase):
     def test_native_bandwidth_and_ud_service_preserve_logits_and_rows(self):
         for condition in CONDITIONS:
             baseline = self.run_case(condition)
-            for bandwidth, factor in ((200, 1.), (100, .5), (50, .25)):
+            for bandwidth, factor in ((200, 1.), (100, .5), (50, .25), (50, .10)):
                 with self.subTest(condition=condition, bandwidth=bandwidth, factor=factor):
                     other = self.run_case(condition, performance_knobs=knobs(bandwidth, factor))
                     self.assertEqual(baseline['logits'], other['logits'])

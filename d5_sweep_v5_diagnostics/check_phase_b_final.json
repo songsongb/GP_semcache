@@ -1,0 +1,192 @@
+{
+  "schema": "D5_L2E_SWEEP_V5",
+  "phase": "A_B_ONLY",
+  "gpu": "NOT_RUN",
+  "matrix": [
+    {
+      "id": "bw050_ud100",
+      "performance_knobs": {
+        "bandwidth_mbps": 50,
+        "ud_throughput_factor": 1.0,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX"
+      ]
+    },
+    {
+      "id": "bw050_ud050",
+      "performance_knobs": {
+        "bandwidth_mbps": 50,
+        "ud_throughput_factor": 0.5,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE"
+      ]
+    },
+    {
+      "id": "bw050_ud025",
+      "performance_knobs": {
+        "bandwidth_mbps": 50,
+        "ud_throughput_factor": 0.25,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT"
+      ]
+    },
+    {
+      "id": "bw050_ud010",
+      "performance_knobs": {
+        "bandwidth_mbps": 50,
+        "ud_throughput_factor": 0.1,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX"
+      ]
+    },
+    {
+      "id": "bw100_ud100",
+      "performance_knobs": {
+        "bandwidth_mbps": 100,
+        "ud_throughput_factor": 1.0,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE"
+      ]
+    },
+    {
+      "id": "bw100_ud050",
+      "performance_knobs": {
+        "bandwidth_mbps": 100,
+        "ud_throughput_factor": 0.5,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT"
+      ]
+    },
+    {
+      "id": "bw100_ud025",
+      "performance_knobs": {
+        "bandwidth_mbps": 100,
+        "ud_throughput_factor": 0.25,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX"
+      ]
+    },
+    {
+      "id": "bw100_ud010",
+      "performance_knobs": {
+        "bandwidth_mbps": 100,
+        "ud_throughput_factor": 0.1,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE"
+      ]
+    },
+    {
+      "id": "bw200_ud100",
+      "performance_knobs": {
+        "bandwidth_mbps": 200,
+        "ud_throughput_factor": 1.0,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT"
+      ]
+    },
+    {
+      "id": "bw200_ud050",
+      "performance_knobs": {
+        "bandwidth_mbps": 200,
+        "ud_throughput_factor": 0.5,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX"
+      ]
+    },
+    {
+      "id": "bw200_ud025",
+      "performance_knobs": {
+        "bandwidth_mbps": 200,
+        "ud_throughput_factor": 0.25,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_EXACT",
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE"
+      ]
+    },
+    {
+      "id": "bw200_ud010",
+      "performance_knobs": {
+        "bandwidth_mbps": 200,
+        "ud_throughput_factor": 0.1,
+        "link_scope": "APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION",
+        "rtt_ms": null,
+        "ud_scope": "EMULATED_UD_SERVICE_TIME"
+      },
+      "order": [
+        "SEMCACHE_D5_APPROX",
+        "FULL_RECOMPUTE",
+        "SEMCACHE_D5_EXACT"
+      ]
+    }
+  ],
+  "v4_runner_exists": false,
+  "status": "BLOCKED_MISSING_REFERENCE",
+  "reason": "BLOCKED_MISSING_REFERENCE: frozen PLAN/CPU audit absent",
+  "auto_nodes": "BLOCKED_UNCONFIRMED_SLURM_SEMANTICS",
+  "auto_reason": "local sbatch manual unavailable; select one explicit approved node"
+}

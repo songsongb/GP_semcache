@@ -14,7 +14,7 @@ from .communication import digest, require
 from .r3a_artifacts import ROOT, THRESHOLDS
 from .r5_d5_lightperf_io import (SCHEMA, MODE, ENGINE, BRANCH, SummaryWriter, fresh, hidden_cuda,
                                source_identity, read_json, verify)
-from .r5_d5_lightperf_workload import DATASETS, COUNTS, CONDITIONS, knobs, stream, preflight, matrix
+from .r5_d5_lightperf_workload import DATASETS, COUNTS, CONDITIONS, UD_FACTORS, knobs, stream, preflight, matrix
 from .r5_d5_lightperf_replay import MODE as REPLAY, replay_enabled, replay_stream, validate_replay_stream
 from .r5_d5_impact import (REFERENCE as IMPACT_REFERENCE, HOST_BATCH, MASK_INDEX_REUSE, IMPLEMENTATIONS,
                            implementation as impact_implementation, resource_bounds as impact_resource_bounds)
@@ -343,7 +343,7 @@ def main(argv=None):
     p.add_argument('--dataset', choices=DATASETS, required=True)
     p.add_argument('--count', type=int, choices=COUNTS, required=True)
     p.add_argument('--bandwidth-mbps', type=float, choices=(200, 100, 50), default=None)
-    p.add_argument('--ud-throughput-factor', type=float, choices=(1., .5, .25), default=1.)
+    p.add_argument('--ud-throughput-factor', type=float, choices=UD_FACTORS, default=1.)
     p.add_argument('--ud-operation-seconds', type=float)
     p.add_argument('--development', action='store_true')
     p.add_argument('--reviewed-commit')

@@ -1,0 +1,29 @@
+test_analysis_position_or_binding_tamper_is_rejected (test_r5_d5_sweep.Aggregation) ... ok
+test_exact_twenty_required_approx_six_is_allowed (test_r5_d5_sweep.Aggregation) ... ok
+test_missing_timers_stay_unmeasured_not_zero (test_r5_d5_sweep.Aggregation) ... ok
+test_not_comparable_exports_null_speedup_even_when_other_pair_matches (test_r5_d5_sweep.Aggregation) ... ok
+test_not_comparable_is_preserved_and_not_silently_accepted (test_r5_d5_sweep.Aggregation) ... ok
+test_validated_bins_raw_values_and_csv_are_write_once (test_r5_d5_sweep.Aggregation) ... ok
+test_actual_compute_runs_once_and_point_one_paces_nine_times_raw (test_r5_d5_sweep.FactorSupport) ... ok
+test_allowed_and_rejected_values (test_r5_d5_sweep.FactorSupport) ... ok
+test_cli_accepts_point_one_and_rejects_invalid (test_r5_d5_sweep.FactorSupport) ... ok
+test_preflight_preserves_calibration_and_deadline_caps (test_r5_d5_sweep.FactorSupport) ... ok
+test_auto_requires_local_documented_subset_semantics (test_r5_d5_sweep.SweepContracts) ... ok
+test_deadline_endtime_is_strict_and_never_extended (test_r5_d5_sweep.SweepContracts) ... ok
+test_matrix_exact_twelve_and_balanced_condition_orders (test_r5_d5_sweep.SweepContracts) ... ok
+test_missing_other_cell_approval_stops_before_first_submission (test_r5_d5_sweep.SweepContracts) ... ok
+test_missing_reference_returns_blocked_without_cpu_or_scheduler_calls (test_r5_d5_sweep.SweepContracts) ... ok
+test_noncanary_is_blocked_until_official_canary_evidence (test_r5_d5_sweep.SweepContracts) ... ok
+test_payload_hash_and_slurm_guard_fail_before_any_gpu_probe (test_r5_d5_sweep.SweepContracts) ... ok
+test_prepare_uses_exact_reference_fields_and_unique_plan_audit_per_cell (test_r5_d5_sweep.SweepContracts) ... ok
+test_reference_reads_true_nulls_and_preserves_original_bytes (test_r5_d5_sweep.SweepContracts) ... ok
+test_reference_tamper_and_changed_workload_fail_closed (test_r5_d5_sweep.SweepContracts) ... ok
+test_registered_cell_rejects_other_knob_and_audit_binding (test_r5_d5_sweep.SweepContracts) ... ok
+test_review_guard_precedes_creation_or_official_prepare (test_r5_d5_sweep.SweepContracts) ... ok
+test_submit_only_selected_canaries_one_job_each_afterok_and_no_array (test_r5_d5_sweep.SweepContracts) ... ok
+test_worker_uses_one_dynamic_uuid_same_affinity_and_three_fresh_runs (test_r5_d5_sweep.SweepContracts) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 1.095s
+
+OK

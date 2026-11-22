@@ -231,12 +231,12 @@ class WorkloadTests(unittest.TestCase):
         for value in (0, -1, float('nan'), float('inf'), True, 49):
             with self.assertRaises(ValueError):
                 knobs(value)
-        for factor in (0, .75, float('nan'), float('inf'), True):
+        for factor in (0, .09, .2, -.1, .75, float('nan'), float('inf'), -float('inf'), True):
             with self.assertRaises(ValueError):
                 knobs(None, factor)
         m = matrix()
         self.assertEqual(m['selected_jobs'], [])
-        self.assertEqual(m['full_grid_condition_count'], 324)
+        self.assertEqual(m['full_grid_condition_count'], 432)
 
 
 class TimingTests(unittest.TestCase):
@@ -341,7 +341,7 @@ class EmulationTests(unittest.TestCase):
         fixture.setUp()
         x = [1.] * 24
         expected = cpu_deltas(x, fixture.matrices, 0, 4, torch_backend=False)
-        for factor in (1., .5, .25):
+        for factor in (1., .5, .25, .10):
             clock = Clock()
             service = UDServiceEmulator(factor, clock=clock, sleep=clock.sleep)
             def compute():

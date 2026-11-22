@@ -11,6 +11,7 @@ from .r4c_workload import policy
 DATASETS = ('qasper', '2wikimqa', 'multi_news')
 COUNTS = (5, 20, 50)
 CONDITIONS = ('FULL_RECOMPUTE', 'SEMCACHE_D5_EXACT', 'SEMCACHE_D5_APPROX')
+UD_FACTORS = (1., .5, .25, .10)
 
 
 def knobs(bandwidth_mbps=None, ud_throughput_factor=1.0):
@@ -18,7 +19,7 @@ def knobs(bandwidth_mbps=None, ud_throughput_factor=1.0):
             math.isfinite(bandwidth_mbps) and bandwidth_mbps in (200, 100, 50),
             'bandwidth must be unlimited (None), 200, 100 or 50 Mbps')
     require(type(ud_throughput_factor) in (float, int) and math.isfinite(ud_throughput_factor) and
-            ud_throughput_factor in (1., .5, .25), 'UD factor must be 1, .5 or .25')
+            ud_throughput_factor in UD_FACTORS, 'UD factor must be 1, .5, .25 or .10')
     return dict(bandwidth_mbps=bandwidth_mbps, ud_throughput_factor=float(ud_throughput_factor),
                 link_scope='APPLICATION_LOOPBACK_PER_CHANNEL_PER_DIRECTION', rtt_ms=None,
                 ud_scope='EMULATED_UD_SERVICE_TIME')
@@ -153,7 +154,7 @@ def preflight(tasks, performance_knobs, *, slurm_seconds=16200, seconds_per_forw
 
 def matrix():
     return dict(status='CPU_PLAN_ONLY_NO_SUBMISSION', datasets=list(DATASETS), counts=list(COUNTS),
-                bandwidth_mbps=[None, 200, 100, 50], ud_throughput_factors=[1., .5, .25],
-                candidate_knob_pairs=[knobs(b, f) for b in (None, 200, 100, 50) for f in (1., .5, .25)],
-                full_grid_condition_count=3 * 3 * 12 * 3, selected_jobs=[],
+                bandwidth_mbps=[None, 200, 100, 50], ud_throughput_factors=list(UD_FACTORS),
+                candidate_knob_pairs=[knobs(b, f) for b in (None, 200, 100, 50) for f in UD_FACTORS],
+                full_grid_condition_count=3 * 3 * 16 * 3, selected_jobs=[],
                 gate='L2 five, then separately approved L2 20/50; L3/L4 evidence before targeted L5 subset')
