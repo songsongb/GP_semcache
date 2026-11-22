@@ -129,6 +129,96 @@ class FactorSupport(unittest.TestCase):
         with self.assertRaises(ValueError):preflight(tasks,knobs(50,.10),slurm_seconds=16201)
 
 
+class OfficialOutputProtocol(unittest.TestCase):
+    """Real CPU subprocesses reproduce inherited worker + parent stdout."""
+    WORKER = dict(status='NATIVE_ES_COMPLETE')
+    FINAL = dict(status='NATIVE_LIGHT_COMPLETE', correctness_qualified_speedup='NOT_ESTABLISHED',
+                 binding={key: dict(manifest_sha256='0'*64, files=2, bytes=100)
+                          for key in ('run','plan','cpu')})
+
+    def invoke(self, command, parent, *, worker=None, returncode=0):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);cli=root/'official_fixture.py';fixture=root/'stdout.json'
+            fixture.write_text(json.dumps(dict(worker=worker,parent=parent,returncode=returncode)))
+            cli.write_text('''import json,os,subprocess,sys
+from pathlib import Path
+assert os.environ['CUDA_VISIBLE_DEVICES'] == os.environ['HIP_VISIBLE_DEVICES'] == ''
+data=json.loads(Path(sys.argv[2]).read_text())
+if data['worker'] is not None:
+    subprocess.run([sys.executable,'-c','import sys;sys.stdout.write(sys.argv[1])',data['worker']],check=True)
+sys.stdout.write(data['parent'])
+if data['returncode']:
+    sys.stderr.write('UNIT_ONLY subprocess failed')
+raise SystemExit(data['returncode'])
+''')
+            with patch.object(sweep,'CLI',cli):
+                return sweep.official([command,fixture])
+
+    def test_run_accepts_exact_worker_then_final_from_real_subprocess(self):
+        worker=json.dumps(self.WORKER,sort_keys=True,indent=2)+'\n'
+        self.assertEqual(len(worker),37)  # Original Extra data position.
+        with self.assertRaises(json.JSONDecodeError) as error:
+            json.loads(worker+json.dumps(self.FINAL))
+        self.assertEqual(error.exception.pos,37)
+        for separator in ('','\n',' \r\n\t'):
+            with self.subTest(separator=separator):
+                self.assertEqual(self.invoke('run',separator+json.dumps(self.FINAL,indent=2)+'\n',
+                                             worker=worker),self.FINAL)
+
+    def test_other_commands_still_require_one_json_document(self):
+        for command in ('prepare','preflight','cpu-validate','inspect','verify','analyze'):
+            value=dict(status='UNIT_ONLY_SINGLE_JSON',command=command)
+            with self.subTest(command=command):
+                self.assertEqual(self.invoke(command,json.dumps(value,indent=2)+'\n'),value)
+                with self.assertRaises(ValueError):
+                    self.invoke(command,json.dumps(value),worker=json.dumps(self.WORKER)+'\n')
+
+    def test_run_requires_both_messages_in_order_without_extra_documents(self):
+        worker=json.dumps(self.WORKER);final=json.dumps(self.FINAL)
+        for stdout in ('',worker,final,final+worker,worker+worker,final+final,
+                       worker+final+worker,worker+final+'{}',json.dumps([self.WORKER,self.FINAL])):
+            with self.subTest(stdout=stdout),self.assertRaises(ValueError):
+                self.invoke('run',stdout)
+
+    def test_run_rejects_noise_malformed_json_and_duplicate_fields(self):
+        worker=json.dumps(self.WORKER);final=json.dumps(self.FINAL)
+        for stdout in ('warning\n'+worker+final,worker+'warning\n'+final,worker+final+'\nwarning',
+                       worker+'{"status":',worker+final+'garbage',worker[:-1]+final,
+                       '{"status":"FAILED","status":"NATIVE_ES_COMPLETE"}'+final,
+                       worker+final[:-1]+',"status":"NATIVE_LIGHT_COMPLETE"}'):
+            with self.subTest(stdout=stdout),self.assertRaises(ValueError):
+                self.invoke('run',stdout)
+
+    def test_run_rejects_failure_status_and_unexpected_shapes(self):
+        invalid_workers=[dict(status='PARTIAL_BLOCKED'),dict(status='NATIVE_UD_COMPLETE'),
+                         dict(self.WORKER,unexpected=True),[],None]
+        for worker in invalid_workers:
+            with self.subTest(worker=worker),self.assertRaises(ValueError):
+                self.invoke('run',json.dumps(self.FINAL),worker=json.dumps(worker)+'\n')
+        invalid_finals=[dict(self.FINAL,status='PARTIAL_BLOCKED'),dict(self.FINAL,status='FAILED'),
+                        dict(self.FINAL,correctness_qualified_speedup='ESTABLISHED'),
+                        dict(self.FINAL,unexpected=True),dict(self.FINAL,binding=None),
+                        dict(self.FINAL,binding={}),dict(self.FINAL,binding=dict(run={},plan={},cpu=[])),
+                        dict(status='NATIVE_LIGHT_COMPLETE'),[],None]
+        for final in invalid_finals:
+            with self.subTest(final=final),self.assertRaises(ValueError):
+                self.invoke('run',json.dumps(final),worker=json.dumps(self.WORKER)+'\n')
+
+    def test_run_rejects_nonfinite_json_even_inside_binding(self):
+        for number in ('NaN','Infinity','-Infinity','1e999'):
+            final=json.dumps(self.FINAL).replace('100',number,1)
+            with self.subTest(number=number),self.assertRaises(ValueError):
+                self.invoke('run',final,worker=json.dumps(self.WORKER)+'\n')
+
+    def test_nonzero_exit_rejected_even_with_complete_success_stdout(self):
+        for command in ('run','verify'):
+            for returncode in (2,7):
+                with self.subTest(command=command,returncode=returncode),self.assertRaisesRegex(
+                        ValueError,'official '+command+' failed: UNIT_ONLY subprocess failed'):
+                    self.invoke(command,json.dumps(self.FINAL),worker=json.dumps(self.WORKER)+'\n'
+                                if command=='run' else None,returncode=returncode)
+
+
 class SweepContracts(unittest.TestCase):
     def test_matrix_exact_twelve_and_balanced_condition_orders(self):
         cells=sweep.cells();self.assertEqual(len(cells),12)

@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 
-from .communication import digest, require
+from .communication import digest, require, json_loads
 from .r3a_artifacts import ROOT
 from .r5_d5_impact import MASK_INDEX_REUSE
 from .r5_d5_lightperf_io import ENGINE, MODE, SCHEMA as LIGHT_SCHEMA, no_symlinks, read_json, source_identity, verify
@@ -84,11 +84,33 @@ def cpu_env():
                 PYTHONDONTWRITEBYTECODE='1', PYTHONHASHSEED='42')
 
 
+def run_output(stdout):
+    """Only the inherited ES completion followed by the verified parent result."""
+    decoder = json.JSONDecoder()
+    remaining, messages = stdout.lstrip(' \t\r\n'), []
+    for _ in range(2):
+        _, end = decoder.raw_decode(remaining)
+        # Reuse strict JSON validation (duplicate fields and nonfinite numbers).
+        messages.append(json_loads(remaining[:end]))
+        remaining = remaining[end:].lstrip(' \t\r\n')
+    require(not remaining, 'official run has extra stdout data')
+    worker, result = messages
+    require(worker == dict(status='NATIVE_ES_COMPLETE'), 'official run ES completion differs')
+    require(isinstance(result, dict) and
+            set(result) == {'status', 'binding', 'correctness_qualified_speedup'} and
+            result['status'] == 'NATIVE_LIGHT_COMPLETE' and
+            result['correctness_qualified_speedup'] == 'NOT_ESTABLISHED' and
+            isinstance(result['binding'], dict) and set(result['binding']) == {'run', 'plan', 'cpu'} and
+            all(isinstance(value, dict) for value in result['binding'].values()),
+            'official run final completion differs')
+    return result
+
+
 def official(arguments, *, gpu=False, environment=None):
     result = subprocess.run([sys.executable, str(CLI), *map(str, arguments)], cwd=ROOT,
                             env=environment if gpu else cpu_env(), capture_output=True, text=True)
     require(result.returncode == 0, f'official {arguments[0]} failed: {(result.stderr or result.stdout)[-3000:]}')
-    return json.loads(result.stdout)
+    return run_output(result.stdout) if arguments[0] == 'run' else json.loads(result.stdout)
 
 
 def historical_reference(plan_path, cpu_path):
