@@ -4,6 +4,9 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -318,6 +321,82 @@ class SweepContracts(unittest.TestCase):
             self.assertIn('--enable-approximate-experiment',runs[0]);self.assertNotIn('--enable-approximate-experiment',runs[1])
             self.assertEqual([c[0] for c in native].count('verify'),3)
             self.assertEqual([c[0] for c in native].count('analyze'),1)
+
+
+class BashRunnerPaths(unittest.TestCase):
+    """Run the real Bash text using harmless entry/srun stubs, never Slurm/GPU."""
+    def fixture(self, root):
+        repo=root/'repo with spaces';(repo/'jobs').mkdir(parents=True);(repo/'scripts').mkdir()
+        runner=repo/'jobs/d5_l2e_bw_ud_sweep_v5.sh'
+        shutil.copyfile(sweep.JOB,runner)
+        entry=repo/'scripts/163_r5_d5_sweep_v5.py'
+        entry.write_text('import json,os,sys\nfrom pathlib import Path\n'
+            'print(json.dumps(dict(argv=sys.argv[1:],cwd=str(Path.cwd()),entry=str(Path(__file__).resolve()),'
+            'cuda=os.environ.get("CUDA_VISIBLE_DEVICES"),hip=os.environ.get("HIP_VISIBLE_DEVICES"))))\n')
+        spool=root/'var/spool/slurm/d/job222887';spool.mkdir(parents=True)
+        copied=spool/'slurm_script';shutil.copyfile(runner,copied)
+        bindir=root/'stub_bin';bindir.mkdir();marker=root/'srun_called'
+        stub=bindir/'srun'
+        stub.write_text('#!/usr/bin/env bash\nset -euo pipefail\n'
+            '[[ "$1" == --nodes=1 && "$2" == --ntasks=1 && "$3" == --cpus-per-task=4 && "$4" == --cpu-bind=cores ]] || exit 90\n'
+            'printf "called\\n" > "$D5_TEST_MARKER"\nshift 4\nexec "$@"\n')
+        stub.chmod(0o700)
+        env=dict(os.environ,D5_SWEEP_PYTHON=sys.executable,PATH=str(bindir)+os.pathsep+os.environ['PATH'],
+                 D5_TEST_MARKER=str(marker),SLURM_JOB_ID='222887',CUDA_VISIBLE_DEVICES='UNIT_ONLY_ALLOCATED_GPU',
+                 HIP_VISIBLE_DEVICES='UNIT_ONLY_HIP')
+        env.pop('SLURM_ARRAY_TASK_ID',None)
+        return repo,runner,entry,spool,copied,marker,env
+
+    def invoke(self, runner, cwd, env, *args):
+        return subprocess.run(['bash',str(runner),*args],cwd=cwd,env=env,
+                              capture_output=True,text=True,timeout=10)
+
+    def test_spool_job_uses_repository_cwd_and_preserves_job_arguments(self):
+        with tempfile.TemporaryDirectory(prefix='d5_spool_unit_') as tmp:
+            repo,runner,entry,spool,copied,marker,env=self.fixture(Path(tmp))
+            args=('_job','--payload','UNIT_ONLY','--payload-sha256','UNIT_ONLY')
+            result=self.invoke(copied,repo,env,*args)
+            self.assertEqual(result.returncode,0,result.stderr)
+            observed=json.loads(result.stdout)
+            self.assertEqual(observed['entry'],str(entry))
+            self.assertEqual(observed['cwd'],str(repo))
+            self.assertEqual(observed['argv'],list(args))
+            self.assertEqual(observed['cuda'],'UNIT_ONLY_ALLOCATED_GPU')
+            self.assertTrue(marker.is_file())
+
+    def test_job_root_is_physical_even_when_pwd_is_a_symlink(self):
+        with tempfile.TemporaryDirectory(prefix='d5_spool_unit_') as tmp:
+            root=Path(tmp);repo,runner,entry,spool,copied,marker,env=self.fixture(root)
+            logical=root/'logical_repo';logical.symlink_to(repo,target_is_directory=True)
+            env['PWD']=str(logical)
+            result=self.invoke(copied,logical,env,'_job')
+            self.assertEqual(result.returncode,0,result.stderr)
+            observed=json.loads(result.stdout)
+            self.assertEqual(observed['entry'],str(entry));self.assertEqual(observed['cwd'],str(repo))
+
+    def test_all_cpu_modes_still_use_runner_location_from_an_unrelated_cwd(self):
+        with tempfile.TemporaryDirectory(prefix='d5_spool_unit_') as tmp:
+            repo,runner,entry,spool,copied,marker,env=self.fixture(Path(tmp))
+            for mode in ('check','prepare-cpu','submit','status','aggregate'):
+                with self.subTest(mode=mode):
+                    result=self.invoke(runner,spool,env,mode,'--state','UNIT_ONLY')
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    observed=json.loads(result.stdout)
+                    self.assertEqual(observed['entry'],str(entry));self.assertEqual(observed['cwd'],str(repo))
+                    self.assertEqual(observed['argv'],[mode,'--state','UNIT_ONLY'])
+                    self.assertEqual(observed['cuda'],'');self.assertEqual(observed['hip'],'')
+                    self.assertFalse(marker.exists())
+
+    def test_missing_entry_point_blocks_before_python_or_srun(self):
+        for mode in ('_job','check'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory(prefix='d5_spool_unit_') as tmp:
+                repo,runner,entry,spool,copied,marker,env=self.fixture(Path(tmp))
+                entry.unlink()  # Remove only the newly created UNIT_ONLY stub.
+                result=self.invoke(copied if mode=='_job' else runner,repo if mode=='_job' else spool,env,mode)
+                self.assertEqual(result.returncode,2)
+                self.assertIn('PARTIAL_BLOCKED stage=runner_path',result.stderr)
+                self.assertIn(str(entry),result.stderr)
+                self.assertEqual(result.stdout,'');self.assertFalse(marker.exists())
 
 
 class Aggregation(unittest.TestCase):
