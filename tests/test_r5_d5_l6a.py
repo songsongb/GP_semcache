@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import tempfile
 import csv
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from contextlib import ExitStack
 
 from semcache.cache.cache_entry import CacheEntry
 from semcache.edgelora import r5_d5_l6a as l6
@@ -24,6 +25,83 @@ def stream(n):
     for block in w['blocks']:
         block['block_id']=digest({k:v for k,v in block.items() if k!='block_id'})
     return replay_stream(w,'2wikimqa',n,enable_continuous_replay=True)
+
+
+class Deadline(unittest.TestCase):
+    def base(self):
+        from semcache.edgelora.r5_d5_lightperf_workload import preflight, knobs
+        return preflight(stream(50)['tasks'],knobs(50,.25),ud_operation_seconds=.13)
+
+    def test_forecast_gates_and_seraph_budget(self):
+        base=self.base()
+        self.assertLess(7200,base['forecast_seconds'])
+        self.assertLess(base['forecast_seconds'],9000)
+        extended=l6.long_deadline(base)
+        self.assertEqual(extended,dict(base,worker_deadline_seconds=9000,reasons=[],
+                                      status='STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING'))
+        for forecast,blocked in ((7824.54483968,False),(9000,False),(9000.01,True)):
+            r=l6.long_deadline(dict(base,forecast_seconds=forecast))
+            self.assertEqual(r['forecast_seconds'],forecast)
+            self.assertEqual(bool(r['reasons']),blocked)
+        both=dict(base,reasons=base['reasons']+['GPU_IMPACT_MEMORY_BOUND'])
+        self.assertEqual(l6.long_deadline(both)['status'],'BLOCKED_INFEASIBLE')
+        for seconds in (0,9120,16201):
+            with self.assertRaises(ValueError): l6.allocation_remaining(extended,100+seconds,100)
+        self.assertEqual(l6.allocation_remaining(extended,9221,100),9121)
+        with self.assertRaises(ValueError): l6.build(None,None,128,9000)
+
+    def test_native_es_config_and_ud_service_share_absolute_deadline(self):
+        from semcache.edgelora import r5_d5_lightperf_runtime as rt
+        from semcache.edgelora.r5_d5_lightperf_workload import CONDITIONS, knobs
+        import torch
+        p=dict(resources=l6.long_deadline(self.base()),stream=stream(50),count=50,
+               source={'commit':'fixture'},performance_knobs=knobs(50,.25),
+               workload_mode='CONTINUOUS_REPLAY',enable_continuous_replay=True,
+               multi='fixture',base_prepared='fixture',tokenizer_identity='fixture',
+               original_experiment='fixture',dataset_paths={})
+        writer=MagicMock(root=Path('/tmp'))
+        ids={t['adapter_id']:{} for t in p['stream']['tasks']}
+        gpu={'uuid':'00000000-0000-0000-0000-000000000001'}
+        driver=MagicMock()
+        driver.model.config.max_position_embeddings=2048
+        class ConfigCaptured(Exception): pass
+        with ExitStack() as stack:
+            def mock(target,**kwargs):
+                return stack.enter_context(patch('semcache.edgelora.'+target,**kwargs))
+            mock('r5_d5_lightperf_runtime.allocation_guard',return_value=l6.allocation_remaining(p['resources'],9221,100))
+            mock('r5_d5_lightperf.approval',return_value=(p,{},{}))
+            mock('r5_d5_lightperf_runtime.host_available',return_value=40*2**30)
+            mock('r5_d5_lightperf_runtime.shutil.disk_usage',return_value=SimpleNamespace(free=2**30))
+            mock('r5_d5_lightperf_runtime.time.monotonic',return_value=100)
+            mock('r5_d5_lightperf_runtime.fresh')
+            mock('r5_d5_lightperf_runtime.SummaryWriter',return_value=writer)
+            mock('r5_multi_artifacts.validate',return_value=({}, {}, ids, {}))
+            mock('r4a_runtime.setup',return_value=(None,None,None,driver,None,gpu))
+            for name,value in (('mem_get_info',(16*2**30,24*2**30)),('device_count',1),('reset_peak_memory_stats',None)):
+                stack.enter_context(patch.object(torch.cuda,name,return_value=value))
+            mock('r5_multi_artifacts.tokenizer_identity',return_value='fixture')
+            mock('r4b2_kv.installed_contract',return_value={})
+            mock('r5_multi_artifacts.runtime_view')
+            mock('r5_multi_artifacts.physical',return_value=({'adapter_matrix_fingerprint':'fixture'},{}))
+            mock('r5_i5_contracts.request',side_effect=lambda t,*args:t)
+            mock('r5_d5_lightperf_runtime.subprocess.Popen',side_effect=ConfigCaptured)
+            with self.assertRaises(ConfigCaptured):
+                rt.es_worker('plan','audit',CONDITIONS[0],'/tmp/unused','fixture',gpu['uuid'],
+                             enable_extended_experiment=True,enable_continuous_replay=True)
+            config=writer.write.call_args_list[0].args[1]
+            self.assertEqual(config['deadline_monotonic'],9100)
+            mock('r5_d5_lightperf_runtime.sys',modules={})
+            sock=mock('communication.listener').return_value
+            sock.getsockname.return_value=('127.0.0.1',1)
+            sock.accept.return_value=(MagicMock(),('127.0.0.1',2))
+            channel=mock('r5_d5_lightperf_runtime.LightChannel').return_value
+            service=mock('r5_d5_lightperf_runtime.serve_light_sparse',side_effect=ConfigCaptured)
+            with self.assertRaises(ConfigCaptured):
+                rt.serve_ud_session(config,p,{},{},writer,{}, {},{})
+            self.assertEqual(service.call_args.kwargs['deadline'],9100)
+            self.assertEqual(channel.condition_deadline,9100)
+            with self.assertRaisesRegex(ValueError,'UD deadline invalid'):
+                rt.serve_ud_session(dict(config,deadline_monotonic=9101),p,{},{},writer,{}, {},{})
 
 
 class LongReplay(unittest.TestCase):
@@ -54,6 +132,18 @@ class LongReplay(unittest.TestCase):
                 self.assertEqual(a,l6.build(Path(tmp),{'scope':'FIXTURE'},64))
                 self.assertNotEqual(a['plan_id'],l6.build(Path(tmp),{'scope':'FIXTURE'},128)['plan_id'])
                 self.assertEqual(a['cycles'][-1],dict(cycle=5,first=40,last=49))
+                from semcache.edgelora.r5_d5_lightperf_workload import preflight
+                fields['resources']=preflight(fields['stream']['tasks'], frozen['performance_knobs'],
+                                              ud_operation_seconds=.13)
+                default=l6.build(Path(tmp),{'scope':'FIXTURE'},64)
+                extended=l6.build(Path(tmp),{'scope':'FIXTURE'},64,9000)
+                self.assertEqual(default['resources']['status'],'BLOCKED_INFEASIBLE')
+                self.assertEqual(extended['resources']['status'],'STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING')
+                self.assertEqual(default['stream'],extended['stream'])
+                self.assertNotEqual(default['plan_id'],extended['plan_id'])
+                self.assertEqual([a['condition'] for a in extended['allocations']],default['conditions'])
+                self.assertTrue(all(a['requests']==50 and a['reset']=='EMPTY_ONCE_PER_CONDITION'
+                                    and a['worker_deadline_seconds']==9000 for a in extended['allocations']))
                 fields['transport']['rows'].reverse()
                 with self.assertRaisesRegex(ValueError,'transport'):
                     l6.build(Path(tmp),{},64)

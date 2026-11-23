@@ -1,6 +1,7 @@
 """L6-A CPU plans. These records have no Light GPU authorization scope."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -48,9 +49,39 @@ def check_stream(stream, previous):
             all(t['policy']['max_new_tokens'] == 8 for t in stream['tasks']), 'long replay prefix/pool differs')
 
 
-def build(reference, identity, limit):
+def allocation_remaining(resources, end_timestamp, now):
+    """CPU check on the actual scheduler EndTime for one future condition."""
+    remaining = math.floor(end_timestamp - now)
+    require(resources['worker_deadline_seconds'] == 9000 and
+            resources['worker_deadline_seconds'] + 120 < remaining <= resources['slurm_seconds'] <= 16200,
+            'insufficient L6 allocation remaining time')
+    return remaining
+
+
+def long_deadline(resources):
+    """Re-evaluate only the time inequality on the original all-fresh forecast."""
+    forecast = resources['forecast_seconds']
+    require(resources['requests'] == 50 and resources['worker_deadline_seconds'] == 7200 and
+            resources['slurm_seconds'] == 16200, 'unexpected base preflight envelope')
+    reasons = list(resources['reasons'])
+    require(resources['status'] == ('BLOCKED_INFEASIBLE' if reasons else 'STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING'),
+            'inconsistent base preflight status')
+    if forecast is None:
+        require('UD_OPERATION_CALIBRATION_REQUIRED' in reasons, 'missing UD planning bound')
+    else:
+        require(math.isfinite(forecast) and forecast > 0 and
+                ('DEADLINE_OR_SLURM_BOUND' in reasons) == (forecast > 7200), 'inconsistent base deadline')
+        if 7200 < forecast <= 9000:
+            reasons.remove('DEADLINE_OR_SLURM_BOUND')
+    return dict(resources, worker_deadline_seconds=9000, reasons=reasons,
+                status='BLOCKED_INFEASIBLE' if reasons else 'STATIC_BOUNDS_PASS_RUNTIME_CHECKS_PENDING')
+
+
+def build(reference, identity, limit, deadline=7200):
     cpu_guard()
     require(type(limit) is int and limit in (64,128), 'invalid entry_limit')
+    require(type(deadline) is int and (deadline == 7200 or deadline == 9000 and limit == 64),
+            '9000 seconds requires the L6 64-entry long replay')
     frozen, contract, ref = historical_reference(reference/'plan/plan.json', reference/'cpu')
     require(frozen['source']['commit'] == BASE and frozen['thresholds'] == THRESHOLDS,
             'reviewed v5 source/thresholds differ')
@@ -71,6 +102,10 @@ def build(reference, identity, limit):
     for key in ('impact_implementation','performance_knobs','conditions','thresholds','validation_mode',
                 'warmup_requests','enable_continuous_replay','workload_mode','ud_operation_seconds'):
         p[key] = frozen[key]
+    if deadline == 9000:
+        p.update(schema='D5_L6A_CPU_V2', resources=long_deadline(p['resources']),
+                 allocations=[dict(condition=c, worker_deadline_seconds=deadline, requests=50,
+                                   reset='EMPTY_ONCE_PER_CONDITION') for c in p['conditions']])
     p['plan_id'] = digest(p)
     require(len(canonical(p)) <= MAX_JSON, 'BLOCKED_INFEASIBLE: PLAN_JSON_BOUND')
     cpu_guard()
@@ -90,7 +125,7 @@ def checked(path):
     s = p['source']
     reviewed = s['approval_scope'] == 'CLEAN_REVIEWED_SOURCE'
     current = source(s['commit'] if reviewed else None, s['content_fingerprint'] if reviewed else None)
-    require(build(ref, current, p['entry_limit']) == p, 'L6 source/reference/plan differs')
+    require(build(ref, current, p['entry_limit'], 9000 if p['schema']=='D5_L6A_CPU_V2' else 7200) == p, 'L6 source/reference/plan differs')
     return p, inventory
 
 
@@ -98,7 +133,7 @@ def execute(a):
     cpu_guard()
     if a.command in ('check','prepare-cpu','preflight'):
         identity = source(a.reviewed_commit, a.reviewed_fingerprint)
-        p = build(a.reference, identity, a.entry_limit)
+        p = build(a.reference, identity, a.entry_limit, a.worker_deadline_seconds)
         if a.command == 'prepare-cpu':
             protect_reference_output(no_symlinks(a.output), read_json(Path(p['reference']['plan'])), p['reference'])
             w = output(a.output,[a.reference])
@@ -154,6 +189,7 @@ def main(argv=None):
         if name in ('check','prepare-cpu','preflight'):
             cmd.add_argument('--reference',type=Path,default=REFERENCE)
             cmd.add_argument('--entry-limit',type=int,choices=(64,128),default=64)
+            cmd.add_argument('--worker-deadline-seconds', type=int, choices=(7200,9000), default=7200)
             cmd.add_argument('--reviewed-commit')
             cmd.add_argument('--reviewed-fingerprint')
         else:
