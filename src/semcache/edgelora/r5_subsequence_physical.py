@@ -30,8 +30,8 @@ def entry_proof(entry,*,fingerprints=None):
     return digest(dict(metadata=entry.qkv_metadata,positions=entry.positions,tokens=entry.token_ids,size=entry.size_bytes,tensors=tensors))
 
 class PhysicalOwner:
-    def __init__(self,identity,registry,*,capacity=512*2**20,trace=lambda r:None,evidence=None,validation_mode=EAGER):
-        self.bridge=MStageShadow(identity,registry,capacity=capacity,trace=trace);self.trace=trace;self.active=None;self.proofs={}
+    def __init__(self,identity,registry,*,capacity=512*2**20,entry_limit=64,trace=lambda r:None,evidence=None,validation_mode=EAGER):
+        self.bridge=MStageShadow(identity,registry,capacity=capacity,entry_limit=entry_limit,trace=trace);self.trace=trace;self.active=None;self.proofs={}
         self.evidence=evidence;self.admission_bindings={}
         self.validation_mode=validation_mode;self.validation=RequestValidation(self,validation_mode,entry_proof,tensor_proof)
     @property
@@ -85,6 +85,8 @@ class PhysicalOwner:
             if self.validation_mode==SCOPED:self.abort()
             raise
     def _project(self,layer,role,x,native,session):
+        if self.cache.entry_limit == 128:
+            require(x.device.type == 'cpu', 'ENTRY128_GPU_NOT_APPROVED')
         a=self.active;require(a is not None and (layer,role) not in a['seen'],'duplicate/inactive projection');a['seen'].add((layer,role))
         n=len(a['req']['token_ids']);h=self.bridge.identity['hidden_size'];require(list(x.shape)==[1,n,h],'projection full shape differs')
         # Same layer span decisions across Q/K/V; OPT presents identical inputs.

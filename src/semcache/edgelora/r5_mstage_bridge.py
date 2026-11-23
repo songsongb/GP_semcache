@@ -25,9 +25,14 @@ BLOCKERS=('SPARSE_POSITION_TCP_CONTRACT_NOT_IMPLEMENTED','DISTRIBUTED_TOTAL_QKV_
 
 class BoundedCache(GlobalCache):
     """Use unchanged M scores; bound entries as well as stored logical bytes."""
+    def __init__(self, *args, entry_limit=64, **kwargs):
+        require(type(entry_limit) is int and entry_limit in (64, 128), 'invalid per-adapter entry limit')
+        super().__init__(*args, **kwargs)
+        self.entry_limit = entry_limit
+
     def insert(self,*args,on_event=None,**kwargs):
         result=super().insert(*args,on_event=on_event,**kwargs)
-        while len(self.entries)>64:
+        while len(self.entries)>self.entry_limit:
             ms={k:self._metrics(e) for k,e in self.entries.items()}
             key=min(ms,key=lambda k:(-self.eviction.score(normalize(ms[k],ms.values(),self.zero_max)),k))
             if on_event:on_event('EVICT',self.entries[key],None)
@@ -40,9 +45,11 @@ class MStageShadow:
     Assignment comes from the actual R5 TinyBERT/cluster result; no fabricated
     embeddings or duplicate semantic execution. Tests explicitly use fixtures.
     """
-    def __init__(self,identity,registry,*,capacity=512*2**20,max_candidates=64,pbr_interval=100,trace=lambda e:None):
+    def __init__(self,identity,registry,*,capacity=512*2**20,entry_limit=64,max_candidates=64,pbr_interval=100,trace=lambda e:None):
         require(0<capacity<=512*2**20 and 1<=max_candidates<=64 and pbr_interval>=1,'bounded shadow configuration required')
-        self.identity=deepcopy(identity);self.registry=registry;self.cache=BoundedCache(capacity)
+        if entry_limit == 128:
+            require(identity.get('device') == 'cpu', 'ENTRY128_GPU_NOT_APPROVED')
+        self.identity=deepcopy(identity);self.registry=registry;self.cache=BoundedCache(capacity,entry_limit=entry_limit)
         self.metrics=CacheMetricManager(self.cache);self.extractor=SubsequenceExtractor(3);self.matcher=ExactTokenMatcher()
         self.max_candidates=max_candidates;self.pbr_interval=pbr_interval;self.trace=trace
         self.pending=None;self.seen=set();self.physical_hits=0;self.skipped_rows=0
