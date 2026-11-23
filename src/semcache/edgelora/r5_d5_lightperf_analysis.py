@@ -48,6 +48,11 @@ def verify_run(root, plan_root, cpu_root):
     p = read_json(Path(plan_root) / 'plan.json')
     a = read_json(Path(cpu_root) / 'cpu_validation.json')
     r = read_json(Path(root) / 'run.json')
+    if 'l6_plan_id' in p or 'l6_binding' in p or p.get('resources', {}).get('worker_deadline_seconds', 0) > 7200:
+        from .r5_d5_l6b import validate_binding
+        validate_binding(p)
+        require(r['resources']['deadline_seconds']==p['resources']['worker_deadline_seconds'],
+                'L6 native receipt deadline differs')
     require(not (Path(root) / 'failure.json').exists(), 'failed finalization is not a successful run')
     body = dict(p)
     pid = body.pop('plan_id')

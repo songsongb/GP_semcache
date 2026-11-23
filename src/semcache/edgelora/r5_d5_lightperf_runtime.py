@@ -55,6 +55,9 @@ def bound_receipts(experiment, cpu_audit):
     pid = body.pop('plan_id')
     require(p['engine'] == ENGINE and digest(body) == pid and p['mode'] == MODE and p['schema'] == SCHEMA,
             'native Light plan identity differs')
+    if 'l6_plan_id' in p or 'l6_binding' in p or p.get('resources', {}).get('worker_deadline_seconds', 0) > 7200:
+        from .r5_d5_l6b import validate_binding
+        validate_binding(p)
     s = p['source']
     require(s['approval_scope'] == 'CLEAN_REVIEWED_SOURCE' and s == source_identity(
         reviewed_commit=s['commit'], reviewed_fingerprint=s['content_fingerprint']), 'clean source approval differs')
@@ -323,6 +326,9 @@ def es_worker(experiment, cpu_audit, condition, output_dir, source_commit, expec
     p, pi, ai = approval(experiment, cpu_audit, cpu_only=False)
     launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment,
                  enable_continuous_replay)
+    if 'l6_binding' in p:
+        from .r5_d5_l6b_runner import native_gate
+        remaining = native_gate(p, experiment, cpu_audit, condition, output_dir, expected_gpu_uuid)
     require(remaining >= p['resources']['worker_deadline_seconds'] + 120, 'remaining Slurm time insufficient')
     require(host_available() >= 32 * 2**30 and shutil.disk_usage(Path(output_dir).resolve().parent).free >= 2**30,
             'host RAM/disk reserve insufficient')
@@ -478,6 +484,9 @@ def run(experiment, cpu_audit, condition, output_dir, source_commit, expected_gp
     p, _, _ = approval(experiment, cpu_audit, cpu_only=False)
     launch_scope(p, condition, source_commit, expected_gpu_uuid, enable_approximate_experiment, enable_extended_experiment,
                  enable_continuous_replay)
+    if 'l6_binding' in p:
+        from .r5_d5_l6b_runner import native_gate
+        remaining = native_gate(p, experiment, cpu_audit, condition, output_dir, expected_gpu_uuid)
     require(remaining >= p['resources']['worker_deadline_seconds'] + 120, 'insufficient remaining allocation')
     # Parent does not create output; child enforces fresh resolved path and input protection.
     argv = [sys.executable, str(SCRIPT), '_worker', '--experiment', str(Path(experiment).resolve()), '--cpu-audit',

@@ -29,7 +29,8 @@ def approval_modules(plan):
     return (list(TEST_MODULES) + (['test_r5_d5_lightperf_replay'] if replay_enabled(plan) else []) +
             (['test_r5_d5_impact'] if impact_implementation(plan) == HOST_BATCH else
              ['test_r5_d5_impact', 'test_r5_d5_impact_compute', 'test_r5_d5_owner_diagnostics']
-             if impact_implementation(plan) == MASK_INDEX_REUSE else []))
+             if impact_implementation(plan) == MASK_INDEX_REUSE else []) +
+            (['test_r5_d5_l6a','test_r5_d5_l6b'] if 'l6_binding' in plan else []))
 
 
 def dependencies():
@@ -174,6 +175,11 @@ def load_plan(experiment, *, cpu_only=True):
     if impact_implementation(p) != IMPACT_REFERENCE:
         require(isinstance(fields.get('resources'), dict), 'changed prepared input/resources')
         fields['resources'] = impact_resource_bounds(fields['resources'], impact_implementation(p))
+    if 'l6_binding' in p:
+        from .r5_d5_l6b import validate_binding
+        from .r5_d5_l6a import long_deadline
+        validate_binding(p)
+        fields['resources'] = long_deadline(fields['resources'])
     require(all(p[k] == value for k, value in fields.items()), 'changed prepared input/workload/resources')
     return p, inventory
 

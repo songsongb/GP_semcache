@@ -556,3 +556,7 @@ and the distinction between synthetic smoke outputs and pending dataset runs.
 For existing raw SNIPS/MultiWOZ workload JSONL, use the separate
 [M9-B.1 semantic preparation stage](docs/m9b_semantic_preparation.md) to produce
 pinned-tokenizer/TinyBERT inputs offline before running the model-free simulator.
+
+### D5 L6-B on SERAPH
+
+Use the [L6-B CPU preparation, manual submission and verification runbook](docs/D5_L6B_NATIVE.md) for the 2WikiMQA 50-request long replay. The native CPU approval binds a freshly reviewed L6-A V2 plan to the current Light source.
