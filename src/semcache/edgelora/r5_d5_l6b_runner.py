@@ -192,14 +192,17 @@ def worker(root,c, *, recovery_mode=False):
                R5_I5_ENABLE_GPU='1',D5L_ENABLE_GPU='1',D5N_NODE=trial['node'],PYTHONHASHSEED='42',
                CUBLAS_WORKSPACE_CONFIG=':4096:8',OMP_NUM_THREADS='4',MKL_NUM_THREADS='4',OPENBLAS_NUM_THREADS='4')
     budget(p)
-    probe=subprocess.run([sys.executable,'-c',GPU_PROBE],env=dict(env,PYTHONPATH=str(ROOT/'src')),
-                         check=True,text=True,capture_output=True)
-    gpu=json.loads(probe.stdout)
+    if recovery is not None:
+        from .r5_d5_l6_recovery import original, topology, probe_and_validate
+        evidence=original(Path(recovery['original']))
+        gpu=probe_and_validate(root,evidence['allocations'][0],env,
+                              allow_compatible_gpu=recovery.get('gpu_policy')=='SAME_RTX3090_SPEC')
+    else:
+        probe=subprocess.run([sys.executable,'-c',GPU_PROBE],env=dict(env,PYTHONPATH=str(ROOT/'src')),
+                             check=True,text=True,capture_output=True)
+        gpu=json.loads(probe.stdout)
     record=dict(job=os.environ['SLURM_JOB_ID'],node=trial['node'],gpu=gpu,affinity=sorted(os.sched_getaffinity(0)))
     if recovery is not None:
-        from .r5_d5_l6_recovery import original, topology, gpu_node_match
-        evidence=original(Path(recovery['original']))
-        gpu_node_match(evidence['allocations'][0],record)
         record['cpu_topology']=topology(env)
     write_once(root/(c+'.allocation.json'),record)
     if prior:

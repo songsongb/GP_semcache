@@ -3,9 +3,11 @@ import ast
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 from .communication import digest, require
 from .r3a_artifacts import ROOT
@@ -70,7 +72,10 @@ def dependencies(old,new):
 
 
 def bind_plan(p,recovery):
-    require(set(recovery)=={'original','evidence','dependencies'},'unknown recovery contract')
+    require(set(recovery) in ({'original','evidence','dependencies'},
+            {'original','evidence','dependencies','gpu_policy'}), 'unknown recovery contract')
+    require(recovery.get('gpu_policy','STRICT_UUID') in ('STRICT_UUID','SAME_RTX3090_SPEC'),
+            'unknown recovery GPU policy')
     evidence=original(Path(recovery['original']))
     old=evidence['plan']
     variable={'source','plan_id','l6_plan_id','l6_binding','recovery'}
@@ -104,22 +109,98 @@ def topology(environment=None):
                 node=os.uname().nodename)
 
 
-def gpu_node_match(old,new):
-    require(old['node']==new['node'] and gpu_uuid_matches(old['gpu']['uuid'],new['gpu']['uuid']) and
-            len(new['affinity'])==4,'NOT_COMPARABLE: recovery node/GPU/CPU count differs')
+def gpu_node_match(old,new, *, allow_compatible_gpu=False, require_spec=False):
+    require(old['node']==new['node'],'NOT_COMPARABLE: recovery node differs')
+    require(len(new['affinity'])==4,'NOT_COMPARABLE: recovery CPU count differs')
+    same=gpu_uuid_matches(old['gpu']['uuid'],new['gpu']['uuid'])
+    require(same or allow_compatible_gpu,'NOT_COMPARABLE: recovery GPU UUID differs')
+    if allow_compatible_gpu or require_spec:
+        for gpu in (old['gpu'],new['gpu']):
+            require(re.fullmatch(r'NVIDIA (?:GeForce )?RTX 3090',gpu.get('name','')) is not None,
+                    'NOT_COMPARABLE: recovery GPU model differs from RTX 3090')
+        require(type(new['gpu'].get('total_bytes')) is int and
+                new['gpu']['total_bytes']==old['gpu'].get('total_bytes') and
+                23*2**30 <= new['gpu']['total_bytes'] <= 24*2**30,
+                'NOT_COMPARABLE: recovery GPU total memory differs')
+        require(new['gpu'].get('device_count')==1,'recovery requires exactly one CUDA device')
+        require(new['gpu'].get('free_bytes',0)>=12*2**30,'recovery GPU free memory below 12GiB')
 
 
-def prepare(root,commit,fingerprint):
+RECOVERY_PROBE = """import json
+result={}
+try:
+    import torch
+    from semcache.edgelora.r5_d5_lightperf_runtime import native_versions
+    count=torch.cuda.device_count()
+    result.update(device_count=count,versions=native_versions(),cuda_compiled_version=torch.version.cuda)
+    if count:
+        p=torch.cuda.get_device_properties(0)
+        result.update(uuid=str(p.uuid),name=p.name,total_bytes=p.total_memory,free_bytes=torch.cuda.mem_get_info(0)[0],
+                      cudnn_version=torch.backends.cudnn.version())
+except Exception as exc:
+    result['probe_error']=str(exc)
+print(json.dumps(result,allow_nan=False))
+"""
+
+
+def probe_and_validate(root,old,environment, *, allow_compatible_gpu=False):
+    """Publish diagnostics before raising or returning permission to infer."""
+    try:
+        result=runner.subprocess.run([sys.executable,'-c',RECOVERY_PROBE],
+            env=dict(environment,PYTHONPATH=str(ROOT/'src')),text=True,capture_output=True,timeout=120)
+    except (OSError,subprocess.TimeoutExpired) as exc:
+        result=SimpleNamespace(returncode=-1,stdout='',stderr=str(exc))
+    gpu={}
+    reasons=[]
+    try:
+        gpu=json.loads(result.stdout)
+        require(isinstance(gpu,dict),'GPU probe must return an object')
+    except (ValueError,TypeError) as exc:
+        gpu={}
+        reasons.append('invalid GPU probe output: '+str(exc))
+    if result.returncode or gpu.get('probe_error'):
+        reasons.append('GPU probe failed: '+str(gpu.get('probe_error',result.stderr[-2000:])))
+    current=dict(node=environment.get('SLURMD_NODENAME'),gpu=gpu,affinity=sorted(os.sched_getaffinity(0)))
+    try:
+        gpu_node_match(old,current,allow_compatible_gpu=allow_compatible_gpu,require_spec=True)
+    except (ValueError,KeyError,TypeError) as exc:
+        reasons.append(str(exc))
+    try:
+        historical=read_json(ORIGINAL/CONDITIONS[0]/'run.json')
+        require(gpu.get('versions')==historical['versions']==native_versions() and
+                gpu.get('cuda_compiled_version')==historical['backend']['cuda_compiled_version'],
+                'recovery GPU software versions differ')
+        if 'cudnn_version' in historical['backend']:
+            require(gpu.get('cudnn_version')==historical['backend']['cudnn_version'],
+                    'recovery cuDNN version differs')
+    except (ValueError,KeyError,TypeError) as exc:
+        reasons.append(str(exc))
+    diagnostic=dict(status='BLOCKED' if reasons else 'GPU_GATE_PASS',reasons=reasons,
+        policy='SAME_RTX3090_SPEC' if allow_compatible_gpu else 'STRICT_UUID',
+        expected=dict(old,cpu_count=len(old['affinity'])),actual=dict(current,cpu_count=len(current['affinity'])),environment={k:environment.get(k) for k in
+            ('CUDA_VISIBLE_DEVICES','SLURM_JOB_GPUS','SLURM_STEP_GPUS')},
+        device_count=gpu.get('device_count'),probe_returncode=result.returncode,
+        probe_stderr=result.stderr[-2000:])
+    runner.write_once(root/(CONDITIONS[2]+'.gpu_diagnostic.json'),diagnostic)
+    require(not reasons,'recovery GPU gate blocked: '+'; '.join(reasons))
+    return gpu
+
+
+
+def prepare(root,commit,fingerprint, *, allow_compatible_gpu=False):
     identity=l6.source(commit,fingerprint)
     evidence=original(ORIGINAL)
     recovery=dict(original=str(ORIGINAL),evidence={k:v for k,v in evidence.items() if k!='plan'},
-                  dependencies=dependencies(evidence['plan']['source']['files'],identity['files']))
+                  dependencies=dependencies(evidence['plan']['source']['files'],identity['files']),
+                  gpu_policy='SAME_RTX3090_SPEC' if allow_compatible_gpu else 'STRICT_UUID')
     return runner.prepare(root,commit,fingerprint,recovery=recovery)
 
 
-def submit(root, *, dry_run=False):
+def submit(root, *, dry_run=False, allow_compatible_gpu=False):
     p=runner.ready(root)
     require('recovery' in p,'APPROX-only recovery plan required')
+    require(allow_compatible_gpu == (p['recovery'].get('gpu_policy','STRICT_UUID')=='SAME_RTX3090_SPEC'),
+            'GPU opt-in must match the newly approved recovery PLAN')
     evidence=original(ORIGINAL)
     node=evidence['allocations'][0]['node']
     require(node in runner.D5_NODES,'unsupported recovery node')
@@ -128,7 +209,7 @@ def submit(root, *, dry_run=False):
     args=runner.batch_args(root,node,CONDITIONS[2],None)
     args[-4]=str(ROOT/'jobs/d5_l6_recovery.sh')
     if dry_run:
-        return dict(status='CPU_SLURM_DRY_RUN',argv=args,test_only=[args[0],'--test-only',*args[1:]])
+        return dict(status='CPU_SLURM_DRY_RUN',gpu_policy=p['recovery'].get('gpu_policy','STRICT_UUID'),argv=args,test_only=[args[0],'--test-only',*args[1:]])
     require(str(ROOT)=='/data/khuss/repos/GP_semcache_lightperf','SERAPH repo required')
     runner.write_once(root/'trial.json',trial)
     runner.command([args[0],'--test-only',*args[1:]])
@@ -147,7 +228,8 @@ def analyze(root):
     evidence=original(ORIGINAL)
     require(p['recovery']['evidence']=={k:v for k,v in evidence.items() if k!='plan'},'historical inputs changed')
     alloc=runner.verified(root,CONDITIONS[2])
-    gpu_node_match(evidence['allocations'][0],alloc)
+    gpu_node_match(evidence['allocations'][0],alloc,
+                   allow_compatible_gpu=p['recovery'].get('gpu_policy')=='SAME_RTX3090_SPEC')
     runs=[verify_run(ORIGINAL/c,ORIGINAL/'plan',ORIGINAL/'cpu')[0] for c in CONDITIONS[:2]]
     runs.append(verify_run(root/CONDITIONS[2],root/'plan',root/'cpu')[0])
     require(all(len(r['requests'])==50 and r['tasks_sha256']==p['stream']['tasks_sha256'] and
@@ -158,7 +240,8 @@ def analyze(root):
     report=dict(scope='CROSS_TRIAL_RECOVERY_DESCRIPTIVE',status='LIMITED_COMPARABILITY',
                 correctness_qualified_speedup='NOT_ESTABLISHED',quality_preservation='NOT_ESTABLISHED',
                 limitation='Different source/control code, allocation and CPU cores. Historical NUMA topology not captured.',
-                strict_comparison=compare(runs[0],runs[2]),recovery_contract=p['recovery'],allocation=alloc,
+                strict_comparison=compare(runs[0],runs[2]),
+                physical_gpu_uuid_changed=not gpu_uuid_matches(runs[0]['gpu']['uuid'],runs[2]['gpu']['uuid']),recovery_contract=p['recovery'],allocation=alloc,
                 sequence_span_ms={r['condition']:r['sequence_span_ms'] for r in runs},
                 input_inventories=dict(original=evidence['bindings'],
                     recovery_plan=verify(root/'plan'),recovery_cpu=verify(root/'cpu'),

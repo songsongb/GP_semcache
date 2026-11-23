@@ -24,6 +24,8 @@ def main():
         if name=='prepare-cpu':
             cmd.add_argument('--reviewed-commit',required=True)
             cmd.add_argument('--reviewed-fingerprint',required=True)
+        if name in ('prepare-cpu','submit','dry-run'):
+            cmd.add_argument('--allow-compatible-gpu',action='store_true')
         if name=='submit':cmd.add_argument('--enable-approximate-experiment',action='store_true',required=True)
     a=parser.parse_args()
     try:
@@ -34,12 +36,12 @@ def main():
         else:
             root=recovery.runner.state(a.trial)
             if root==recovery.ORIGINAL:raise ValueError('original trial is read-only')
-            if a.cmd=='prepare-cpu':result=recovery.prepare(root,a.reviewed_commit,a.reviewed_fingerprint)
+            if a.cmd=='prepare-cpu':result=recovery.prepare(root,a.reviewed_commit,a.reviewed_fingerprint,allow_compatible_gpu=a.allow_compatible_gpu)
             elif a.cmd=='inspect':
                 p=recovery.runner.ready(root)
                 if 'recovery' not in p:raise ValueError('recovery plan required')
-                result=dict(status='FRESH_RECOVERY_NATIVE_CPU_APPROVAL',plan_id=p['plan_id'])
-            elif a.cmd in ('submit','dry-run'):result=recovery.submit(root,dry_run=a.cmd=='dry-run')
+                result=dict(status='FRESH_RECOVERY_NATIVE_CPU_APPROVAL',plan_id=p['plan_id'],gpu_policy=p['recovery'].get('gpu_policy','STRICT_UUID'))
+            elif a.cmd in ('submit','dry-run'):result=recovery.submit(root,dry_run=a.cmd=='dry-run',allow_compatible_gpu=a.allow_compatible_gpu)
             elif a.cmd=='analyze':result=recovery.analyze(root)
             elif a.cmd=='_registered':
                 if 'recovery' not in recovery.read_json(root/'plan/plan.json'):raise ValueError('recovery plan required')

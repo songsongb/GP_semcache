@@ -73,16 +73,23 @@ class Recovery(unittest.TestCase):
         p=dict(recovery={'evidence':evidence},stream=stream)
         alloc=dict(node='moana-y3',affinity=[1,2,3,4],gpu=runs[0]['gpu'])
         p['recovery']['evidence']=dict(allocations=[alloc],bindings={})
+        p['recovery']['gpu_policy']='SAME_RTX3090_SPEC'
+        spec=dict(name='NVIDIA GeForce RTX 3090',total_bytes=24*2**30,device_count=1,free_bytes=16*2**30)
+        alloc['gpu'].update(spec)
+        current=dict(alloc,gpu=dict(alloc['gpu'],uuid='00000000-0000-0000-0000-000000000002'))
+        runs[2]['gpu']=current['gpu']
         runs[2]['source']={'changed':'CONTROL_ONLY'}
         runs[2]['cpu_concurrency']=dict(affinity=[1,2,3,4])
         with tempfile.TemporaryDirectory() as tmp,patch.object(rec.runner,'ready',return_value=p), \
              patch.object(rec,'original',return_value=dict(allocations=[alloc],bindings={})), \
-             patch.object(rec.runner,'verified',return_value=alloc), \
+             patch.object(rec.runner,'verified',return_value=current), \
              patch.object(rec,'verify_run',side_effect=[(r,{}) for r in runs]),patch.object(rec,'verify',return_value={}), \
              patch('semcache.edgelora.r5_d5_l6a_analysis.write_report') as write:
             rec.analyze(Path(tmp))
             report=write.call_args.args[0]
             self.assertEqual(report['status'],'LIMITED_COMPARABILITY')
+            self.assertTrue(report['physical_gpu_uuid_changed'])
+            self.assertEqual(report['allocation']['gpu']['uuid'],current['gpu']['uuid'])
             self.assertEqual(report['strict_comparison']['status'],'NOT_COMPARABLE')
             self.assertEqual(len(report['cycle_metrics']),15)
             self.assertEqual([x['requests'] for x in report['cumulative_metrics']],[10,20,30,40,50]*3)
@@ -106,7 +113,7 @@ class Recovery(unittest.TestCase):
                 stack.enter_context(patch.object(rec.runner,name,return_value=value))
             stack.enter_context(patch.object(rec.os,'sched_getaffinity',return_value={1,2,3,4}))
             pin=stack.enter_context(patch.object(rec.os,'sched_setaffinity'))
-            probe=stack.enter_context(patch.object(rec.runner.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps(gpu))))
+            probe=stack.enter_context(patch.object(rec,'probe_and_validate',return_value=gpu))
             stack.enter_context(patch.object(rec,'original',return_value=dict(allocations=[old])))
             stack.enter_context(patch.object(rec,'topology',return_value=dict(scope='FIXTURE')))
             calls=[]
@@ -125,3 +132,102 @@ class Recovery(unittest.TestCase):
             rec.os.environ['CUDA_VISIBLE_DEVICES']='0'
             with self.assertRaisesRegex(ValueError,'APPROX only'):
                 rec.runner.worker(root,CONDITIONS[0],recovery_mode=True)
+
+
+class GPUPolicy(unittest.TestCase):
+    def records(self):
+        gpu=dict(uuid='0dff7717-a97a-b957-b478-f26213d1b38e',name='NVIDIA GeForce RTX 3090',
+                 total_bytes=24*2**30,device_count=1,free_bytes=16*2**30)
+        return dict(node='moana-y3',affinity=[40,41,88,89],gpu=gpu)
+
+    def test_uuid_and_spec_policies(self):
+        old=self.records()
+        rec.gpu_node_match(old,deepcopy(old),require_spec=True)
+        changed=deepcopy(old)
+        changed['gpu']['uuid']='00000000-0000-0000-0000-000000000001'
+        with self.assertRaisesRegex(ValueError,'UUID'):
+            rec.gpu_node_match(old,changed,require_spec=True)
+        rec.gpu_node_match(old,changed,allow_compatible_gpu=True)
+        for key,value,reason in (('name','NVIDIA GeForce RTX 3090 Ti','model'),
+                                 ('total_bytes',23*2**30,'total memory'),
+                                 ('device_count',2,'one CUDA device'),
+                                 ('free_bytes',12*2**30-1,'free memory')):
+            bad=deepcopy(changed);bad['gpu'][key]=value
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,reason):
+                rec.gpu_node_match(old,bad,allow_compatible_gpu=True)
+        with self.assertRaisesRegex(ValueError,'node'):
+            rec.gpu_node_match(old,dict(changed,node='moana-y2'),allow_compatible_gpu=True)
+        with self.assertRaisesRegex(ValueError,'CPU count'):
+            rec.gpu_node_match(old,dict(changed,affinity=[1,2]),allow_compatible_gpu=True)
+
+    def test_diagnostics_precede_inference_and_preserve_original(self):
+        import json
+        old=self.records()
+        actual=dict(old['gpu'],uuid='00000000-0000-0000-0000-000000000001',
+                    versions=rec.native_versions(),cuda_compiled_version='FIXTURE')
+        env=dict(SLURMD_NODENAME='moana-y3',CUDA_VISIBLE_DEVICES='2',SLURM_JOB_GPUS='2',SLURM_STEP_GPUS='2')
+        historical=dict(versions=rec.native_versions(),backend=dict(cuda_compiled_version='FIXTURE'))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            original=root/'original';original.mkdir()
+            rec.runner.write_once(original/'receipt.json',{'scope':'READ_ONLY_FIXTURE'})
+            before=(original/'receipt.json').read_bytes()
+            with patch.object(rec.runner.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(actual),stderr='')),                  patch.object(rec,'read_json',return_value=historical),                  patch.object(rec.os,'sched_getaffinity',return_value={1,2,3,4}),patch.object(rec.runner,'official') as inference:
+                failed=root/'strict';failed.mkdir()
+                with self.assertRaisesRegex(ValueError,'UUID'):
+                    rec.probe_and_validate(failed,old,env)
+                diag=rec.runner.read_json(failed/(CONDITIONS[2]+'.gpu_diagnostic.json'))
+                self.assertEqual(diag['expected']['gpu']['uuid'],old['gpu']['uuid'])
+                self.assertEqual(diag['actual']['gpu'],actual)
+                self.assertEqual(diag['environment'],{k:env[k] for k in ('CUDA_VISIBLE_DEVICES','SLURM_JOB_GPUS','SLURM_STEP_GPUS')})
+                self.assertEqual(diag['actual']['affinity'],[1,2,3,4])
+                self.assertEqual(diag['status'],'BLOCKED')
+                passed=root/'optin';passed.mkdir()
+                self.assertEqual(rec.probe_and_validate(passed,old,env,allow_compatible_gpu=True),actual)
+                self.assertEqual(rec.runner.read_json(passed/(CONDITIONS[2]+'.gpu_diagnostic.json'))['status'],'GPU_GATE_PASS')
+                inference.assert_not_called()
+            self.assertEqual((original/'receipt.json').read_bytes(),before)
+
+    def test_policy_requires_new_plan_and_matching_submit_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(rec.runner,'ready',return_value={
+                'recovery':dict(gpu_policy='SAME_RTX3090_SPEC'),'plan_id':'FIXTURE'}),                 patch.object(rec,'original',return_value=dict(allocations=[dict(node='moana-y3')])),                 patch.object(rec.runner,'assets',return_value={}),patch.object(rec.runner,'command') as slurm:
+            root=Path(tmp);rec.runner.write_once(root/'ready.json',{})
+            with self.assertRaisesRegex(ValueError,'opt-in'):
+                rec.submit(root,dry_run=True)
+            dry=rec.submit(root,dry_run=True,allow_compatible_gpu=True)
+            self.assertEqual(dry['status'],'CPU_SLURM_DRY_RUN')
+            self.assertIn('--gres=gpu:1',dry['argv'])
+            self.assertFalse(any(x.startswith('--gpu-bind') for x in dry['argv']))
+            self.assertFalse((root/'trial.json').exists())
+            slurm.assert_not_called()
+
+    def test_new_policy_changes_approved_plan_identity(self):
+        base=dict(source=dict(files={}),entry_limit=64,count=50,plan_id='base')
+        evidence=dict(plan=base,bindings={})
+        contract=dict(original=str(rec.ORIGINAL),evidence={'bindings':{}},dependencies=rec.dependencies({},{}))
+        with patch.object(rec,'original',return_value=evidence):
+            strict=rec.bind_plan(base,dict(contract,gpu_policy='STRICT_UUID'))
+            compatible=rec.bind_plan(base,dict(contract,gpu_policy='SAME_RTX3090_SPEC'))
+            self.assertNotEqual(strict['plan_id'],compatible['plan_id'])
+            with self.assertRaisesRegex(ValueError,'GPU policy'):
+                rec.bind_plan(base,dict(contract,gpu_policy='ANY_GPU'))
+
+    def test_software_failure_and_probe_error_publish_diagnostics(self):
+        import json
+        old=self.records()
+        env=dict(SLURMD_NODENAME='moana-y3',CUDA_VISIBLE_DEVICES='0')
+        historical=dict(versions=rec.native_versions(),backend=dict(cuda_compiled_version='FIXTURE',cudnn_version=1))
+        packet=dict(old['gpu'],versions=rec.native_versions(),cuda_compiled_version='FIXTURE',cudnn_version=2)
+        for case in ('software','process','malformed','timeout'):
+            with tempfile.TemporaryDirectory() as tmp,patch.object(rec,'read_json',return_value=historical),                  patch.object(rec.os,'sched_getaffinity',return_value={1,2,3,4}),                  patch.object(rec.runner.subprocess,'run') as probe:
+                if case=='timeout':
+                    probe.side_effect=rec.subprocess.TimeoutExpired('GPU probe',120)
+                else:
+                    probe.return_value=SimpleNamespace(returncode=1 if case=='process' else 0,
+                        stdout='invalid' if case=='malformed' else json.dumps(packet),stderr='FIXTURE')
+                root=Path(tmp)
+                with self.assertRaisesRegex(ValueError,'gate blocked'):
+                    rec.probe_and_validate(root,old,env,allow_compatible_gpu=True)
+                diag=rec.runner.read_json(root/(CONDITIONS[2]+'.gpu_diagnostic.json'))
+                self.assertEqual(diag['status'],'BLOCKED')
+                self.assertTrue(diag['reasons'])
