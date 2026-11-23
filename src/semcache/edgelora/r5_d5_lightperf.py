@@ -30,7 +30,8 @@ def approval_modules(plan):
             (['test_r5_d5_impact'] if impact_implementation(plan) == HOST_BATCH else
              ['test_r5_d5_impact', 'test_r5_d5_impact_compute', 'test_r5_d5_owner_diagnostics']
              if impact_implementation(plan) == MASK_INDEX_REUSE else []) +
-            (['test_r5_d5_l6a','test_r5_d5_l6b'] if 'l6_binding' in plan else []))
+            (['test_r5_d5_l6a','test_r5_d5_l6b'] if 'l6_binding' in plan else []) +
+            (['test_r5_d5_l6_recovery'] if 'recovery' in plan else []))
 
 
 def dependencies():

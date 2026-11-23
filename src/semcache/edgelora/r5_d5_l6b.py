@@ -52,5 +52,9 @@ def native_plan(plan, audit):
 
 def validate_binding(p):
     link=p.get('l6_binding')
-    require(isinstance(link,dict) and native_plan(Path(link['plan']),Path(link['audit']))==p,
+    expected = native_plan(Path(link['plan']),Path(link['audit'])) if isinstance(link,dict) else None
+    if 'recovery' in p and expected is not None:
+        from .r5_d5_l6_recovery import bind_plan
+        expected = bind_plan(expected,p['recovery'])
+    require(isinstance(link,dict) and expected==p,
             'native L6-B plan binding differs')

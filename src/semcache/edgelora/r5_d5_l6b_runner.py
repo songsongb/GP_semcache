@@ -33,7 +33,7 @@ def paths(root):
                 light_plan=root/'plan',light_audit=root/'cpu')
 
 
-def prepare(root,commit,fingerprint):
+def prepare(root,commit,fingerprint, *, recovery=None):
     l6.cpu_guard()
     offline=assets()
     os.environ['HF_HUB_CACHE']=str(Path(offline['HF_HOME'])/'hub')
@@ -50,6 +50,9 @@ def prepare(root,commit,fingerprint):
     require(l6.execute(args)['status']=='CPU_APPROVED','fresh L6-A approval required')
     l6.checked(loc['plan'])
     p=native_plan(loc['plan'],loc['audit'])
+    if recovery is not None:
+        from .r5_d5_l6_recovery import bind_plan
+        p=bind_plan(p,recovery)
     w=SummaryWriter(fresh(loc['light_plan'],[loc['plan'],loc['audit']],namespace=NS))
     w.write('plan.json',p)
     w.seal()
@@ -103,6 +106,7 @@ def batch_args(root,node,c,previous):
 def submit(root,node):
     require(node in D5_NODES and str(ROOT)=='/data/khuss/repos/GP_semcache_lightperf','SERAPH node/repo required')
     p=ready(root)
+    require('recovery' not in p,'use APPROX-only recovery submit')
     trial=dict(node=node,assets=assets(),plan_id=p['plan_id'],ready=digest(read_json(root/'ready.json')),
                python=sys.executable,order=list(CONDITIONS))
     write_once(root/'trial.json',trial)
@@ -151,6 +155,8 @@ def native_gate(p,experiment,audit,c,out,uuid):
     require(root==state(root.name) and Path(experiment)==root/'plan' and Path(audit)==root/'cpu' and
             no_symlinks(Path(out))==root/c,'L6 run path differs')
     trial=allocation(root,c)
+    if 'recovery' in p:
+        require(c==CONDITIONS[2], 'recovery is APPROX only')
     record=read_json(root/(c+'.allocation.json'))
     require(digest(read_json(root/'ready.json'))==trial['ready'] and p['plan_id']==trial['plan_id'] and gpu_uuid_matches(uuid,record['gpu']['uuid']) and
             sorted(os.sched_getaffinity(0))==record['affinity'],'L6 execution binding differs')
@@ -163,18 +169,21 @@ def matched(first,current):
             'NOT_COMPARABLE: allocated GPU/node/CPU affinity differs')
 
 
-def worker(root,c):
+def worker(root,c, *, recovery_mode=False):
     trial=allocation(root,c)
     cpus=sorted(os.sched_getaffinity(0))
     require(os.environ.get('CUDA_VISIBLE_DEVICES') and len(cpus)>=4,'bound Slurm step required')
-    pinned=cpus[:4] if c==CONDITIONS[0] else read_json(root/(CONDITIONS[0]+'.allocation.json'))['affinity']
+    require(not recovery_mode or c==CONDITIONS[2],'recovery is APPROX only')
+    pinned=cpus[:4] if c==CONDITIONS[0] or recovery_mode else read_json(root/(CONDITIONS[0]+'.allocation.json'))['affinity']
     require(len(set(pinned))==4 and set(pinned)<=set(cpus),'NOT_COMPARABLE: bound CPU set differs')
     os.sched_setaffinity(0,pinned)
     allocation_env=dict(os.environ)
     os.environ.update(CUDA_VISIBLE_DEVICES='',HIP_VISIBLE_DEVICES='',**trial['assets'])
     p=ready(root)
     require(digest(read_json(root/'ready.json'))==trial['ready'] and p['plan_id']==trial['plan_id'] and assets()==trial['assets'],'trial assets/plan differ')
-    prior=CONDITIONS[:CONDITIONS.index(c)]
+    recovery=p.get('recovery')
+    require(bool(recovery)==recovery_mode,'explicit recovery mode must match approved plan')
+    prior=[] if recovery is not None else CONDITIONS[:CONDITIONS.index(c)]
     for prev in prior:
         verified(root,prev)
     env=dict(allocation_env)
@@ -187,6 +196,11 @@ def worker(root,c):
                          check=True,text=True,capture_output=True)
     gpu=json.loads(probe.stdout)
     record=dict(job=os.environ['SLURM_JOB_ID'],node=trial['node'],gpu=gpu,affinity=sorted(os.sched_getaffinity(0)))
+    if recovery is not None:
+        from .r5_d5_l6_recovery import original, topology, gpu_node_match
+        evidence=original(Path(recovery['original']))
+        gpu_node_match(evidence['allocations'][0],record)
+        record['cpu_topology']=topology(env)
     write_once(root/(c+'.allocation.json'),record)
     if prior:
         matched(read_json(root/(prior[0]+'.allocation.json')),record)
